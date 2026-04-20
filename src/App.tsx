@@ -67,6 +67,35 @@ const formatItemMetadata = (item: LibraryItem | null) => {
   return `${item.authors} · ${year} · ${item.source}`;
 };
 
+const readerStateCopy = (activePaper: LibraryItem | null, itemCount: number) => {
+  if (!activePaper) {
+    return {
+      title: itemCount === 0 ? "No papers in this collection yet" : "Choose a paper to start reading",
+      body:
+        itemCount === 0
+          ? "Import PDF, DOCX, EPUB, or citation files to start this workspace."
+          : "Select a paper from the collection to load its reader context and AI workspace.",
+    };
+  }
+
+  if (activePaper.attachment_status === "missing") {
+    return {
+      title: "Source file missing",
+      body: "Relink this attachment to restore reading and AI actions.",
+    };
+  }
+
+  if (activePaper.attachment_status === "citation_only") {
+    return {
+      title: "Metadata-only entry",
+      body: "Import a PDF, DOCX, or EPUB later to enable full reading and AI extraction.",
+      secondary: "Citation metadata is available for export and organization right now.",
+    };
+  }
+
+  return null;
+};
+
 type CollectionTreeEntry = {
   collection: Collection;
   depth: number;
@@ -330,6 +359,7 @@ export default function App() {
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
+  const readerState = readerStateCopy(activePaper, items.length);
   const collectionEntries = useMemo(() => orderedCollections(collections), [collections]);
   const moveDestinationOptions = useMemo(() => {
     if (selectedCollectionId === null) return collectionEntries;
@@ -986,6 +1016,14 @@ export default function App() {
                 <div className="citation-card">
                   <p className="eyebrow">Latest Citation</p>
                   <p>{latestCitation}</p>
+                </div>
+              ) : null}
+              {readerState ? (
+                <div className="citation-card">
+                  <p className="eyebrow">Workspace State</p>
+                  <h3>{readerState.title}</h3>
+                  <p>{readerState.body}</p>
+                  {"secondary" in readerState && readerState.secondary ? <p>{readerState.secondary}</p> : null}
                 </div>
               ) : null}
               <p className="document-lead">{excerptFromView(readerView)}</p>

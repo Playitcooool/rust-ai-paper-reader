@@ -328,6 +328,42 @@ describe("App workspace", () => {
     expect(screen.getByText(/Imported 2 citation records into Machine Learning/i)).toBeInTheDocument();
   });
 
+  it("shows a relink guidance state for missing attachments", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /Systems/i }));
+    const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
+    await user.click(
+      await within(collectionPanel).findByRole("button", {
+        name: /Distributed Consensus Notes/i,
+      }),
+    );
+
+    expect(screen.getByText(/Source file missing/i)).toBeInTheDocument();
+    expect(screen.getByText(/Relink this attachment to restore reading and AI actions/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Relink Source" })).toBeInTheDocument();
+  });
+
+  it("shows a metadata-only state for citation imports", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Import Citations" }));
+    const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
+    await user.click(
+      await within(collectionPanel).findByRole("button", { name: /Attention Is All You Need/i }),
+    );
+
+    expect(screen.getByText(/Metadata-only entry/i)).toBeInTheDocument();
+    expect(screen.getByText(/Import a PDF, DOCX, or EPUB later to enable full reading and AI extraction/i)).toBeInTheDocument();
+    expect(screen.getByText(/Citation metadata is available for export and organization right now/i)).toBeInTheDocument();
+  });
+
   it("relinks a missing linked attachment from the reader actions", async () => {
     const user = userEvent.setup();
 
@@ -380,5 +416,7 @@ describe("App workspace", () => {
 
     expect(screen.getByRole("heading", { name: "No paper selected", level: 2 })).toBeInTheDocument();
     expect(await screen.findAllByText("Open a paper to see its extracted text.")).toHaveLength(2);
+    expect(screen.getByText(/No papers in this collection yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/Import PDF, DOCX, EPUB, or citation files to start this workspace/i)).toBeInTheDocument();
   });
 });
