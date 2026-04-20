@@ -218,4 +218,20 @@ describe("App workspace", () => {
     expect(screen.queryByRole("tab", { name: "Transformer Scaling Laws" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "No paper selected", level: 2 })).toBeInTheDocument();
   });
+
+  it("clears stale reader context when switching to an empty collection", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("New collection name"), "Inbox");
+    await user.click(screen.getByRole("button", { name: "Add Collection" }));
+
+    expect(screen.getByRole("heading", { name: "No paper selected", level: 2 })).toBeInTheDocument();
+    expect(await screen.findAllByText("Open a paper to see its extracted text.")).toHaveLength(2);
+  });
 });

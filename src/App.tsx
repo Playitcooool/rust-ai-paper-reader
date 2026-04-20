@@ -151,7 +151,14 @@ export default function App() {
   }, [search, selectedCollectionId]);
 
   useEffect(() => {
-    if (activePaperId === null) return;
+    if (activePaperId === null) {
+      setReaderView(null);
+      setAnnotations([]);
+      setPaperArtifact(null);
+      setActiveReaderSection("Overview");
+      setActiveAnchor(null);
+      return;
+    }
     const itemId = activePaperId;
     let cancelled = false;
 
