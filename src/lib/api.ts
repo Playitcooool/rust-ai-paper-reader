@@ -11,6 +11,9 @@ async function createTauriApi(): Promise<AppApi> {
   return {
     listCollections: () => invoke("list_collections"),
     createCollection: (input) => invoke("create_collection", { input }),
+    listTags: (collectionId) => invoke("list_tags", { collectionId }),
+    createTag: (input) => invoke("create_tag", { input }),
+    assignTag: (input) => invoke("assign_tag", { input }),
     pickImportPaths: async () => {
       const selection = await open({
         multiple: true,

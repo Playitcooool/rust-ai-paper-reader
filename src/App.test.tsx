@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -182,6 +183,48 @@ describe("App workspace", () => {
 
     expect(await screen.findByRole("button", { name: /Reading Queue/i })).toBeInTheDocument();
     expect(screen.getByText(/Created collection Reading Queue/i)).toBeInTheDocument();
+  });
+
+  it("filters the current collection by tag from the sidebar", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Filter tag Scaling" }));
+
+    const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
+    expect(
+      within(collectionPanel).getByRole("button", { name: /Transformer Scaling Laws/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(collectionPanel).queryByRole("button", { name: /Graph Neural Survey/i }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^All Tags/ }));
+
+    expect(
+      within(collectionPanel).getByRole("button", { name: /Graph Neural Survey/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("creates a tag and assigns it to the current paper", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("New tag name"), "Foundations");
+    await user.click(screen.getByRole("button", { name: "Add Tag to Current Paper" }));
+
+    expect(await screen.findByRole("button", { name: "Filter tag Foundations" })).toBeInTheDocument();
+    expect(screen.getByText(/Tagged Transformer Scaling Laws with Foundations/i)).toBeInTheDocument();
   });
 
   it("shows the latest formatted citation in the reader panel", async () => {

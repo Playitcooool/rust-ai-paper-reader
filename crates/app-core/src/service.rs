@@ -31,6 +31,13 @@ pub struct Collection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+    pub item_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportedItem {
     pub id: i64,
     pub title: String,
@@ -44,6 +51,7 @@ pub struct LibraryItem {
     pub collection_id: i64,
     pub primary_attachment_id: i64,
     pub attachment_status: String,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +141,86 @@ impl LibraryService {
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    pub fn list_tags(&self, collection_id: Option<i64>) -> Result<Vec<Tag>> {
+        let conn = self.connect()?;
+        let query = if collection_id.is_some() {
+            "
+            SELECT t.id, t.name, COUNT(DISTINCT it.item_id) AS item_count
+            FROM tags t
+            JOIN item_tags it ON it.tag_id = t.id
+            JOIN items i ON i.id = it.item_id
+            WHERE i.collection_id = ?1
+            GROUP BY t.id, t.name
+            ORDER BY t.name ASC
+            "
+        } else {
+            "
+            SELECT t.id, t.name, COUNT(DISTINCT it.item_id) AS item_count
+            FROM tags t
+            LEFT JOIN item_tags it ON it.tag_id = t.id
+            GROUP BY t.id, t.name
+            ORDER BY t.name ASC
+            "
+        };
+
+        let mut statement = conn.prepare(query)?;
+        if let Some(collection_id) = collection_id {
+            let rows = statement.query_map([collection_id], |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    item_count: row.get(2)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into)
+        } else {
+            let rows = statement.query_map([], |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    item_count: row.get(2)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into)
+        }
+    }
+
+    pub fn create_tag(&self, name: &str) -> Result<Tag> {
+        let conn = self.connect()?;
+        let existing = conn
+            .query_row(
+                "SELECT id, name FROM tags WHERE lower(name) = lower(?1)",
+                [name],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        if let Some((id, existing_name)) = existing {
+            return Ok(Tag {
+                id,
+                name: existing_name,
+                item_count: 0,
+            });
+        }
+
+        conn.execute("INSERT INTO tags(name) VALUES (?1)", [name])?;
+        Ok(Tag {
+            id: conn.last_insert_rowid(),
+            name: name.to_owned(),
+            item_count: 0,
+        })
+    }
+
+    pub fn assign_tag(&self, item_id: i64, tag_id: i64) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES (?1, ?2)",
+            params![item_id, tag_id],
+        )?;
+        Ok(())
     }
 
     pub fn import_files(
@@ -239,26 +327,30 @@ impl LibraryService {
         } else {
             statement.query_map([], map_library_item)?
         };
-
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
+        let base_items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        hydrate_item_tags(&conn, base_items)
     }
 
     pub fn search_items(&self, query: &str) -> Result<Vec<LibraryItem>> {
         let conn = self.connect()?;
+        let like_query = format!("%{}%", query.to_lowercase());
         let mut statement = conn.prepare(
             "
-            SELECT i.id, i.title, i.collection_id, a.id, a.status
-            FROM search_index s
-            JOIN items i ON i.id = s.item_id
+            SELECT DISTINCT i.id, i.title, i.collection_id, a.id, a.status
+            FROM items i
             JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
-            WHERE s.search_index MATCH ?1
-            ORDER BY rank
+            LEFT JOIN extracted_content e ON e.item_id = i.id
+            LEFT JOIN item_tags it ON it.item_id = i.id
+            LEFT JOIN tags t ON t.id = it.tag_id
+            WHERE lower(i.title) LIKE ?1
+               OR lower(e.plain_text) LIKE ?1
+               OR lower(t.name) LIKE ?1
+            ORDER BY i.id DESC
             ",
         )?;
-        let rows = statement.query_map([query], map_library_item)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
+        let rows = statement.query_map([like_query], map_library_item)?;
+        let base_items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        hydrate_item_tags(&conn, base_items)
     }
 
     pub fn create_annotation(
@@ -681,11 +773,22 @@ impl LibraryService {
                 parent_id INTEGER NULL REFERENCES collections(id)
             );
 
+            CREATE TABLE IF NOT EXISTS tags(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+
             CREATE TABLE IF NOT EXISTS items(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 collection_id INTEGER NOT NULL REFERENCES collections(id),
                 title TEXT NOT NULL,
                 attachment_status TEXT NOT NULL DEFAULT 'ready'
+            );
+
+            CREATE TABLE IF NOT EXISTS item_tags(
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (item_id, tag_id)
             );
 
             CREATE TABLE IF NOT EXISTS attachments(
@@ -756,7 +859,25 @@ fn map_library_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
         collection_id: row.get(2)?,
         primary_attachment_id: row.get(3)?,
         attachment_status: row.get(4)?,
+        tags: Vec::new(),
     })
+}
+
+fn hydrate_item_tags(conn: &Connection, mut items: Vec<LibraryItem>) -> Result<Vec<LibraryItem>> {
+    for item in &mut items {
+        let mut statement = conn.prepare(
+            "
+            SELECT t.name
+            FROM tags t
+            JOIN item_tags it ON it.tag_id = t.id
+            WHERE it.item_id = ?1
+            ORDER BY t.name ASC
+            ",
+        )?;
+        let rows = statement.query_map([item.id], |row| row.get::<_, String>(0))?;
+        item.tags = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+    Ok(items)
 }
 
 fn map_research_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResearchNote> {

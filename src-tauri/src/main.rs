@@ -1,7 +1,7 @@
 use std::{fs, path::{Path, PathBuf}};
 
 use app_core::service::{
-    Annotation, Collection, ImportMode, LibraryItem, LibraryService, ReaderView, ResearchNote,
+    Annotation, Collection, ImportMode, LibraryItem, LibraryService, ReaderView, ResearchNote, Tag,
 };
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, State};
@@ -14,6 +14,17 @@ struct AppState {
 struct CreateCollectionInput {
     name: String,
     parent_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct CreateTagInput {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct AssignTagInput {
+    item_id: i64,
+    tag_id: i64,
 }
 
 #[derive(Deserialize)]
@@ -110,11 +121,26 @@ fn seed_library_if_empty(library_root: &Path) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
 
-    service
+    let ml_items = service
         .import_files(ml.id, &[ml_pdf, ml_docx], ImportMode::ManagedCopy)
         .map_err(|error| error.to_string())?;
-    service
+    let systems_items = service
         .import_files(systems.id, &[systems_epub], ImportMode::ManagedCopy)
+        .map_err(|error| error.to_string())?;
+
+    let scaling = service.create_tag("Scaling").map_err(|error| error.to_string())?;
+    let survey = service.create_tag("Survey").map_err(|error| error.to_string())?;
+    let distributed = service
+        .create_tag("Distributed")
+        .map_err(|error| error.to_string())?;
+    service
+        .assign_tag(ml_items[0].id, scaling.id)
+        .map_err(|error| error.to_string())?;
+    service
+        .assign_tag(ml_items[1].id, survey.id)
+        .map_err(|error| error.to_string())?;
+    service
+        .assign_tag(systems_items[0].id, distributed.id)
         .map_err(|error| error.to_string())?;
 
     Ok(())
@@ -134,6 +160,27 @@ fn create_collection(
 ) -> Result<Collection, String> {
     service(&state)?
         .create_collection(&input.name, input.parent_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_tags(state: State<'_, AppState>, collection_id: Option<i64>) -> Result<Vec<Tag>, String> {
+    service(&state)?
+        .list_tags(collection_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_tag(state: State<'_, AppState>, input: CreateTagInput) -> Result<Tag, String> {
+    service(&state)?
+        .create_tag(&input.name)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn assign_tag(state: State<'_, AppState>, input: AssignTagInput) -> Result<(), String> {
+    service(&state)?
+        .assign_tag(input.item_id, input.tag_id)
         .map_err(|error| error.to_string())
 }
 
@@ -312,6 +359,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_collections,
             create_collection,
+            list_tags,
+            create_tag,
+            assign_tag,
             list_items,
             search_items,
             import_files,

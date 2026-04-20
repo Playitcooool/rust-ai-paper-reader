@@ -8,6 +8,7 @@ import type {
   LibraryItem,
   ReaderView,
   ResearchNote,
+  Tag,
 } from "./contracts";
 
 type MockItemDetails = LibraryItem & {
@@ -18,6 +19,8 @@ type MockItemDetails = LibraryItem & {
 type MockState = {
   collections: Collection[];
   items: MockItemDetails[];
+  tags: Tag[];
+  itemTags: Array<{ item_id: number; tag_id: number }>;
   annotations: Annotation[];
   tasks: AITask[];
   artifacts: AIArtifact[];
@@ -37,6 +40,7 @@ const initialState = (): MockState => ({
       collection_id: 1,
       primary_attachment_id: 101,
       attachment_status: "ready",
+      tags: [],
       plainText:
         "Scaling behavior emerges when model size, data volume, and compute are balanced. This paper discusses predictable loss curves and practical planning heuristics.",
       normalizedHtml:
@@ -48,6 +52,7 @@ const initialState = (): MockState => ({
       collection_id: 1,
       primary_attachment_id: 102,
       attachment_status: "ready",
+      tags: [],
       plainText:
         "Graph representation learning unifies message passing, pooling, and graph-level reasoning into a broad survey of architectures and benchmarks.",
       normalizedHtml:
@@ -59,11 +64,22 @@ const initialState = (): MockState => ({
       collection_id: 2,
       primary_attachment_id: 103,
       attachment_status: "ready",
+      tags: [],
       plainText:
         "Consensus protocols coordinate replicas under partial failure. This note contrasts Paxos, Raft, and production trade-offs around operator ergonomics.",
       normalizedHtml:
         "<article><h1>Distributed Consensus Notes</h1><p>Consensus protocols coordinate replicas under partial failure.</p><p>This note contrasts Paxos, Raft, and production trade-offs around operator ergonomics.</p></article>",
     },
+  ],
+  tags: [
+    { id: 10, name: "Scaling", item_count: 1 },
+    { id: 11, name: "Survey", item_count: 1 },
+    { id: 12, name: "Distributed", item_count: 1 },
+  ],
+  itemTags: [
+    { item_id: 1, tag_id: 10 },
+    { item_id: 2, tag_id: 11 },
+    { item_id: 3, tag_id: 12 },
   ],
   annotations: [
     {
@@ -132,6 +148,40 @@ const titleFromPath = (path: string) =>
 const normalizedHtmlFromTitle = (title: string, mode: ImportMode) =>
   `<article><h1>${title}</h1><p>Imported in ${mode} mode.</p><p>This mock document is ready for reading, annotation, and AI analysis.</p></article>`;
 
+const tagsForItem = (itemId: number) =>
+  state.itemTags
+    .filter((entry) => entry.item_id === itemId)
+    .map((entry) => state.tags.find((tag) => tag.id === entry.tag_id)?.name)
+    .filter((name): name is string => Boolean(name));
+
+const buildTagView = (collectionId?: number) =>
+  state.tags
+    .map((tag) => {
+      const itemIds = state.itemTags
+        .filter((entry) => entry.tag_id === tag.id)
+        .map((entry) => entry.item_id);
+      const itemCount = itemIds.filter((itemId) => {
+        if (collectionId === undefined) return true;
+        return state.items.find((item) => item.id === itemId)?.collection_id === collectionId;
+      }).length;
+      return {
+        id: tag.id,
+        name: tag.name,
+        item_count: itemCount,
+      } satisfies Tag;
+    })
+    .filter((tag) => tag.item_count > 0 || collectionId === undefined)
+    .sort((left, right) => left.name.localeCompare(right.name));
+
+const buildLibraryItem = (item: MockItemDetails): LibraryItem => ({
+  id: item.id,
+  title: item.title,
+  collection_id: item.collection_id,
+  primary_attachment_id: item.primary_attachment_id,
+  attachment_status: item.attachment_status,
+  tags: tagsForItem(item.id),
+});
+
 export function resetMockApi() {
   state = initialState();
 }
@@ -151,6 +201,37 @@ export const mockApi: AppApi = {
     return collection;
   },
 
+  async listTags(collectionId) {
+    return buildTagView(collectionId);
+  },
+
+  async createTag(input) {
+    const existing = state.tags.find((tag) => tag.name.toLowerCase() === input.name.toLowerCase());
+    if (existing) {
+      return {
+        ...existing,
+        item_count: buildTagView().find((tag) => tag.id === existing.id)?.item_count ?? 0,
+      };
+    }
+
+    const tag = {
+      id: state.nextId++,
+      name: input.name,
+      item_count: 0,
+    } satisfies Tag;
+    state.tags.push(tag);
+    return tag;
+  },
+
+  async assignTag(input) {
+    const alreadyAssigned = state.itemTags.some(
+      (entry) => entry.item_id === input.item_id && entry.tag_id === input.tag_id,
+    );
+    if (!alreadyAssigned) {
+      state.itemTags.push({ item_id: input.item_id, tag_id: input.tag_id });
+    }
+  },
+
   async pickImportPaths() {
     return [...importSeedPaths];
   },
@@ -166,6 +247,7 @@ export const mockApi: AppApi = {
         collection_id: input.collection_id,
         primary_attachment_id: attachmentId,
         attachment_status: "ready",
+        tags: [],
         plainText: `${title} was imported into ${collectionName(input.collection_id)} and normalized for AI-assisted reading.`,
         normalizedHtml: normalizedHtmlFromTitle(title, input.mode),
       });
@@ -178,14 +260,19 @@ export const mockApi: AppApi = {
   },
 
   async listItems(collectionId) {
-    return state.items.filter((item) =>
-      collectionId === undefined ? true : item.collection_id === collectionId,
-    );
+    return state.items
+      .filter((item) => (collectionId === undefined ? true : item.collection_id === collectionId))
+      .map(buildLibraryItem);
   },
 
   async searchItems(query) {
     const lowered = query.trim().toLowerCase();
-    return state.items.filter((item) => item.title.toLowerCase().includes(lowered));
+    return state.items
+      .filter((item) => {
+        if (item.title.toLowerCase().includes(lowered)) return true;
+        return tagsForItem(item.id).some((tag) => tag.toLowerCase().includes(lowered));
+      })
+      .map(buildLibraryItem);
   },
 
   async getReaderView(itemId) {

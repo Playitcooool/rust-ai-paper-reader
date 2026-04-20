@@ -208,6 +208,7 @@ p {
 }
 
 .nav-list,
+.tag-list,
 .paper-list,
 .ai-card-stack,
 .note-editor-stack {
@@ -251,6 +252,13 @@ p {
 .paper-card span,
 .paper-card small {
   color: rgba(244, 239, 230, 0.74);
+}
+
+.paper-tag-row,
+.tag-chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .reader-tabs,

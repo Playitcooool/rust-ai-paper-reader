@@ -9,6 +9,7 @@ import type {
   LibraryItem,
   ReaderView,
   ResearchNote,
+  Tag,
 } from "./lib/contracts";
 
 type AiPanelMode = "paper" | "collection";
@@ -52,12 +53,22 @@ const droppedPathsFromFileList = (files: FileList | File[]) =>
     })
     .filter(isSupportedPath);
 
+const applyTagFilter = (items: LibraryItem[], tags: Tag[], selectedTagId: number | null) => {
+  if (selectedTagId === null) return items;
+  const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name;
+  if (!selectedTagName) return items;
+  return items.filter((item) => item.tags.includes(selectedTagName));
+};
+
 export default function App() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [items, setItems] = useState<LibraryItem[]>([]);
+  const [tags, setTags] = useState<Tag[]>([]);
   const [importMode, setImportMode] = useState<ImportMode>("managed_copy");
   const [newCollectionName, setNewCollectionName] = useState("");
+  const [newTagName, setNewTagName] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
+  const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
   const [openPaperIds, setOpenPaperIds] = useState<number[]>([]);
   const [activePaperId, setActivePaperId] = useState<number | null>(null);
   const [aiPanelMode, setAiPanelMode] = useState<AiPanelMode>("paper");
@@ -119,13 +130,14 @@ export default function App() {
         search.trim().length > 0
           ? loadedItems.filter((item) => item.collection_id === collectionId)
           : loadedItems;
-      setItems(filteredItems);
-      const nextActiveId = filteredItems[0]?.id ?? null;
+      const tagFilteredItems = applyTagFilter(filteredItems, tags, selectedTagId);
+      setItems(tagFilteredItems);
+      const nextActiveId = tagFilteredItems[0]?.id ?? null;
       setActivePaperId((current) =>
-        current && filteredItems.some((item) => item.id === current) ? current : nextActiveId,
+        current && tagFilteredItems.some((item) => item.id === current) ? current : nextActiveId,
       );
       setOpenPaperIds((current) => {
-        const aliveIds = current.filter((id) => filteredItems.some((item) => item.id === id));
+        const aliveIds = current.filter((id) => tagFilteredItems.some((item) => item.id === id));
         if (nextActiveId && !aliveIds.includes(nextActiveId)) {
           return [...aliveIds, nextActiveId];
         }
@@ -133,13 +145,10 @@ export default function App() {
       });
       if (pendingCollectionStatus) {
         setStatusMessage(pendingCollectionStatus);
-        setPendingCollectionStatus(null);
       } else {
-        setStatusMessage(
-          filteredItems.length > 0
-            ? `${filteredItems.length} papers ready in the current collection.`
-            : "No papers match this view yet.",
-        );
+        if (tagFilteredItems.length > 0) {
+          setStatusMessage(`${tagFilteredItems.length} papers ready in the current collection.`);
+        }
       }
     }
 
@@ -148,7 +157,29 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [search, selectedCollectionId]);
+  }, [search, selectedCollectionId, selectedTagId, tags]);
+
+  useEffect(() => {
+    if (selectedCollectionId === null) return;
+    const collectionId = selectedCollectionId;
+    let cancelled = false;
+
+    async function loadTags() {
+      const api = await getApi();
+      const loadedTags = await api.listTags(collectionId);
+      if (cancelled) return;
+      setTags(loadedTags);
+      setSelectedTagId((current) =>
+        current && loadedTags.some((tag) => tag.id === current) ? current : null,
+      );
+    }
+
+    void loadTags();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCollectionId]);
 
   useEffect(() => {
     if (activePaperId === null) {
@@ -224,6 +255,7 @@ export default function App() {
   const activePaper = items.find((item) => item.id === activePaperId) ?? openPapers[0] ?? null;
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
+  const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
 
   function closePaperTab(itemId: number) {
     setOpenPaperIds((current) => {
@@ -248,16 +280,19 @@ export default function App() {
       search.trim().length > 0
         ? loadedItems.filter((item) => item.collection_id === collectionId)
         : loadedItems;
+    const nextTags = await api.listTags(collectionId);
+    setTags(nextTags);
+    const tagFilteredItems = applyTagFilter(filteredItems, nextTags, selectedTagId);
 
-    setItems(filteredItems);
-    const fallbackActiveId = filteredItems[0]?.id ?? null;
+    setItems(tagFilteredItems);
+    const fallbackActiveId = tagFilteredItems[0]?.id ?? null;
     const resolvedActiveId =
-      nextActiveId && filteredItems.some((item) => item.id === nextActiveId)
+      nextActiveId && tagFilteredItems.some((item) => item.id === nextActiveId)
         ? nextActiveId
         : fallbackActiveId;
     setActivePaperId(resolvedActiveId);
     setOpenPaperIds((current) => {
-      const aliveIds = current.filter((id) => filteredItems.some((item) => item.id === id));
+      const aliveIds = current.filter((id) => tagFilteredItems.some((item) => item.id === id));
       if (resolvedActiveId && !aliveIds.includes(resolvedActiveId)) {
         return [...aliveIds, resolvedActiveId];
       }
@@ -281,11 +316,10 @@ export default function App() {
         paths: acceptedPaths,
         mode: importMode,
       });
-
+      const importMessage = `Imported ${importedItems.length} files into ${activeCollection.name} from ${sourceLabel}.`;
+      setPendingCollectionStatus(importMessage);
       await refreshItemsForCollection(selectedCollectionId, importedItems[0]?.id);
-      setStatusMessage(
-        `Imported ${importedItems.length} files into ${activeCollection.name} from ${sourceLabel}.`,
-      );
+      setStatusMessage(importMessage);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Import failed.";
       setStatusMessage(message);
@@ -386,10 +420,31 @@ export default function App() {
     const api = await getApi();
     const collection = await api.createCollection({ name });
     setCollections((current) => [...current, collection]);
+    setPendingCollectionStatus(`Created collection ${collection.name}.`);
     setSelectedCollectionId(collection.id);
     setNewCollectionName("");
-    setPendingCollectionStatus(`Created collection ${collection.name}.`);
     setStatusMessage(`Created collection ${collection.name}.`);
+  }
+
+  async function handleCreateTag() {
+    const name = newTagName.trim();
+    if (!name) {
+      setStatusMessage("Enter a tag name first.");
+      return;
+    }
+    if (!activePaper) {
+      setStatusMessage("Open a paper before tagging it.");
+      return;
+    }
+
+    const api = await getApi();
+    const tag = await api.createTag({ name });
+    await api.assignTag({ item_id: activePaper.id, tag_id: tag.id });
+    const tagMessage = `Tagged ${activePaper.title} with ${tag.name}.`;
+    setPendingCollectionStatus(tagMessage);
+    await refreshItemsForCollection(activePaper.collection_id, activePaper.id);
+    setNewTagName("");
+    setStatusMessage(tagMessage);
   }
 
   async function handleSaveNoteEdits() {
@@ -533,6 +588,49 @@ export default function App() {
           </div>
         </section>
 
+        <section className="section-block">
+          <div className="section-title-row">
+            <h2>Tags</h2>
+            <span className="meta-count">{tags.length}</span>
+          </div>
+          <div className="collection-create-row">
+            <input
+              aria-label="New tag name"
+              className="search-input"
+              placeholder="Tag the current paper..."
+              value={newTagName}
+              onChange={(event) => setNewTagName(event.target.value)}
+            />
+            <button className="ghost-button" type="button" onClick={() => void handleCreateTag()}>
+              Add Tag to Current Paper
+            </button>
+          </div>
+          <div className="tag-list">
+            <button
+              aria-pressed={selectedTagId === null}
+              className={`nav-item ${selectedTagId === null ? "nav-item-active" : ""}`}
+              type="button"
+              onClick={() => setSelectedTagId(null)}
+            >
+              <span>All Tags</span>
+              <span className="meta-count">{items.length}</span>
+            </button>
+            {tags.map((tag) => (
+              <button
+                key={tag.id}
+                aria-label={`Filter tag ${tag.name}`}
+                aria-pressed={selectedTagId === tag.id}
+                className={`nav-item ${selectedTagId === tag.id ? "nav-item-active" : ""}`}
+                type="button"
+                onClick={() => setSelectedTagId(tag.id)}
+              >
+                <span>{tag.name}</span>
+                <span className="meta-count">{tag.item_count}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+
         <section
           aria-label="Collection drop zone"
           className={`section-block ${draggedFileCount > 0 ? "drop-zone-active" : ""}`}
@@ -582,6 +680,9 @@ export default function App() {
               >
                 <strong>{paper.title}</strong>
                 <span>Collection #{paper.collection_id} · {paper.attachment_status}</span>
+                {paper.tags.length > 0 ? (
+                  <span className="paper-tag-row">{paper.tags.join(" · ")}</span>
+                ) : null}
                 <small>{formatHint(paper.title)}</small>
               </button>
             ))}
@@ -732,6 +833,15 @@ export default function App() {
               <p className="eyebrow">Focused Context</p>
               <h3>{activePaper?.title ?? "No active paper"}</h3>
               <p>{excerptFromView(readerView)}</p>
+              {activePaper?.tags.length ? (
+                <div className="tag-chip-row">
+                  {activePaper.tags.map((tag) => (
+                    <span key={tag} className="status-pill">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
             <div className="action-grid">
               {itemActions.map((action) => (
@@ -771,6 +881,7 @@ export default function App() {
                 Aggregate the papers in this collection into structured comparisons, theme maps,
                 and an editable review note.
               </p>
+              {selectedTagName ? <p>Filtered by tag: {selectedTagName}</p> : null}
             </div>
             <div className="action-grid">
               {collectionActions.map((task) => (
