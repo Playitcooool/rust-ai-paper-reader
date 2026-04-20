@@ -61,6 +61,12 @@ const applyTagFilter = (items: LibraryItem[], tags: Tag[], selectedTagId: number
   return items.filter((item) => item.tags.includes(selectedTagName));
 };
 
+const formatItemMetadata = (item: LibraryItem | null) => {
+  if (!item) return "No metadata";
+  const year = item.publication_year ? String(item.publication_year) : "Unknown year";
+  return `${item.authors} · ${year} · ${item.source}`;
+};
+
 type CollectionTreeEntry = {
   collection: Collection;
   depth: number;
@@ -876,6 +882,7 @@ export default function App() {
               >
                 <strong>{paper.title}</strong>
                 <span>Collection #{paper.collection_id} · {paper.attachment_status}</span>
+                <span>{formatItemMetadata(paper)}</span>
                 {paper.tags.length > 0 ? (
                   <span className="paper-tag-row">{paper.tags.join(" · ")}</span>
                 ) : null}
@@ -926,6 +933,7 @@ export default function App() {
             <div>
               <p className="eyebrow">Reader</p>
               <h2>{activePaper?.title ?? "No paper selected"}</h2>
+              <p className="secondary-copy">{activePaper ? formatItemMetadata(activePaper) : "No metadata"}</p>
               <p className="secondary-copy">
                 {activeCollection?.name ?? "No collection"} · {activePaper?.attachment_status ?? "idle"} · {activePaper ? formatHint(activePaper.title) : "Document"}
               </p>

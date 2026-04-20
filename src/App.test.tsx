@@ -272,7 +272,31 @@ describe("App workspace", () => {
     await user.click(screen.getByRole("button", { name: "Copy Citation" }));
 
     expect(await screen.findByText(/Latest Citation/i)).toBeInTheDocument();
-    expect(screen.getByText(/APA 7 · Machine Learning/i)).toBeInTheDocument();
+    expect(screen.getByText(/APA 7 · Kaplan et al\./i)).toBeInTheDocument();
+  });
+
+  it("shows author and year metadata in the reader panel and supports author search", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    expect(screen.getAllByText(/Kaplan et al\./i)).toHaveLength(2);
+    expect(screen.getAllByText(/2020 · OpenAI/i)).toHaveLength(2);
+
+    await user.clear(screen.getByLabelText("Search papers"));
+    await user.type(screen.getByLabelText("Search papers"), "Kaplan");
+
+    const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
+    expect(
+      await within(collectionPanel).findByRole("button", { name: /Transformer Scaling Laws/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(collectionPanel).queryByRole("button", { name: /Graph Neural Survey/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("exports BibTeX and RIS citations for the active paper", async () => {

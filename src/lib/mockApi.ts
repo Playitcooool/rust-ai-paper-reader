@@ -41,6 +41,10 @@ const initialState = (): MockState => ({
       collection_id: 1,
       primary_attachment_id: 101,
       attachment_status: "ready",
+      authors: "Kaplan et al.",
+      publication_year: 2020,
+      source: "OpenAI",
+      doi: "10.1000/scaling-laws",
       tags: [],
       plainText:
         "Scaling behavior emerges when model size, data volume, and compute are balanced. This paper discusses predictable loss curves and practical planning heuristics.",
@@ -53,6 +57,10 @@ const initialState = (): MockState => ({
       collection_id: 1,
       primary_attachment_id: 102,
       attachment_status: "ready",
+      authors: "Wu et al.",
+      publication_year: 2021,
+      source: "IEEE TPAMI",
+      doi: "10.1000/gnn-survey",
       tags: [],
       plainText:
         "Graph representation learning unifies message passing, pooling, and graph-level reasoning into a broad survey of architectures and benchmarks.",
@@ -65,6 +73,10 @@ const initialState = (): MockState => ({
       collection_id: 2,
       primary_attachment_id: 103,
       attachment_status: "missing",
+      authors: "Ongaro & Ousterhout",
+      publication_year: 2014,
+      source: "USENIX",
+      doi: "10.1000/raft",
       tags: [],
       plainText:
         "Consensus protocols coordinate replicas under partial failure. This note contrasts Paxos, Raft, and production trade-offs around operator ergonomics.",
@@ -154,6 +166,40 @@ const titleFromPath = (path: string) =>
 const normalizedHtmlFromTitle = (title: string, mode: ImportMode) =>
   `<article><h1>${title}</h1><p>Imported in ${mode} mode.</p><p>This mock document is ready for reading, annotation, and AI analysis.</p></article>`;
 
+const metadataFromTitle = (title: string) => {
+  const normalized = title.toLowerCase();
+  if (normalized === "transformer scaling laws") {
+    return {
+      authors: "Kaplan et al.",
+      publication_year: 2020,
+      source: "OpenAI",
+      doi: "10.1000/scaling-laws",
+    };
+  }
+  if (normalized === "graph neural survey") {
+    return {
+      authors: "Wu et al.",
+      publication_year: 2021,
+      source: "IEEE TPAMI",
+      doi: "10.1000/gnn-survey",
+    };
+  }
+  if (normalized === "distributed consensus notes") {
+    return {
+      authors: "Ongaro & Ousterhout",
+      publication_year: 2014,
+      source: "USENIX",
+      doi: "10.1000/raft",
+    };
+  }
+  return {
+    authors: "Imported Author",
+    publication_year: 2026,
+    source: "Paper Reader Library",
+    doi: null,
+  };
+};
+
 const tagsForItem = (itemId: number) =>
   state.itemTags
     .filter((entry) => entry.item_id === itemId)
@@ -185,6 +231,10 @@ const buildLibraryItem = (item: MockItemDetails): LibraryItem => ({
   collection_id: item.collection_id,
   primary_attachment_id: item.primary_attachment_id,
   attachment_status: item.attachment_status,
+  authors: item.authors,
+  publication_year: item.publication_year,
+  source: item.source,
+  doi: item.doi,
   tags: tagsForItem(item.id),
 });
 
@@ -282,6 +332,7 @@ export const mockApi: AppApi = {
   async importFiles(input) {
     return input.paths.map((path) => {
       const title = titleFromPath(path);
+      const metadata = metadataFromTitle(title);
       const itemId = state.nextId++;
       const attachmentId = state.nextId++;
       state.items.unshift({
@@ -290,6 +341,10 @@ export const mockApi: AppApi = {
         collection_id: input.collection_id,
         primary_attachment_id: attachmentId,
         attachment_status: "ready",
+        authors: metadata.authors,
+        publication_year: metadata.publication_year,
+        source: metadata.source,
+        doi: metadata.doi,
         tags: [],
         plainText: `${title} was imported into ${collectionName(input.collection_id)} and normalized for AI-assisted reading.`,
         normalizedHtml: normalizedHtmlFromTitle(title, input.mode),
@@ -305,6 +360,7 @@ export const mockApi: AppApi = {
   async importCitations(input) {
     return input.paths.map((path) => {
       const title = titleFromPath(path);
+      const metadata = metadataFromTitle(title);
       const itemId = state.nextId++;
       const attachmentId = state.nextId++;
       state.items.unshift({
@@ -313,6 +369,10 @@ export const mockApi: AppApi = {
         collection_id: input.collection_id,
         primary_attachment_id: attachmentId,
         attachment_status: "citation_only",
+        authors: metadata.authors,
+        publication_year: metadata.publication_year,
+        source: metadata.source,
+        doi: metadata.doi,
         tags: [],
         plainText: `${title} was imported from a citation record and is ready for metadata-first triage.`,
         normalizedHtml: `<article><h1>${title}</h1><p>Citation-only import.</p><p>Add a source file later or use this entry for bibliography management.</p></article>`,
@@ -344,6 +404,10 @@ export const mockApi: AppApi = {
     return state.items
       .filter((item) => {
         if (item.title.toLowerCase().includes(lowered)) return true;
+        if (item.authors.toLowerCase().includes(lowered)) return true;
+        if (item.source.toLowerCase().includes(lowered)) return true;
+        if (String(item.publication_year ?? "").includes(lowered)) return true;
+        if ((item.doi ?? "").toLowerCase().includes(lowered)) return true;
         return tagsForItem(item.id).some((tag) => tag.toLowerCase().includes(lowered));
       })
       .map(buildLibraryItem);
@@ -493,11 +557,11 @@ export const mockApi: AppApi = {
       throw new Error(`Unknown item ${itemId}`);
     }
     if (format === "bibtex") {
-      return `@article{paper-reader-${item.id},\n  title = {${item.title}},\n  journal = {Paper Reader Library},\n  year = {2026}\n}`;
+      return `@article{paper-reader-${item.id},\n  title = {${item.title}},\n  author = {${item.authors}},\n  journal = {${item.source}},\n  doi = {${item.doi ?? ""}},\n  year = {${item.publication_year ?? 2026}}\n}`;
     }
     if (format === "ris") {
-      return `TY  - JOUR\nTI  - ${item.title}\nJO  - Paper Reader Library\nPY  - 2026\nER  -`;
+      return `TY  - JOUR\nTI  - ${item.title}\nAU  - ${item.authors}\nJO  - ${item.source}\nPY  - ${item.publication_year ?? 2026}\nDO  - ${item.doi ?? ""}\nER  -`;
     }
-    return `APA 7 · ${collectionName(item.collection_id)}. (${item.id}). ${item.title}. Paper Reader Library.`;
+    return `APA 7 · ${item.authors}. (${item.publication_year ?? item.id}). ${item.title}. ${item.source}.`;
   },
 };

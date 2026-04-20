@@ -255,3 +255,26 @@ fn moves_collections_without_allowing_cycles() {
         .expect_err("cycle should fail");
     assert!(cycle_error.to_string().contains("descendant"));
 }
+
+#[test]
+fn searches_items_by_metadata_fields() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+
+    let collection = service
+        .create_collection("Machine Learning", None)
+        .expect("collection created");
+    let paper = root.path().join("transformer-scaling-laws.pdf");
+    std::fs::write(&paper, b"scaling laws").unwrap();
+
+    service
+        .import_files(collection.id, &[paper], ImportMode::ManagedCopy)
+        .expect("import succeeds");
+
+    let by_author = service.search_items("Kaplan").expect("author search works");
+    assert_eq!(by_author.len(), 1);
+    assert_eq!(by_author[0].title, "transformer-scaling-laws");
+
+    let by_year = service.search_items("2020").expect("year search works");
+    assert_eq!(by_year.len(), 1);
+}

@@ -25,6 +25,10 @@ export type LibraryItem = {
   collection_id: number;
   primary_attachment_id: number;
   attachment_status: string;
+  authors: string;
+  publication_year: number | null;
+  source: string;
+  doi: string | null;
   tags: string[];
 };
 
