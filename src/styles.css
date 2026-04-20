@@ -118,7 +118,8 @@ p {
 .ai-tab,
 .nav-item,
 .paper-card,
-.action-card {
+.action-card,
+.outline-link {
   border: none;
   border-radius: 14px;
   cursor: pointer;
@@ -146,7 +147,8 @@ p {
 .ai-tab:hover,
 .nav-item:hover,
 .paper-card:hover,
-.action-card:hover {
+.action-card:hover,
+.outline-link:hover {
   transform: translateY(-1px);
 }
 
@@ -274,9 +276,29 @@ p {
   color: rgba(244, 239, 230, 0.72);
 }
 
+.outline-link {
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.outline-link-active {
+  background: rgba(226, 139, 83, 0.18);
+  outline: 1px solid rgba(226, 139, 83, 0.46);
+  color: #fff4e8;
+}
+
 .reader-document {
   min-height: 70vh;
   line-height: 1.7;
+}
+
+.reader-location-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .reader-html {

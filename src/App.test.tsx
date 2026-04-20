@@ -97,4 +97,20 @@ describe("App workspace", () => {
     expect(await screen.findByRole("button", { name: /Dragged Paper/i })).toBeInTheDocument();
     expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
   });
+
+  it("lets the reader jump between outline sections", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    const methodsButton = screen.getByRole("button", { name: "Methods" });
+    await user.click(methodsButton);
+
+    expect(methodsButton).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/Focused reader outline on Methods/i)).toBeInTheDocument();
+  });
 });

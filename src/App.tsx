@@ -12,6 +12,7 @@ import type {
 } from "./lib/contracts";
 
 type AiPanelMode = "paper" | "collection";
+type ReaderSection = "Overview" | "Methods" | "Results" | "Notes";
 
 const itemActions = [
   { label: "Summarize document", kind: "item.summarize" },
@@ -26,6 +27,8 @@ const collectionActions = [
   { label: "Compare Methods", kind: "collection.compare_methods" },
   { label: "Generate Review Draft", kind: "collection.review_draft" },
 ];
+
+const readerSections: ReaderSection[] = ["Overview", "Methods", "Results", "Notes"];
 
 const excerptFromView = (view: ReaderView | null) =>
   view?.plain_text.split(". ").slice(0, 2).join(". ") ?? "Open a paper to see its extracted text.";
@@ -59,6 +62,7 @@ export default function App() {
   const [aiPanelMode, setAiPanelMode] = useState<AiPanelMode>("paper");
   const [search, setSearch] = useState("");
   const [readerView, setReaderView] = useState<ReaderView | null>(null);
+  const [activeReaderSection, setActiveReaderSection] = useState<ReaderSection>("Overview");
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [paperArtifact, setPaperArtifact] = useState<AIArtifact | null>(null);
   const [collectionArtifact, setCollectionArtifact] = useState<AIArtifact | null>(null);
@@ -150,6 +154,7 @@ export default function App() {
       if (cancelled) return;
 
       setReaderView(view);
+      setActiveReaderSection("Overview");
       setAnnotations(itemAnnotations);
       setPaperArtifact(artifact);
       setOpenPaperIds((current) =>
@@ -323,6 +328,13 @@ export default function App() {
     const api = await getApi();
     const citation = await api.exportCitation(activePaper.id);
     setStatusMessage(citation);
+  }
+
+  function handleReaderSectionChange(section: ReaderSection) {
+    setActiveReaderSection(section);
+    if (activePaper) {
+      setStatusMessage(`Focused reader outline on ${section} in ${activePaper.title}.`);
+    }
   }
 
   useEffect(() => {
@@ -513,12 +525,26 @@ export default function App() {
 
           <div className="reader-surface">
             <div className="reader-outline">
-              <span>Overview</span>
-              <span>Methods</span>
-              <span>Results</span>
-              <span>Notes</span>
+              <p className="eyebrow">Outline</p>
+              {readerSections.map((section) => (
+                <button
+                  key={section}
+                  aria-pressed={activeReaderSection === section}
+                  className={`outline-link ${
+                    activeReaderSection === section ? "outline-link-active" : ""
+                  }`}
+                  type="button"
+                  onClick={() => handleReaderSectionChange(section)}
+                >
+                  {section}
+                </button>
+              ))}
             </div>
             <article className="reader-document">
+              <div className="reader-location-bar">
+                <span className="status-pill">{activeReaderSection}</span>
+                <span className="meta-count">Page {readerSections.indexOf(activeReaderSection) + 1}</span>
+              </div>
               <p className="document-lead">{excerptFromView(readerView)}</p>
               {annotations.map((annotation) => (
                 <div key={annotation.id} className="annotation-chip">
