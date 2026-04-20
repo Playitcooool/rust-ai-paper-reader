@@ -4,6 +4,7 @@ import { getApi } from "./lib/api";
 import type {
   AIArtifact,
   Annotation,
+  CitationFormat,
   Collection,
   ImportMode,
   LibraryItem,
@@ -348,6 +349,32 @@ export default function App() {
     }
   }
 
+  async function handleImportCitations() {
+    if (selectedCollectionId === null || !activeCollection || isImporting) return;
+
+    const api = await getApi();
+    setStatusMessage(`Selecting citation files for ${activeCollection.name}...`);
+
+    try {
+      const paths = await api.pickCitationPaths();
+      if (paths.length === 0) {
+        setStatusMessage("Citation import cancelled.");
+        return;
+      }
+      const importedItems = await api.importCitations({
+        collection_id: selectedCollectionId,
+        paths,
+      });
+      const message = `Imported ${importedItems.length} citation records into ${activeCollection.name}.`;
+      setPendingCollectionStatus(message);
+      await refreshItemsForCollection(selectedCollectionId, importedItems[0]?.id);
+      setStatusMessage(message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Citation import failed.";
+      setStatusMessage(message);
+    }
+  }
+
   async function handleItemTask(kind: string) {
     if (!activePaper) return;
     const api = await getApi();
@@ -391,12 +418,13 @@ export default function App() {
     setStatusMessage(`Exported Markdown (${markdown.length} chars).`);
   }
 
-  async function handleExportCitation() {
+  async function handleExportCitation(format: CitationFormat = "apa7") {
     if (!activePaper) return;
     const api = await getApi();
-    const citation = await api.exportCitation(activePaper.id);
+    const citation = await api.exportCitation(activePaper.id, format);
     setLatestCitation(citation);
-    setStatusMessage(`Copied citation for ${activePaper.title}.`);
+    const label = format === "apa7" ? "citation" : format.toUpperCase();
+    setStatusMessage(`Exported ${label} for ${activePaper.title}.`);
   }
 
   async function handleCreateResearchNote() {
@@ -548,6 +576,9 @@ export default function App() {
           </select>
           <button className="primary-button" type="button" onClick={() => void handleImport()}>
             {isImporting ? "Importing..." : "Import"}
+          </button>
+          <button className="ghost-button" type="button" onClick={() => void handleImportCitations()}>
+            Import Citations
           </button>
         </div>
 
@@ -738,8 +769,14 @@ export default function App() {
               <button className="ghost-button" type="button" onClick={handleCreateAnnotation}>
                 Highlight
               </button>
-              <button className="ghost-button" type="button" onClick={handleExportCitation}>
+              <button className="ghost-button" type="button" onClick={() => void handleExportCitation()}>
                 Copy Citation
+              </button>
+              <button className="ghost-button" type="button" onClick={() => void handleExportCitation("bibtex")}>
+                Export BibTeX
+              </button>
+              <button className="ghost-button" type="button" onClick={() => void handleExportCitation("ris")}>
+                Export RIS
               </button>
             </div>
           </div>

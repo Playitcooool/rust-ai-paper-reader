@@ -35,6 +35,12 @@ struct ImportFilesInput {
 }
 
 #[derive(Deserialize)]
+struct ImportCitationsInput {
+    collection_id: i64,
+    paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct SearchItemsInput {
     query: String,
 }
@@ -221,6 +227,17 @@ fn import_files(
 }
 
 #[tauri::command]
+fn import_citations(
+    state: State<'_, AppState>,
+    input: ImportCitationsInput,
+) -> Result<Vec<app_core::service::ImportedItem>, String> {
+    let paths = input.paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    service(&state)?
+        .import_citations(input.collection_id, &paths)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn relink_attachment(
     state: State<'_, AppState>,
     input: RelinkAttachmentInput,
@@ -340,9 +357,13 @@ fn export_note_markdown(state: State<'_, AppState>, note_id: i64) -> Result<Stri
 }
 
 #[tauri::command]
-fn export_citation(state: State<'_, AppState>, item_id: i64) -> Result<String, String> {
+fn export_citation(
+    state: State<'_, AppState>,
+    item_id: i64,
+    format: Option<String>,
+) -> Result<String, String> {
     service(&state)?
-        .export_citation(item_id)
+        .export_citation(item_id, format.as_deref().unwrap_or("apa7"))
         .map_err(|error| error.to_string())
 }
 
@@ -365,6 +386,7 @@ fn main() {
             list_items,
             search_items,
             import_files,
+            import_citations,
             relink_attachment,
             get_reader_view,
             create_annotation,

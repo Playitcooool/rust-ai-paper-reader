@@ -242,6 +242,35 @@ describe("App workspace", () => {
     expect(screen.getByText(/APA 7 · Machine Learning/i)).toBeInTheDocument();
   });
 
+  it("exports BibTeX and RIS citations for the active paper", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Export BibTeX" }));
+    expect(await screen.findByText(/@article\{/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Export RIS" }));
+    expect(await screen.findByText(/TY\s*-\s*JOUR/i)).toBeInTheDocument();
+  });
+
+  it("imports citation records into the current collection", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Import Citations" }));
+
+    expect(await screen.findByRole("tab", { name: "Attention Is All You Need" })).toBeInTheDocument();
+    expect(screen.getByText(/Imported 2 citation records into Machine Learning/i)).toBeInTheDocument();
+  });
+
   it("closes reader tabs and keeps the workspace stable", async () => {
     const user = userEvent.setup();
 

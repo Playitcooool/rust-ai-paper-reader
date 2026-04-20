@@ -307,6 +307,75 @@ impl LibraryService {
         Ok(imported)
     }
 
+    pub fn import_citations(
+        &self,
+        collection_id: i64,
+        paths: &[PathBuf],
+    ) -> Result<Vec<ImportedItem>> {
+        let mut imported = Vec::new();
+        let mut conn = self.connect()?;
+
+        for path in paths {
+            let title = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("untitled-citation")
+                .replace('-', " ");
+            let normalized_title = title
+                .split_whitespace()
+                .map(|chunk| {
+                    let mut chars = chunk.chars();
+                    match chars.next() {
+                        Some(first) => format!(
+                            "{}{}",
+                            first.to_uppercase(),
+                            chars.as_str().to_lowercase()
+                        ),
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let placeholder_path = path.to_string_lossy().to_string();
+            let fingerprint = digest_bytes(placeholder_path.as_bytes());
+            let plain_text = format!(
+                "{normalized_title} was imported from a citation record and is ready for metadata-first triage."
+            );
+            let normalized_html = wrap_as_article(&normalized_title, &plain_text);
+
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO items(collection_id, title, attachment_status) VALUES (?1, ?2, 'citation_only')",
+                params![collection_id, normalized_title],
+            )?;
+            let item_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO attachments(item_id, path, import_mode, status, fingerprint, is_primary)
+                 VALUES (?1, ?2, 'linked_file', 'citation_only', ?3, 1)",
+                params![item_id, placeholder_path, fingerprint],
+            )?;
+            let attachment_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO extracted_content(item_id, plain_text, normalized_html)
+                 VALUES (?1, ?2, ?3)",
+                params![item_id, plain_text, normalized_html],
+            )?;
+            tx.execute(
+                "INSERT INTO search_index(item_id, title, plain_text) VALUES (?1, ?2, ?3)",
+                params![item_id, normalized_title, plain_text],
+            )?;
+            tx.commit()?;
+
+            imported.push(ImportedItem {
+                id: item_id,
+                title: normalized_title,
+                primary_attachment_id: attachment_id,
+            });
+        }
+
+        Ok(imported)
+    }
+
     pub fn list_items(&self, collection_id: Option<i64>) -> Result<Vec<LibraryItem>> {
         let conn = self.connect()?;
         let mut query = "
@@ -617,7 +686,7 @@ impl LibraryService {
         .map_err(Into::into)
     }
 
-    pub fn export_citation(&self, item_id: i64) -> Result<String> {
+    pub fn export_citation(&self, item_id: i64, format: &str) -> Result<String> {
         let conn = self.connect()?;
         let (title, collection_name): (String, String) = conn.query_row(
             "
@@ -629,7 +698,16 @@ impl LibraryService {
             [item_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok(format!("APA 7 · {collection_name}. ({item_id}). {title}. Paper Reader Library."))
+        let citation = match format {
+            "bibtex" => format!(
+                "@article{{paper-reader-{item_id},\n  title = {{{title}}},\n  journal = {{Paper Reader Library}},\n  keywords = {{{collection_name}}},\n  year = {{2026}}\n}}"
+            ),
+            "ris" => format!(
+                "TY  - JOUR\nTI  - {title}\nJO  - Paper Reader Library\nKW  - {collection_name}\nPY  - 2026\nER  -"
+            ),
+            _ => format!("APA 7 · {collection_name}. ({item_id}). {title}. Paper Reader Library."),
+        };
+        Ok(citation)
     }
 
     pub fn list_task_runs(

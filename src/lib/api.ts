@@ -14,6 +14,19 @@ async function createTauriApi(): Promise<AppApi> {
     listTags: (collectionId) => invoke("list_tags", { collectionId }),
     createTag: (input) => invoke("create_tag", { input }),
     assignTag: (input) => invoke("assign_tag", { input }),
+    pickCitationPaths: async () => {
+      const selection = await open({
+        multiple: true,
+        filters: [
+          {
+            name: "Citations",
+            extensions: ["bib", "ris"],
+          },
+        ],
+      });
+      if (!selection) return [];
+      return Array.isArray(selection) ? selection : [selection];
+    },
     pickImportPaths: async () => {
       const selection = await open({
         multiple: true,
@@ -28,6 +41,7 @@ async function createTauriApi(): Promise<AppApi> {
       return Array.isArray(selection) ? selection : [selection];
     },
     importFiles: (input) => invoke("import_files", { input }),
+    importCitations: (input) => invoke("import_citations", { input }),
     listItems: (collectionId) => invoke("list_items", { collectionId }),
     searchItems: (query) => invoke("search_items", { input: { query } }),
     getReaderView: (itemId) => invoke("get_reader_view", { itemId }),
@@ -45,7 +59,7 @@ async function createTauriApi(): Promise<AppApi> {
       invoke("create_note_from_artifact", { collectionId }),
     updateNote: (input) => invoke("update_note", { input }),
     exportNoteMarkdown: (noteId) => invoke("export_note_markdown", { noteId }),
-    exportCitation: (itemId) => invoke("export_citation", { itemId }),
+    exportCitation: (itemId, format) => invoke("export_citation", { itemId, format }),
   };
 }
 

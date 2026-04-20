@@ -11,6 +11,7 @@ export type Tag = {
 };
 
 export type ImportMode = "managed_copy" | "linked_file";
+export type CitationFormat = "apa7" | "bibtex" | "ris";
 
 export type ImportedItem = {
   id: number;
@@ -74,11 +75,13 @@ export type AppApi = {
   createTag: (input: { name: string }) => Promise<Tag>;
   assignTag: (input: { item_id: number; tag_id: number }) => Promise<void>;
   pickImportPaths: () => Promise<string[]>;
+  pickCitationPaths: () => Promise<string[]>;
   importFiles: (input: {
     collection_id: number;
     paths: string[];
     mode: ImportMode;
   }) => Promise<ImportedItem[]>;
+  importCitations: (input: { collection_id: number; paths: string[] }) => Promise<ImportedItem[]>;
   listItems: (collectionId?: number) => Promise<LibraryItem[]>;
   searchItems: (query: string) => Promise<LibraryItem[]>;
   getReaderView: (itemId: number) => Promise<ReaderView>;
@@ -99,5 +102,5 @@ export type AppApi = {
   createNoteFromArtifact: (collectionId: number) => Promise<ResearchNote>;
   updateNote: (input: { note_id: number; markdown: string }) => Promise<void>;
   exportNoteMarkdown: (noteId: number) => Promise<string>;
-  exportCitation: (itemId: number) => Promise<string>;
+  exportCitation: (itemId: number, format?: CitationFormat) => Promise<string>;
 };

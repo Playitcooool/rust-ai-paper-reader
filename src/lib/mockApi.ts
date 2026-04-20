@@ -3,6 +3,7 @@ import type {
   Annotation,
   AppApi,
   AITask,
+  CitationFormat,
   Collection,
   ImportMode,
   LibraryItem,
@@ -136,6 +137,11 @@ const importSeedPaths = [
   "/imports/method-bench.epub",
 ];
 
+const citationSeedPaths = [
+  "/imports/attention-is-all-you-need.bib",
+  "/imports/retrieval-augmented-generation.ris",
+];
+
 const titleFromPath = (path: string) =>
   path
     .split(/[\\/]/)
@@ -236,6 +242,10 @@ export const mockApi: AppApi = {
     return [...importSeedPaths];
   },
 
+  async pickCitationPaths() {
+    return [...citationSeedPaths];
+  },
+
   async importFiles(input) {
     return input.paths.map((path) => {
       const title = titleFromPath(path);
@@ -250,6 +260,29 @@ export const mockApi: AppApi = {
         tags: [],
         plainText: `${title} was imported into ${collectionName(input.collection_id)} and normalized for AI-assisted reading.`,
         normalizedHtml: normalizedHtmlFromTitle(title, input.mode),
+      });
+      return {
+        id: itemId,
+        title,
+        primary_attachment_id: attachmentId,
+      };
+    });
+  },
+
+  async importCitations(input) {
+    return input.paths.map((path) => {
+      const title = titleFromPath(path);
+      const itemId = state.nextId++;
+      const attachmentId = state.nextId++;
+      state.items.unshift({
+        id: itemId,
+        title,
+        collection_id: input.collection_id,
+        primary_attachment_id: attachmentId,
+        attachment_status: "citation_only",
+        tags: [],
+        plainText: `${title} was imported from a citation record and is ready for metadata-first triage.`,
+        normalizedHtml: `<article><h1>${title}</h1><p>Citation-only import.</p><p>Add a source file later or use this entry for bibliography management.</p></article>`,
       });
       return {
         id: itemId,
@@ -413,10 +446,16 @@ export const mockApi: AppApi = {
     return note.markdown;
   },
 
-  async exportCitation(itemId) {
+  async exportCitation(itemId, format: CitationFormat = "apa7") {
     const item = state.items.find((entry) => entry.id === itemId);
     if (!item) {
       throw new Error(`Unknown item ${itemId}`);
+    }
+    if (format === "bibtex") {
+      return `@article{paper-reader-${item.id},\n  title = {${item.title}},\n  journal = {Paper Reader Library},\n  year = {2026}\n}`;
+    }
+    if (format === "ris") {
+      return `TY  - JOUR\nTI  - ${item.title}\nJO  - Paper Reader Library\nPY  - 2026\nER  -`;
     }
     return `APA 7 · ${collectionName(item.collection_id)}. (${item.id}). ${item.title}. Paper Reader Library.`;
   },

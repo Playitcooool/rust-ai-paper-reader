@@ -146,7 +146,9 @@ fn generates_collection_review_reader_views_and_markdown_exports() {
         .expect("markdown exported");
     assert!(exported.contains("Reading Group"));
 
-    let citation = service.export_citation(item_id).expect("citation exported");
+    let citation = service
+        .export_citation(item_id, "apa7")
+        .expect("citation exported");
     assert!(citation.contains("APA 7"));
 }
 
@@ -188,4 +190,36 @@ fn lists_tags_scoped_to_the_current_collection() {
     assert_eq!(ml_tags.len(), 1);
     assert_eq!(ml_tags[0].name, "Core");
     assert_eq!(ml_tags[0].item_count, 1);
+}
+
+#[test]
+fn imports_citation_records_and_exports_structured_formats() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let collection = service
+        .create_collection("Bibliography", None)
+        .expect("collection created");
+    let bib = root.path().join("attention-is-all-you-need.bib");
+    let ris = root.path().join("retrieval-augmented-generation.ris");
+
+    std::fs::write(&bib, b"@article{attention}").unwrap();
+    std::fs::write(&ris, b"TY  - JOUR").unwrap();
+
+    let imported = service
+        .import_citations(collection.id, &[bib, ris])
+        .expect("citations imported");
+    assert_eq!(imported.len(), 2);
+
+    let items = service.list_items(Some(collection.id)).expect("items listed");
+    assert_eq!(items[0].attachment_status, "citation_only");
+
+    let bibtex = service
+        .export_citation(imported[0].id, "bibtex")
+        .expect("bibtex exported");
+    assert!(bibtex.contains("@article"));
+
+    let ris = service
+        .export_citation(imported[0].id, "ris")
+        .expect("ris exported");
+    assert!(ris.contains("TY  - JOUR"));
 }
