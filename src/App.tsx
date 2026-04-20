@@ -218,6 +218,19 @@ export default function App() {
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
 
+  function closePaperTab(itemId: number) {
+    setOpenPaperIds((current) => {
+      const remaining = current.filter((id) => id !== itemId);
+      setActivePaperId((currentActive) => {
+        if (currentActive !== itemId) {
+          return currentActive;
+        }
+        return remaining.length > 0 ? remaining[remaining.length - 1] : null;
+      });
+      return remaining;
+    });
+  }
+
   async function refreshItemsForCollection(collectionId: number, nextActiveId?: number) {
     const api = await getApi();
     const loadedItems =
@@ -577,16 +590,30 @@ export default function App() {
       <main className="reader-shell">
         <div className="reader-tabs" role="tablist" aria-label="Open papers">
           {openPapers.map((paper) => (
-            <button
+            <div
               key={paper.id}
-              aria-selected={paper.id === activePaper?.id}
-              className={`reader-tab ${paper.id === activePaper?.id ? "reader-tab-active" : ""}`}
-              role="tab"
-              type="button"
-              onClick={() => setActivePaperId(paper.id)}
+              className={`reader-tab-shell ${
+                paper.id === activePaper?.id ? "reader-tab-active" : ""
+              }`}
             >
-              {paper.title}
-            </button>
+              <button
+                aria-selected={paper.id === activePaper?.id}
+                className="reader-tab"
+                role="tab"
+                type="button"
+                onClick={() => setActivePaperId(paper.id)}
+              >
+                {paper.title}
+              </button>
+              <button
+                aria-label={`Close tab ${paper.title}`}
+                className="tab-close-button"
+                type="button"
+                onClick={() => closePaperTab(paper.id)}
+              >
+                x
+              </button>
+            </div>
           ))}
         </div>
 

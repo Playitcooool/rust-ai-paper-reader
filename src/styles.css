@@ -125,7 +125,8 @@ p {
 .nav-item,
 .paper-card,
 .action-card,
-.outline-link {
+.outline-link,
+.tab-close-button {
   border: none;
   border-radius: 14px;
   cursor: pointer;
@@ -154,7 +155,8 @@ p {
 .nav-item:hover,
 .paper-card:hover,
 .action-card:hover,
-.outline-link:hover {
+.outline-link:hover,
+.tab-close-button:hover {
   transform: translateY(-1px);
 }
 
@@ -262,6 +264,27 @@ p {
 .ai-tab {
   padding: 12px 14px;
   background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+}
+
+.reader-tab-shell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.reader-tab {
+  background: transparent;
+}
+
+.tab-close-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
   color: inherit;
 }
 

@@ -69,7 +69,7 @@ describe("App workspace", () => {
     await user.click(screen.getByRole("button", { name: "Import" }));
 
     expect(
-      await screen.findByRole("button", { name: /Fresh Import Paper/i }),
+      await screen.findByRole("tab", { name: "Fresh Import Paper" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
   });
@@ -94,7 +94,7 @@ describe("App workspace", () => {
 
     fireEvent.drop(dropZone, { dataTransfer });
 
-    expect(await screen.findByRole("button", { name: /Dragged Paper/i })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Dragged Paper" })).toBeInTheDocument();
     expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
   });
 
@@ -197,5 +197,25 @@ describe("App workspace", () => {
 
     expect(await screen.findByText(/Latest Citation/i)).toBeInTheDocument();
     expect(screen.getByText(/APA 7 · Machine Learning/i)).toBeInTheDocument();
+  });
+
+  it("closes reader tabs and keeps the workspace stable", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Graph Neural Survey/i }));
+    expect(await screen.findByRole("tab", { name: "Graph Neural Survey" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close tab Graph Neural Survey" }));
+    expect(screen.queryByRole("tab", { name: "Graph Neural Survey" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close tab Transformer Scaling Laws" }));
+    expect(screen.queryByRole("tab", { name: "Transformer Scaling Laws" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No paper selected", level: 2 })).toBeInTheDocument();
   });
 });
