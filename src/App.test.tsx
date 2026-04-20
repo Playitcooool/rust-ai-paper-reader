@@ -183,4 +183,19 @@ describe("App workspace", () => {
     expect(await screen.findByRole("button", { name: /Reading Queue/i })).toBeInTheDocument();
     expect(screen.getByText(/Created collection Reading Queue/i)).toBeInTheDocument();
   });
+
+  it("shows the latest formatted citation in the reader panel", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Copy Citation" }));
+
+    expect(await screen.findByText(/Latest Citation/i)).toBeInTheDocument();
+    expect(screen.getByText(/APA 7 · Machine Learning/i)).toBeInTheDocument();
+  });
 });

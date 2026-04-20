@@ -320,6 +320,14 @@ p {
   margin-bottom: 14px;
 }
 
+.citation-card {
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .note-editor {
   min-height: 160px;
   width: 100%;

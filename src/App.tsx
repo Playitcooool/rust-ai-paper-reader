@@ -73,6 +73,7 @@ export default function App() {
   const [noteDraft, setNoteDraft] = useState("");
   const [draggedFileCount, setDraggedFileCount] = useState(0);
   const [isImporting, setIsImporting] = useState(false);
+  const [latestCitation, setLatestCitation] = useState("");
   const [pendingCollectionStatus, setPendingCollectionStatus] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
 
@@ -340,7 +341,8 @@ export default function App() {
     if (!activePaper) return;
     const api = await getApi();
     const citation = await api.exportCitation(activePaper.id);
-    setStatusMessage(citation);
+    setLatestCitation(citation);
+    setStatusMessage(`Copied citation for ${activePaper.title}.`);
   }
 
   async function handleCreateResearchNote() {
@@ -630,6 +632,12 @@ export default function App() {
                 <span className="meta-count">Page {readerSections.indexOf(activeReaderSection) + 1}</span>
                 {activeAnchor ? <span className="meta-count">Active anchor: {activeAnchor}</span> : null}
               </div>
+              {latestCitation ? (
+                <div className="citation-card">
+                  <p className="eyebrow">Latest Citation</p>
+                  <p>{latestCitation}</p>
+                </div>
+              ) : null}
               <p className="document-lead">{excerptFromView(readerView)}</p>
               {annotations.map((annotation) => (
                 <button
