@@ -36,6 +36,15 @@ const readerSections: ReaderSection[] = ["Overview", "Methods", "Results", "Note
 const excerptFromView = (view: ReaderView | null) =>
   view?.plain_text.split(". ").slice(0, 2).join(". ") ?? "Open a paper to see its extracted text.";
 
+const taskPreview = (task: AITask) =>
+  (() => {
+    const lines = task.output_markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+    return lines[lines.length - 1]?.replace(/^- /, "") ?? "No preview available.";
+  })();
+
 const formatHint = (title: string) => {
   if (title.toLowerCase().endsWith("notes")) return "EPUB";
   if (title.toLowerCase().includes("survey")) return "DOCX";
@@ -1250,8 +1259,12 @@ export default function App() {
               <h3>Task History</h3>
               {collectionTaskRuns.length > 0 ? (
                 collectionTaskRuns.slice(0, 4).map((task) => (
-                  <div key={task.id} className="export-row">
-                    <span>{task.kind}</span>
+                  <div key={task.id} className="result-card">
+                    <div className="export-row">
+                      <span>{task.kind}</span>
+                      <span className="meta-count">{task.status}</span>
+                    </div>
+                    <p>{taskPreview(task)}</p>
                     <div className="export-row">
                       <button
                         aria-label={`Run Again ${task.kind}`}
@@ -1261,7 +1274,7 @@ export default function App() {
                       >
                         Run Again
                       </button>
-                      <span className="meta-count">{task.status}</span>
+                      <span className="meta-count">{task.id === collectionTaskRuns[0]?.id ? "Latest" : "History"}</span>
                     </div>
                   </div>
                 ))

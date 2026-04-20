@@ -674,7 +674,7 @@ impl LibraryService {
         })
     }
 
-    pub fn run_collection_review_draft(&self, collection_id: i64) -> Result<AITask> {
+    pub fn run_collection_task(&self, collection_id: i64, kind: &str) -> Result<AITask> {
         let mut conn = self.connect()?;
         let collection_name: String = conn.query_row(
             "SELECT name FROM collections WHERE id = ?1",
@@ -707,22 +707,37 @@ impl LibraryService {
             return Err(anyhow!("collection has no readable items"));
         }
 
-        let markdown = format!(
-            "# Review Draft: {collection_name}\n\n## Evidence Map\n{}\n\n## Narrative\nThis draft groups the imported papers into a concise literature review scaffold ready for editing.",
-            sections.join("\n")
-        );
+        let evidence_map = sections.join("\n");
+        let markdown = match kind {
+            "collection.bulk_summarize" => format!(
+                "# Bulk Summary: {collection_name}\n\n## Paper Capsules\n{evidence_map}\n\n## Synthesis\nBulk summary across {} visible papers.",
+                sections.len()
+            ),
+            "collection.theme_map" => format!(
+                "# Theme Map: {collection_name}\n\n## Themes\n{evidence_map}\n\n## Theme Clusters\nTheme clusters across {} visible papers.",
+                sections.len()
+            ),
+            "collection.compare_methods" => format!(
+                "# Method Comparison: {collection_name}\n\n## Comparison Matrix\n{evidence_map}\n\n## Method Notes\nMethod comparison across {} visible papers.",
+                sections.len()
+            ),
+            "collection.review_draft" => format!(
+                "# Review Draft: {collection_name}\n\n## Evidence Map\n{evidence_map}\n\n## Narrative\nThis draft groups the imported papers into a concise literature review scaffold ready for editing."
+            ),
+            _ => return Err(anyhow!("unsupported collection task kind")),
+        };
 
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO ai_tasks(collection_id, kind, status, output_markdown)
-             VALUES (?1, 'collection.review_draft', 'succeeded', ?2)",
-            params![collection_id, markdown],
+             VALUES (?1, ?2, 'succeeded', ?3)",
+            params![collection_id, kind, markdown],
         )?;
         let task_id = tx.last_insert_rowid();
         tx.execute(
             "INSERT INTO ai_artifacts(task_id, collection_id, kind, markdown)
-             VALUES (?1, ?2, 'collection.review_draft', ?3)",
-            params![task_id, collection_id, markdown],
+             VALUES (?1, ?2, ?3, ?4)",
+            params![task_id, collection_id, kind, markdown],
         )?;
         tx.commit()?;
 
@@ -730,10 +745,14 @@ impl LibraryService {
             id: task_id,
             item_id: None,
             collection_id: Some(collection_id),
-            kind: "collection.review_draft".into(),
+            kind: kind.into(),
             status: "succeeded".into(),
             output_markdown: markdown,
         })
+    }
+
+    pub fn run_collection_review_draft(&self, collection_id: i64) -> Result<AITask> {
+        self.run_collection_task(collection_id, "collection.review_draft")
     }
 
     pub fn list_notes(&self, collection_id: Option<i64>) -> Result<Vec<ResearchNote>> {

@@ -310,7 +310,7 @@ fn run_collection_task(
         | "collection.bulk_summarize"
         | "collection.theme_map"
         | "collection.compare_methods" => service(&state)?
-            .run_collection_review_draft(input.collection_id)
+            .run_collection_task(input.collection_id, &input.kind)
             .map_err(|error| error.to_string()),
         _ => Err("unsupported collection task".into()),
     }

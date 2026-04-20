@@ -238,6 +238,25 @@ const buildLibraryItem = (item: MockItemDetails): LibraryItem => ({
   tags: tagsForItem(item.id),
 });
 
+const collectionTaskOutput = (collectionId: number, kind: string) => {
+  const items = state.items.filter((item) => item.collection_id === collectionId);
+  const evidenceMap = items
+    .map((item) => `- **${item.title}**: ${item.plainText.split(".").shift()?.trim() ?? item.title}`)
+    .join("\n");
+
+  switch (kind) {
+    case "collection.bulk_summarize":
+      return `# Bulk Summary: ${collectionName(collectionId)}\n\n## Paper Capsules\n${evidenceMap}\n\n## Synthesis\nBulk summary across ${items.length} visible papers.`;
+    case "collection.theme_map":
+      return `# Theme Map: ${collectionName(collectionId)}\n\n## Themes\n${evidenceMap}\n\n## Theme Clusters\nTheme clusters across ${items.length} visible papers.`;
+    case "collection.compare_methods":
+      return `# Method Comparison: ${collectionName(collectionId)}\n\n## Comparison Matrix\n${evidenceMap}\n\n## Method Notes\nMethod comparison across ${items.length} visible papers.`;
+    case "collection.review_draft":
+    default:
+      return `# Review Draft: ${collectionName(collectionId)}\n\n## Evidence Map\n${evidenceMap}\n\n## Narrative\nThis draft groups the imported papers into a concise literature review scaffold ready for editing.`;
+  }
+};
+
 export function resetMockApi() {
   state = initialState();
 }
@@ -469,10 +488,7 @@ export const mockApi: AppApi = {
   },
 
   async runCollectionTask(input) {
-    const items = state.items.filter((item) => item.collection_id === input.collection_id);
-    const output = `# ${collectionName(input.collection_id)} Review Draft\n\n${items
-      .map((item) => `- ${item.title}`)
-      .join("\n")}`;
+    const output = collectionTaskOutput(input.collection_id, input.kind);
     const task = {
       id: state.nextId++,
       item_id: null,

@@ -55,7 +55,7 @@ describe("App workspace", () => {
     await user.click(screen.getByRole("button", { name: "Generate Review Draft" }));
 
     expect(
-      await screen.findByText(/# Machine Learning Review Draft/i),
+      await screen.findByText(/# Review Draft: Machine Learning/i),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export Markdown" })).toBeInTheDocument();
   });
@@ -209,6 +209,29 @@ describe("App workspace", () => {
     expect(await screen.findByText(/Latest Run/i)).toBeInTheDocument();
     expect(screen.getAllByText(/collection\.theme_map/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Machine Learning/i).length).toBeGreaterThan(0);
+  });
+
+  it("renders task-specific collection outputs and history previews", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.click(screen.getByRole("button", { name: "Theme Map" }));
+
+    expect(await screen.findByText(/# Theme Map: Machine Learning/i)).toBeInTheDocument();
+    expect(screen.getByText(/## Themes/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Compare Methods" }));
+
+    expect(await screen.findByText(/# Method Comparison: Machine Learning/i)).toBeInTheDocument();
+    expect(screen.getByText(/## Comparison Matrix/i)).toBeInTheDocument();
+    expect(screen.getByText(/Theme clusters across 2 visible papers\./i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Method comparison across 2 visible papers\./i).length).toBeGreaterThan(0);
   });
 
   it("reruns a collection task from task history", async () => {

@@ -153,6 +153,49 @@ fn generates_collection_review_reader_views_and_markdown_exports() {
 }
 
 #[test]
+fn generates_task_specific_collection_outputs() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let collection = service
+        .create_collection("Reading Group", None)
+        .expect("collection created");
+    let pdf = root.path().join("group-paper.pdf");
+    let docx = root.path().join("survey-notes.docx");
+    std::fs::write(
+        &pdf,
+        b"Scaling laws show predictable returns as compute, data, and parameters grow in sync.",
+    )
+    .unwrap();
+    std::fs::write(
+        &docx,
+        b"Graph neural networks compare message passing, pooling, and graph-level supervision.",
+    )
+    .unwrap();
+
+    service
+        .import_files(collection.id, &[pdf, docx], ImportMode::ManagedCopy)
+        .expect("import succeeds");
+
+    let theme_map = service
+        .run_collection_task(collection.id, "collection.theme_map")
+        .expect("theme map succeeds");
+    assert_eq!(theme_map.kind, "collection.theme_map");
+    assert!(theme_map.output_markdown.contains("# Theme Map: Reading Group"));
+    assert!(theme_map.output_markdown.contains("## Themes"));
+
+    let compare_methods = service
+        .run_collection_task(collection.id, "collection.compare_methods")
+        .expect("comparison succeeds");
+    assert_eq!(compare_methods.kind, "collection.compare_methods");
+    assert!(
+        compare_methods
+            .output_markdown
+            .contains("# Method Comparison: Reading Group")
+    );
+    assert!(compare_methods.output_markdown.contains("## Comparison Matrix"));
+}
+
+#[test]
 fn lists_tags_scoped_to_the_current_collection() {
     let root = tempdir().unwrap();
     let service = LibraryService::new(root.path()).expect("service initializes");
