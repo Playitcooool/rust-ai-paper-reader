@@ -1,0 +1,465 @@
+import { useEffect, useMemo, useState } from "react";
+
+import { getApi } from "./lib/api";
+import type {
+  AIArtifact,
+  Annotation,
+  Collection,
+  LibraryItem,
+  ReaderView,
+  ResearchNote,
+} from "./lib/contracts";
+
+type AiPanelMode = "paper" | "collection";
+
+const itemActions = [
+  { label: "Summarize document", kind: "item.summarize" },
+  { label: "Translate selection", kind: "item.translate" },
+  { label: "Explain terminology", kind: "item.explain_term" },
+  { label: "Ask about this paper", kind: "item.ask" },
+];
+
+const collectionActions = [
+  { label: "Bulk Summaries", kind: "collection.bulk_summarize" },
+  { label: "Theme Map", kind: "collection.theme_map" },
+  { label: "Compare Methods", kind: "collection.compare_methods" },
+  { label: "Generate Review Draft", kind: "collection.review_draft" },
+];
+
+const excerptFromView = (view: ReaderView | null) =>
+  view?.plain_text.split(". ").slice(0, 2).join(". ") ?? "Open a paper to see its extracted text.";
+
+const formatHint = (title: string) => {
+  if (title.toLowerCase().endsWith("notes")) return "EPUB";
+  if (title.toLowerCase().includes("survey")) return "DOCX";
+  return "PDF";
+};
+
+export default function App() {
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [items, setItems] = useState<LibraryItem[]>([]);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
+  const [openPaperIds, setOpenPaperIds] = useState<number[]>([]);
+  const [activePaperId, setActivePaperId] = useState<number | null>(null);
+  const [aiPanelMode, setAiPanelMode] = useState<AiPanelMode>("paper");
+  const [search, setSearch] = useState("");
+  const [readerView, setReaderView] = useState<ReaderView | null>(null);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [paperArtifact, setPaperArtifact] = useState<AIArtifact | null>(null);
+  const [collectionArtifact, setCollectionArtifact] = useState<AIArtifact | null>(null);
+  const [notes, setNotes] = useState<ResearchNote[]>([]);
+  const [statusMessage, setStatusMessage] = useState("Loading library...");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCollections() {
+      const api = await getApi();
+      const loadedCollections = await api.listCollections();
+      if (cancelled) return;
+
+      setCollections(loadedCollections);
+      const firstCollectionId = loadedCollections[0]?.id ?? null;
+      setSelectedCollectionId((current) => current ?? firstCollectionId);
+      setStatusMessage(
+        loadedCollections.length > 0
+          ? `Loaded ${loadedCollections.length} collections.`
+          : "Create a collection to begin building your library.",
+      );
+    }
+
+    void loadCollections();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (selectedCollectionId === null) return;
+    const collectionId = selectedCollectionId;
+    let cancelled = false;
+
+    async function loadItems() {
+      const api = await getApi();
+      const loadedItems =
+        search.trim().length > 0
+          ? await api.searchItems(search.trim())
+          : await api.listItems(collectionId);
+      if (cancelled) return;
+
+      const filteredItems =
+        search.trim().length > 0
+          ? loadedItems.filter((item) => item.collection_id === collectionId)
+          : loadedItems;
+      setItems(filteredItems);
+      const nextActiveId = filteredItems[0]?.id ?? null;
+      setActivePaperId((current) =>
+        current && filteredItems.some((item) => item.id === current) ? current : nextActiveId,
+      );
+      setOpenPaperIds((current) => {
+        const aliveIds = current.filter((id) => filteredItems.some((item) => item.id === id));
+        if (nextActiveId && !aliveIds.includes(nextActiveId)) {
+          return [...aliveIds, nextActiveId];
+        }
+        return aliveIds;
+      });
+      setStatusMessage(
+        filteredItems.length > 0
+          ? `${filteredItems.length} papers ready in the current collection.`
+          : "No papers match this view yet.",
+      );
+    }
+
+    void loadItems();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [search, selectedCollectionId]);
+
+  useEffect(() => {
+    if (activePaperId === null) return;
+    const itemId = activePaperId;
+    let cancelled = false;
+
+    async function loadReaderContext() {
+      const api = await getApi();
+      const [view, itemAnnotations, artifact] = await Promise.all([
+        api.getReaderView(itemId),
+        api.listAnnotations(itemId),
+        api.getArtifact({ item_id: itemId }),
+      ]);
+      if (cancelled) return;
+
+      setReaderView(view);
+      setAnnotations(itemAnnotations);
+      setPaperArtifact(artifact);
+      setOpenPaperIds((current) =>
+        current.includes(itemId) ? current : [...current, itemId],
+      );
+    }
+
+    void loadReaderContext();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activePaperId]);
+
+  useEffect(() => {
+    if (selectedCollectionId === null) return;
+    const collectionId = selectedCollectionId;
+    let cancelled = false;
+
+    async function loadCollectionOutputs() {
+      const api = await getApi();
+      const [artifact, collectionNotes] = await Promise.all([
+        api.getArtifact({ collection_id: collectionId }),
+        api.listNotes(collectionId),
+      ]);
+      if (cancelled) return;
+      setCollectionArtifact(artifact);
+      setNotes(collectionNotes);
+    }
+
+    void loadCollectionOutputs();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCollectionId]);
+
+  const openPapers = useMemo(
+    () =>
+      openPaperIds
+        .map((id) => items.find((item) => item.id === id))
+        .filter((item): item is LibraryItem => Boolean(item)),
+    [items, openPaperIds],
+  );
+
+  const activePaper = items.find((item) => item.id === activePaperId) ?? openPapers[0] ?? null;
+  const activeCollection =
+    collections.find((collection) => collection.id === selectedCollectionId) ?? null;
+
+  async function handleItemTask(kind: string) {
+    if (!activePaper) return;
+    const api = await getApi();
+    await api.runItemTask({ item_id: activePaper.id, kind });
+    const artifact = await api.getArtifact({ item_id: activePaper.id });
+    setPaperArtifact(artifact);
+    setStatusMessage(`Completed ${kind} for ${activePaper.title}.`);
+  }
+
+  async function handleCollectionTask(kind: string) {
+    if (!activeCollection) return;
+    const api = await getApi();
+    await api.runCollectionTask({ collection_id: activeCollection.id, kind });
+    const [artifact, collectionNotes] = await Promise.all([
+      api.getArtifact({ collection_id: activeCollection.id }),
+      api.listNotes(activeCollection.id),
+    ]);
+    setCollectionArtifact(artifact);
+    setNotes(collectionNotes);
+    setStatusMessage(`Completed ${kind} for ${activeCollection.name}.`);
+  }
+
+  async function handleCreateAnnotation() {
+    if (!activePaper) return;
+    const api = await getApi();
+    const annotation = await api.createAnnotation({
+      item_id: activePaper.id,
+      anchor: `anchor-${annotations.length + 1}`,
+      kind: "note",
+      body: "Flag this passage for the review draft.",
+    });
+    setAnnotations((current) => [...current, annotation]);
+    setStatusMessage(`Added note to ${activePaper.title}.`);
+  }
+
+  async function handleExportMarkdown() {
+    const note = notes[0];
+    if (!note) return;
+    const api = await getApi();
+    const markdown = await api.exportNoteMarkdown(note.id);
+    setStatusMessage(`Exported Markdown (${markdown.length} chars).`);
+  }
+
+  async function handleExportCitation() {
+    if (!activePaper) return;
+    const api = await getApi();
+    const citation = await api.exportCitation(activePaper.id);
+    setStatusMessage(citation);
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="panel-header">
+          <p className="eyebrow">Workspace</p>
+          <h1>Collections</h1>
+        </div>
+
+        <div className="toolbar-row">
+          <input
+            aria-label="Search papers"
+            className="search-input"
+            placeholder="Search papers, authors, years..."
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <button className="primary-button" type="button" onClick={() => setStatusMessage("Use the desktop import flow next.")}>
+            Import
+          </button>
+        </div>
+
+        <section className="section-block">
+          <div className="section-title-row">
+            <h2>Collections</h2>
+            <span className="status-pill">Synced</span>
+          </div>
+          <div className="nav-list">
+            {collections.map((collection) => {
+              const itemCount = items.filter((item) => item.collection_id === collection.id).length;
+              return (
+              <button
+                key={collection.id}
+                className={`nav-item ${
+                  collection.id === selectedCollectionId ? "nav-item-active" : ""
+                }`}
+                type="button"
+                onClick={() => setSelectedCollectionId(collection.id)}
+              >
+                <span>{collection.name}</span>
+                <span className="meta-count">{itemCount}</span>
+              </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="section-block">
+          <div className="section-title-row">
+            <h2>Current Collection</h2>
+            <span className="meta-count">{items.length} items</span>
+          </div>
+          <div className="paper-list">
+            {items.map((paper) => (
+              <button
+                key={paper.id}
+                className={`paper-card ${paper.id === activePaper?.id ? "paper-card-active" : ""}`}
+                type="button"
+                onClick={() => {
+                  setActivePaperId(paper.id);
+                  setOpenPaperIds((current) =>
+                    current.includes(paper.id) ? current : [...current, paper.id],
+                  );
+                }}
+              >
+                <strong>{paper.title}</strong>
+                <span>Collection #{paper.collection_id} · {paper.attachment_status}</span>
+                <small>{formatHint(paper.title)}</small>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="section-block footer-block">
+          <h2>Import Status</h2>
+          <p>{statusMessage}</p>
+        </section>
+      </aside>
+
+      <main className="reader-shell">
+        <div className="reader-tabs" role="tablist" aria-label="Open papers">
+          {openPapers.map((paper) => (
+            <button
+              key={paper.id}
+              aria-selected={paper.id === activePaper?.id}
+              className={`reader-tab ${paper.id === activePaper?.id ? "reader-tab-active" : ""}`}
+              role="tab"
+              type="button"
+              onClick={() => setActivePaperId(paper.id)}
+            >
+              {paper.title}
+            </button>
+          ))}
+        </div>
+
+        <section className="reader-panel">
+          <div className="reader-meta-row">
+            <div>
+              <p className="eyebrow">Reader</p>
+              <h2>{activePaper?.title ?? "No paper selected"}</h2>
+              <p className="secondary-copy">
+                {activeCollection?.name ?? "No collection"} · {activePaper?.attachment_status ?? "idle"} · {activePaper ? formatHint(activePaper.title) : "Document"}
+              </p>
+            </div>
+            <div className="reader-actions">
+              <button className="ghost-button" type="button" onClick={handleCreateAnnotation}>
+                Highlight
+              </button>
+              <button className="ghost-button" type="button" onClick={handleExportCitation}>
+                Copy Citation
+              </button>
+            </div>
+          </div>
+
+          <div className="reader-surface">
+            <div className="reader-outline">
+              <span>Overview</span>
+              <span>Methods</span>
+              <span>Results</span>
+              <span>Notes</span>
+            </div>
+            <article className="reader-document">
+              <p className="document-lead">{excerptFromView(readerView)}</p>
+              {annotations.map((annotation) => (
+                <div key={annotation.id} className="annotation-chip">
+                  {annotation.anchor}: {annotation.body}
+                </div>
+              ))}
+              <div
+                className="reader-html"
+                dangerouslySetInnerHTML={{
+                  __html:
+                    readerView?.normalized_html ??
+                    "<article><p>No reader view available yet.</p></article>",
+                }}
+              />
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <aside className="ai-shell">
+        <div className="panel-header">
+          <p className="eyebrow">AI Workspace</p>
+          <h2>Research Copilot</h2>
+        </div>
+
+        <div className="ai-tabs" role="tablist" aria-label="AI context tabs">
+          <button
+            aria-selected={aiPanelMode === "paper"}
+            className={`ai-tab ${aiPanelMode === "paper" ? "ai-tab-active" : ""}`}
+            role="tab"
+            type="button"
+            onClick={() => setAiPanelMode("paper")}
+          >
+            Current Paper
+          </button>
+          <button
+            aria-selected={aiPanelMode === "collection"}
+            className={`ai-tab ${aiPanelMode === "collection" ? "ai-tab-active" : ""}`}
+            role="tab"
+            type="button"
+            onClick={() => setAiPanelMode("collection")}
+          >
+            Current Collection
+          </button>
+        </div>
+
+        {aiPanelMode === "paper" ? (
+          <section className="ai-card-stack">
+            <div className="context-card">
+              <p className="eyebrow">Focused Context</p>
+              <h3>{activePaper?.title ?? "No active paper"}</h3>
+              <p>{excerptFromView(readerView)}</p>
+            </div>
+            <div className="action-grid">
+              {itemActions.map((action) => (
+                <button
+                  key={action.kind}
+                  className="action-card"
+                  type="button"
+                  onClick={() => void handleItemTask(action.kind)}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+            <div className="result-card">
+              <h3>Cached Summary</h3>
+              <p>{paperArtifact?.markdown ?? "Run an AI paper task to cache the first artifact."}</p>
+            </div>
+          </section>
+        ) : (
+          <section className="ai-card-stack">
+            <div className="context-card">
+              <p className="eyebrow">Collection Scope</p>
+              <h3>{activeCollection?.name ?? "No active collection"}</h3>
+              <p>
+                Aggregate the papers in this collection into structured comparisons, theme maps,
+                and an editable review note.
+              </p>
+            </div>
+            <div className="action-grid">
+              {collectionActions.map((task) => (
+                <button
+                  key={task.kind}
+                  className="action-card"
+                  type="button"
+                  onClick={() => void handleCollectionTask(task.kind)}
+                >
+                  {task.label}
+                </button>
+              ))}
+            </div>
+            <div className="result-card">
+              <h3>Draft Status</h3>
+              <p>{collectionArtifact?.markdown ?? "No collection draft yet."}</p>
+              {notes[0] ? (
+                <div className="export-row">
+                  <button className="ghost-button" type="button" onClick={handleExportMarkdown}>
+                    Export Markdown
+                  </button>
+                  <span className="meta-count">{notes[0].title}</span>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        )}
+      </aside>
+    </div>
+  );
+}

@@ -1,0 +1,79 @@
+export type Collection = {
+  id: number;
+  name: string;
+  parent_id: number | null;
+};
+
+export type LibraryItem = {
+  id: number;
+  title: string;
+  collection_id: number;
+  primary_attachment_id: number;
+  attachment_status: string;
+};
+
+export type ReaderView = {
+  item_id: number;
+  title: string;
+  normalized_html: string;
+  plain_text: string;
+};
+
+export type Annotation = {
+  id: number;
+  item_id: number;
+  anchor: string;
+  kind: string;
+  body: string;
+};
+
+export type AITask = {
+  id: number;
+  item_id: number | null;
+  collection_id: number | null;
+  kind: string;
+  status: string;
+  output_markdown: string;
+};
+
+export type AIArtifact = {
+  id: number;
+  task_id: number;
+  item_id: number | null;
+  collection_id: number | null;
+  kind: string;
+  markdown: string;
+};
+
+export type ResearchNote = {
+  id: number;
+  collection_id: number;
+  title: string;
+  markdown: string;
+};
+
+export type AppApi = {
+  listCollections: () => Promise<Collection[]>;
+  createCollection: (input: { name: string; parent_id?: number | null }) => Promise<Collection>;
+  listItems: (collectionId?: number) => Promise<LibraryItem[]>;
+  searchItems: (query: string) => Promise<LibraryItem[]>;
+  getReaderView: (itemId: number) => Promise<ReaderView>;
+  listAnnotations: (itemId: number) => Promise<Annotation[]>;
+  createAnnotation: (input: {
+    item_id: number;
+    anchor: string;
+    kind: string;
+    body: string;
+  }) => Promise<Annotation>;
+  runItemTask: (input: { item_id: number; kind: string }) => Promise<AITask>;
+  runCollectionTask: (input: { collection_id: number; kind: string }) => Promise<AITask>;
+  getArtifact: (input: {
+    item_id?: number;
+    collection_id?: number;
+  }) => Promise<AIArtifact | null>;
+  listNotes: (collectionId?: number) => Promise<ResearchNote[]>;
+  createNoteFromArtifact: (collectionId: number) => Promise<ResearchNote>;
+  exportNoteMarkdown: (noteId: number) => Promise<string>;
+  exportCitation: (itemId: number) => Promise<string>;
+};
+

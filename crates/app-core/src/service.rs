@@ -1,0 +1,814 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{anyhow, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ImportMode {
+    ManagedCopy,
+    LinkedFile,
+}
+
+impl ImportMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ManagedCopy => "managed_copy",
+            Self::LinkedFile => "linked_file",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedItem {
+    pub id: i64,
+    pub title: String,
+    pub primary_attachment_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryItem {
+    pub id: i64,
+    pub title: String,
+    pub collection_id: i64,
+    pub primary_attachment_id: i64,
+    pub attachment_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Annotation {
+    pub id: i64,
+    pub item_id: i64,
+    pub anchor: String,
+    pub kind: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AITask {
+    pub id: i64,
+    pub item_id: Option<i64>,
+    pub collection_id: Option<i64>,
+    pub kind: String,
+    pub status: String,
+    pub output_markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AIArtifact {
+    pub id: i64,
+    pub task_id: i64,
+    pub item_id: Option<i64>,
+    pub collection_id: Option<i64>,
+    pub kind: String,
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchNote {
+    pub id: i64,
+    pub collection_id: i64,
+    pub title: String,
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaderView {
+    pub item_id: i64,
+    pub title: String,
+    pub normalized_html: String,
+    pub plain_text: String,
+}
+
+pub struct LibraryService {
+    db_path: PathBuf,
+    files_dir: PathBuf,
+}
+
+impl LibraryService {
+    pub fn new(root: &Path) -> Result<Self> {
+        fs::create_dir_all(root)?;
+        let files_dir = root.join("library-files");
+        fs::create_dir_all(&files_dir)?;
+        let db_path = root.join("library.db");
+        let service = Self { db_path, files_dir };
+        service.migrate()?;
+        Ok(service)
+    }
+
+    pub fn create_collection(&self, name: &str, parent_id: Option<i64>) -> Result<Collection> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO collections(name, parent_id) VALUES (?1, ?2)",
+            params![name, parent_id],
+        )?;
+        Ok(Collection {
+            id: conn.last_insert_rowid(),
+            name: name.to_owned(),
+            parent_id,
+        })
+    }
+
+    pub fn list_collections(&self) -> Result<Vec<Collection>> {
+        let conn = self.connect()?;
+        let mut statement =
+            conn.prepare("SELECT id, name, parent_id FROM collections ORDER BY name ASC")?;
+        let rows = statement.query_map([], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                parent_id: row.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn import_files(
+        &self,
+        collection_id: i64,
+        paths: &[PathBuf],
+        mode: ImportMode,
+    ) -> Result<Vec<ImportedItem>> {
+        let mut imported = Vec::new();
+        let mut conn = self.connect()?;
+        for path in paths {
+            let source_bytes =
+                fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+            let title = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("untitled")
+                .to_owned();
+            let fingerprint = digest_bytes(&source_bytes);
+            let existing = conn
+                .query_row(
+                    "SELECT item_id FROM attachments WHERE fingerprint = ?1 LIMIT 1",
+                    params![fingerprint],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            if existing.is_some() {
+                continue;
+            }
+
+            let storage_path = match mode {
+                ImportMode::ManagedCopy => {
+                    let ext = path.extension().and_then(|value| value.to_str()).unwrap_or("bin");
+                    let target = self.files_dir.join(format!("{fingerprint}.{ext}"));
+                    fs::write(&target, &source_bytes)?;
+                    target
+                }
+                ImportMode::LinkedFile => path.clone(),
+            };
+            let attachment_status = if storage_path.exists() {
+                "ready"
+            } else {
+                "missing"
+            };
+            let plain_text = normalize_bytes(&source_bytes);
+            let normalized_html = wrap_as_article(&title, &plain_text);
+
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO items(collection_id, title, attachment_status) VALUES (?1, ?2, ?3)",
+                params![collection_id, title, attachment_status],
+            )?;
+            let item_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO attachments(item_id, path, import_mode, status, fingerprint, is_primary)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+                params![
+                    item_id,
+                    storage_path.to_string_lossy().to_string(),
+                    mode.as_str(),
+                    attachment_status,
+                    fingerprint
+                ],
+            )?;
+            let attachment_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO extracted_content(item_id, plain_text, normalized_html)
+                 VALUES (?1, ?2, ?3)",
+                params![item_id, plain_text, normalized_html],
+            )?;
+            tx.execute(
+                "INSERT INTO search_index(item_id, title, plain_text) VALUES (?1, ?2, ?3)",
+                params![item_id, title, plain_text],
+            )?;
+            tx.commit()?;
+
+            imported.push(ImportedItem {
+                id: item_id,
+                title,
+                primary_attachment_id: attachment_id,
+            });
+        }
+
+        Ok(imported)
+    }
+
+    pub fn list_items(&self, collection_id: Option<i64>) -> Result<Vec<LibraryItem>> {
+        let conn = self.connect()?;
+        let mut query = "
+            SELECT i.id, i.title, i.collection_id, a.id, a.status
+            FROM items i
+            JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
+        "
+        .to_owned();
+
+        if collection_id.is_some() {
+            query.push_str(" WHERE i.collection_id = ?1");
+        }
+        query.push_str(" ORDER BY i.id DESC");
+
+        let mut statement = conn.prepare(&query)?;
+        let rows = if let Some(collection_id) = collection_id {
+            statement.query_map(params![collection_id], map_library_item)?
+        } else {
+            statement.query_map([], map_library_item)?
+        };
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn search_items(&self, query: &str) -> Result<Vec<LibraryItem>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare(
+            "
+            SELECT i.id, i.title, i.collection_id, a.id, a.status
+            FROM search_index s
+            JOIN items i ON i.id = s.item_id
+            JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
+            WHERE s.search_index MATCH ?1
+            ORDER BY rank
+            ",
+        )?;
+        let rows = statement.query_map([query], map_library_item)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn create_annotation(
+        &self,
+        item_id: i64,
+        anchor: String,
+        kind: String,
+        body: String,
+    ) -> Result<Annotation> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO annotations(item_id, anchor, kind, body) VALUES (?1, ?2, ?3, ?4)",
+            params![item_id, anchor, kind, body],
+        )?;
+
+        Ok(Annotation {
+            id: conn.last_insert_rowid(),
+            item_id,
+            anchor,
+            kind,
+            body,
+        })
+    }
+
+    pub fn list_annotations(&self, item_id: i64) -> Result<Vec<Annotation>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare(
+            "SELECT id, item_id, anchor, kind, body FROM annotations WHERE item_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map([item_id], |row| {
+            Ok(Annotation {
+                id: row.get(0)?,
+                item_id: row.get(1)?,
+                anchor: row.get(2)?,
+                kind: row.get(3)?,
+                body: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn get_reader_view(&self, item_id: i64) -> Result<ReaderView> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "
+            SELECT i.id, i.title, e.normalized_html, e.plain_text
+            FROM items i
+            JOIN extracted_content e ON e.item_id = i.id
+            WHERE i.id = ?1
+            ",
+            [item_id],
+            |row| {
+                Ok(ReaderView {
+                    item_id: row.get(0)?,
+                    title: row.get(1)?,
+                    normalized_html: row.get(2)?,
+                    plain_text: row.get(3)?,
+                })
+            },
+        )
+        .map_err(Into::into)
+    }
+
+    pub fn run_item_summary(&self, item_id: i64) -> Result<AITask> {
+        let mut conn = self.connect()?;
+        let (collection_id, title, excerpt) = conn.query_row(
+            "
+            SELECT i.collection_id, i.title, e.plain_text
+            FROM items i
+            JOIN extracted_content e ON e.item_id = i.id
+            WHERE i.id = ?1
+            ",
+            [item_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        let collection_name: String = conn.query_row(
+            "SELECT name FROM collections WHERE id = ?1",
+            [collection_id],
+            |row| row.get(0),
+        )?;
+        let summary = format!(
+            "# Summary: {title}\n\nCollection: {collection_name}\n\n{}",
+            excerpt.lines().next().unwrap_or("No content extracted.")
+        );
+
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO ai_tasks(item_id, collection_id, kind, status, output_markdown)
+             VALUES (?1, ?2, 'item.summarize', 'succeeded', ?3)",
+            params![item_id, collection_id, summary],
+        )?;
+        let task_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO ai_artifacts(task_id, item_id, collection_id, kind, markdown)
+             VALUES (?1, ?2, ?3, 'item.summarize', ?4)",
+            params![task_id, item_id, collection_id, summary],
+        )?;
+        tx.commit()?;
+
+        Ok(AITask {
+            id: task_id,
+            item_id: Some(item_id),
+            collection_id: Some(collection_id),
+            kind: "item.summarize".into(),
+            status: "succeeded".into(),
+            output_markdown: summary,
+        })
+    }
+
+    pub fn create_note_from_latest_collection_artifact(
+        &self,
+        collection_id: i64,
+    ) -> Result<ResearchNote> {
+        let conn = self.connect()?;
+        let collection_name: String = conn.query_row(
+            "SELECT name FROM collections WHERE id = ?1",
+            [collection_id],
+            |row| row.get(0),
+        )?;
+
+        let mut statement = conn.prepare(
+            "
+            SELECT i.title, a.markdown
+            FROM ai_artifacts a
+            JOIN items i ON i.id = a.item_id
+            WHERE a.collection_id = ?1 AND a.kind = 'item.summarize'
+            ORDER BY a.id DESC
+            ",
+        )?;
+        let artifact_rows = statement.query_map([collection_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut sections = Vec::new();
+        for artifact in artifact_rows {
+            let (title, markdown) = artifact?;
+            sections.push(format!("## {title}\n\n{markdown}"));
+        }
+        if sections.is_empty() {
+            return Err(anyhow!("no collection artifacts available"));
+        }
+
+        let markdown = format!(
+            "# Research Note: {collection_name}\n\n{}",
+            sections.join("\n\n")
+        );
+        conn.execute(
+            "INSERT INTO research_notes(collection_id, title, markdown) VALUES (?1, ?2, ?3)",
+            params![collection_id, format!("{collection_name} Review"), markdown],
+        )?;
+
+        Ok(ResearchNote {
+            id: conn.last_insert_rowid(),
+            collection_id,
+            title: format!("{collection_name} Review"),
+            markdown,
+        })
+    }
+
+    pub fn run_collection_review_draft(&self, collection_id: i64) -> Result<AITask> {
+        let mut conn = self.connect()?;
+        let collection_name: String = conn.query_row(
+            "SELECT name FROM collections WHERE id = ?1",
+            [collection_id],
+            |row| row.get(0),
+        )?;
+        let sections = {
+            let mut statement = conn.prepare(
+                "
+                SELECT i.title, e.plain_text
+                FROM items i
+                JOIN extracted_content e ON e.item_id = i.id
+                WHERE i.collection_id = ?1
+                ORDER BY i.id ASC
+                ",
+            )?;
+            let rows = statement.query_map([collection_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+
+            let mut sections = Vec::new();
+            for row in rows {
+                let (title, plain_text) = row?;
+                let key_sentence = plain_text.lines().next().unwrap_or("No content extracted.");
+                sections.push(format!("- **{title}**: {key_sentence}"));
+            }
+            sections
+        };
+        if sections.is_empty() {
+            return Err(anyhow!("collection has no readable items"));
+        }
+
+        let markdown = format!(
+            "# Review Draft: {collection_name}\n\n## Evidence Map\n{}\n\n## Narrative\nThis draft groups the imported papers into a concise literature review scaffold ready for editing.",
+            sections.join("\n")
+        );
+
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO ai_tasks(collection_id, kind, status, output_markdown)
+             VALUES (?1, 'collection.review_draft', 'succeeded', ?2)",
+            params![collection_id, markdown],
+        )?;
+        let task_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO ai_artifacts(task_id, collection_id, kind, markdown)
+             VALUES (?1, ?2, 'collection.review_draft', ?3)",
+            params![task_id, collection_id, markdown],
+        )?;
+        tx.commit()?;
+
+        Ok(AITask {
+            id: task_id,
+            item_id: None,
+            collection_id: Some(collection_id),
+            kind: "collection.review_draft".into(),
+            status: "succeeded".into(),
+            output_markdown: markdown,
+        })
+    }
+
+    pub fn list_notes(&self, collection_id: Option<i64>) -> Result<Vec<ResearchNote>> {
+        let conn = self.connect()?;
+        let mut query =
+            "SELECT id, collection_id, title, markdown FROM research_notes".to_string();
+        if collection_id.is_some() {
+            query.push_str(" WHERE collection_id = ?1");
+        }
+        query.push_str(" ORDER BY id DESC");
+
+        let mut statement = conn.prepare(&query)?;
+        let rows = if let Some(collection_id) = collection_id {
+            statement.query_map([collection_id], map_research_note)?
+        } else {
+            statement.query_map([], map_research_note)?
+        };
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn update_note(&self, note_id: i64, markdown: String) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "UPDATE research_notes SET markdown = ?1 WHERE id = ?2",
+            params![markdown, note_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn export_note_markdown(&self, note_id: i64) -> Result<String> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT markdown FROM research_notes WHERE id = ?1",
+            [note_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    }
+
+    pub fn export_citation(&self, item_id: i64) -> Result<String> {
+        let conn = self.connect()?;
+        let (title, collection_name): (String, String) = conn.query_row(
+            "
+            SELECT i.title, c.name
+            FROM items i
+            JOIN collections c ON c.id = i.collection_id
+            WHERE i.id = ?1
+            ",
+            [item_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(format!("APA 7 · {collection_name}. ({item_id}). {title}. Paper Reader Library."))
+    }
+
+    pub fn list_task_runs(
+        &self,
+        item_id: Option<i64>,
+        collection_id: Option<i64>,
+    ) -> Result<Vec<AITask>> {
+        let conn = self.connect()?;
+        let mut query = "SELECT id, item_id, collection_id, kind, status, output_markdown FROM ai_tasks"
+            .to_string();
+        match (item_id, collection_id) {
+            (Some(_), Some(_)) => query.push_str(" WHERE item_id = ?1 AND collection_id = ?2"),
+            (Some(_), None) => query.push_str(" WHERE item_id = ?1"),
+            (None, Some(_)) => query.push_str(" WHERE collection_id = ?1"),
+            (None, None) => {}
+        }
+        query.push_str(" ORDER BY id DESC");
+
+        let mut statement = conn.prepare(&query)?;
+        let rows = match (item_id, collection_id) {
+            (Some(item_id), Some(collection_id)) => {
+                statement.query_map(params![item_id, collection_id], map_ai_task)?
+            }
+            (Some(item_id), None) => statement.query_map(params![item_id], map_ai_task)?,
+            (None, Some(collection_id)) => {
+                statement.query_map(params![collection_id], map_ai_task)?
+            }
+            (None, None) => statement.query_map([], map_ai_task)?,
+        };
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn get_latest_artifact(
+        &self,
+        item_id: Option<i64>,
+        collection_id: Option<i64>,
+    ) -> Result<Option<AIArtifact>> {
+        let conn = self.connect()?;
+        let query = match (item_id, collection_id) {
+            (Some(_), Some(_)) => {
+                "SELECT id, task_id, item_id, collection_id, kind, markdown
+                 FROM ai_artifacts WHERE item_id = ?1 AND collection_id = ?2 ORDER BY id DESC LIMIT 1"
+            }
+            (Some(_), None) => {
+                "SELECT id, task_id, item_id, collection_id, kind, markdown
+                 FROM ai_artifacts WHERE item_id = ?1 ORDER BY id DESC LIMIT 1"
+            }
+            (None, Some(_)) => {
+                "SELECT id, task_id, item_id, collection_id, kind, markdown
+                 FROM ai_artifacts WHERE collection_id = ?1 ORDER BY id DESC LIMIT 1"
+            }
+            (None, None) => {
+                "SELECT id, task_id, item_id, collection_id, kind, markdown
+                 FROM ai_artifacts ORDER BY id DESC LIMIT 1"
+            }
+        };
+        let mut statement = conn.prepare(query)?;
+        let artifact = match (item_id, collection_id) {
+            (Some(item_id), Some(collection_id)) => statement
+                .query_row(params![item_id, collection_id], map_ai_artifact)
+                .optional()?,
+            (Some(item_id), None) => statement.query_row(params![item_id], map_ai_artifact).optional()?,
+            (None, Some(collection_id)) => statement
+                .query_row(params![collection_id], map_ai_artifact)
+                .optional()?,
+            (None, None) => statement.query_row([], map_ai_artifact).optional()?,
+        };
+        Ok(artifact)
+    }
+
+    pub fn refresh_attachment_statuses(&self) -> Result<()> {
+        let conn = self.connect()?;
+        let mut statement =
+            conn.prepare("SELECT id, item_id, path, import_mode FROM attachments ORDER BY id ASC")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (attachment_id, item_id, path, import_mode) = row?;
+            let status = if Path::new(&path).exists() {
+                "ready"
+            } else if import_mode == "linked_file" {
+                "missing"
+            } else {
+                "needs_attention"
+            };
+            conn.execute(
+                "UPDATE attachments SET status = ?1 WHERE id = ?2",
+                params![status, attachment_id],
+            )?;
+            conn.execute(
+                "UPDATE items SET attachment_status = ?1 WHERE id = ?2",
+                params![status, item_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn relink_attachment(&self, attachment_id: i64, replacement: PathBuf) -> Result<()> {
+        if !replacement.exists() {
+            return Err(anyhow!("replacement file does not exist"));
+        }
+
+        let conn = self.connect()?;
+        let item_id: i64 = conn.query_row(
+            "SELECT item_id FROM attachments WHERE id = ?1",
+            [attachment_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "UPDATE attachments SET path = ?1, status = 'ready' WHERE id = ?2",
+            params![replacement.to_string_lossy().to_string(), attachment_id],
+        )?;
+        conn.execute(
+            "UPDATE items SET attachment_status = 'ready' WHERE id = ?1",
+            [item_id],
+        )?;
+        Ok(())
+    }
+
+    fn connect(&self) -> Result<Connection> {
+        Ok(Connection::open(&self.db_path)?)
+    }
+
+    fn migrate(&self) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute_batch(
+            "
+            PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS collections(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                parent_id INTEGER NULL REFERENCES collections(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS items(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection_id INTEGER NOT NULL REFERENCES collections(id),
+                title TEXT NOT NULL,
+                attachment_status TEXT NOT NULL DEFAULT 'ready'
+            );
+
+            CREATE TABLE IF NOT EXISTS attachments(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                path TEXT NOT NULL,
+                import_mode TEXT NOT NULL,
+                status TEXT NOT NULL,
+                fingerprint TEXT NOT NULL UNIQUE,
+                is_primary INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS extracted_content(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                plain_text TEXT NOT NULL,
+                normalized_html TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS annotations(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                anchor TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                body TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_tasks(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NULL REFERENCES items(id),
+                collection_id INTEGER NULL REFERENCES collections(id),
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                output_markdown TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_artifacts(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES ai_tasks(id) ON DELETE CASCADE,
+                item_id INTEGER NULL REFERENCES items(id),
+                collection_id INTEGER NULL REFERENCES collections(id),
+                kind TEXT NOT NULL,
+                markdown TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS research_notes(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection_id INTEGER NOT NULL REFERENCES collections(id),
+                title TEXT NOT NULL,
+                markdown TEXT NOT NULL
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+                item_id UNINDEXED,
+                title,
+                plain_text
+            );
+            ",
+        )?;
+        Ok(())
+    }
+}
+
+fn map_library_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
+    Ok(LibraryItem {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        collection_id: row.get(2)?,
+        primary_attachment_id: row.get(3)?,
+        attachment_status: row.get(4)?,
+    })
+}
+
+fn map_research_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResearchNote> {
+    Ok(ResearchNote {
+        id: row.get(0)?,
+        collection_id: row.get(1)?,
+        title: row.get(2)?,
+        markdown: row.get(3)?,
+    })
+}
+
+fn map_ai_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AITask> {
+    Ok(AITask {
+        id: row.get(0)?,
+        item_id: row.get(1)?,
+        collection_id: row.get(2)?,
+        kind: row.get(3)?,
+        status: row.get(4)?,
+        output_markdown: row.get(5)?,
+    })
+}
+
+fn map_ai_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<AIArtifact> {
+    Ok(AIArtifact {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        item_id: row.get(2)?,
+        collection_id: row.get(3)?,
+        kind: row.get(4)?,
+        markdown: row.get(5)?,
+    })
+}
+
+fn digest_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn normalize_bytes(bytes: &[u8]) -> String {
+    let normalized = String::from_utf8_lossy(bytes).replace('\u{0}', " ");
+    if normalized.trim().is_empty() {
+        "No textual content extracted.".into()
+    } else {
+        normalized
+    }
+}
+
+fn wrap_as_article(title: &str, body: &str) -> String {
+    format!(
+        "<article><h1>{}</h1><section>{}</section></article>",
+        title,
+        body.replace('\n', "<br />")
+    )
+}
