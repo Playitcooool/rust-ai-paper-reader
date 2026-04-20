@@ -20,7 +20,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -201,7 +202,8 @@ p {
 
 .nav-list,
 .paper-list,
-.ai-card-stack {
+.ai-card-stack,
+.note-editor-stack {
   display: grid;
   gap: 10px;
 }
@@ -311,6 +313,17 @@ p {
   display: flex;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.note-editor {
+  min-height: 160px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  resize: vertical;
 }
 
 .reader-html {

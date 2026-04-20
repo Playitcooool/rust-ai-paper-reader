@@ -310,6 +310,14 @@ export const mockApi: AppApi = {
     return note;
   },
 
+  async updateNote(input) {
+    const note = state.notes.find((entry) => entry.id === input.note_id);
+    if (!note) {
+      throw new Error(`Unknown note ${input.note_id}`);
+    }
+    note.markdown = input.markdown;
+  },
+
   async exportNoteMarkdown(noteId) {
     const note = state.notes.find((entry) => entry.id === noteId);
     if (!note) {

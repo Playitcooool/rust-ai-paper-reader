@@ -68,6 +68,8 @@ export default function App() {
   const [paperArtifact, setPaperArtifact] = useState<AIArtifact | null>(null);
   const [collectionArtifact, setCollectionArtifact] = useState<AIArtifact | null>(null);
   const [notes, setNotes] = useState<ResearchNote[]>([]);
+  const [activeNoteId, setActiveNoteId] = useState<number | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
   const [draggedFileCount, setDraggedFileCount] = useState(0);
   const [isImporting, setIsImporting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
@@ -185,6 +187,8 @@ export default function App() {
       if (cancelled) return;
       setCollectionArtifact(artifact);
       setNotes(collectionNotes);
+      setActiveNoteId(collectionNotes[0]?.id ?? null);
+      setNoteDraft(collectionNotes[0]?.markdown ?? "");
     }
 
     void loadCollectionOutputs();
@@ -330,6 +334,26 @@ export default function App() {
     const api = await getApi();
     const citation = await api.exportCitation(activePaper.id);
     setStatusMessage(citation);
+  }
+
+  async function handleCreateResearchNote() {
+    if (!activeCollection) return;
+    const api = await getApi();
+    const note = await api.createNoteFromArtifact(activeCollection.id);
+    const collectionNotes = await api.listNotes(activeCollection.id);
+    setNotes(collectionNotes);
+    setActiveNoteId(note.id);
+    setNoteDraft(note.markdown);
+    setStatusMessage(`Created research note for ${activeCollection.name}.`);
+  }
+
+  async function handleSaveNoteEdits() {
+    if (!activeCollection || activeNoteId === null) return;
+    const api = await getApi();
+    await api.updateNote({ note_id: activeNoteId, markdown: noteDraft });
+    const collectionNotes = await api.listNotes(activeCollection.id);
+    setNotes(collectionNotes);
+    setStatusMessage(`Saved note edits for ${activeCollection.name}.`);
   }
 
   function handleReaderSectionChange(section: ReaderSection) {
@@ -686,6 +710,44 @@ export default function App() {
             <div className="result-card">
               <h3>Draft Status</h3>
               <p>{collectionArtifact?.markdown ?? "No collection draft yet."}</p>
+              {collectionArtifact ? (
+                <div className="export-row">
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => void handleCreateResearchNote()}
+                  >
+                    Save as Research Note
+                  </button>
+                  <span className="meta-count">Snapshot current draft</span>
+                </div>
+              ) : null}
+              {activeNoteId ? (
+                <div className="note-editor-stack">
+                  <label className="eyebrow" htmlFor="research-note-editor">
+                    Research Note
+                  </label>
+                  <textarea
+                    id="research-note-editor"
+                    aria-label="Research note editor"
+                    className="note-editor"
+                    value={noteDraft}
+                    onChange={(event) => setNoteDraft(event.target.value)}
+                  />
+                  <div className="export-row">
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => void handleSaveNoteEdits()}
+                    >
+                      Save Note Edits
+                    </button>
+                    <span className="meta-count">
+                      {notes.find((note) => note.id === activeNoteId)?.title ?? "Research Note"}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
               {notes[0] ? (
                 <div className="export-row">
                   <button className="ghost-button" type="button" onClick={handleExportMarkdown}>

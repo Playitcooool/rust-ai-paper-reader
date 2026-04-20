@@ -147,4 +147,26 @@ describe("App workspace", () => {
     expect(screen.getByText(/Jumped to annotation section-1/i)).toBeInTheDocument();
     expect(screen.getByText(/Active anchor: section-1/i)).toBeInTheDocument();
   });
+
+  it("creates and updates a research note from the collection workspace", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.click(screen.getByRole("button", { name: "Generate Review Draft" }));
+    await user.click(screen.getByRole("button", { name: "Save as Research Note" }));
+
+    const editor = await screen.findByLabelText("Research note editor");
+    await user.clear(editor);
+    await user.type(editor, "# Updated Review Note");
+    await user.click(screen.getByRole("button", { name: "Save Note Edits" }));
+
+    expect(screen.getByDisplayValue("# Updated Review Note")).toBeInTheDocument();
+    expect(screen.getByText(/Saved note edits for Machine Learning/i)).toBeInTheDocument();
+  });
 });

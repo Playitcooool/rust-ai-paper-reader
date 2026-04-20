@@ -87,6 +87,7 @@ export type AppApi = {
   }) => Promise<AIArtifact | null>;
   listNotes: (collectionId?: number) => Promise<ResearchNote[]>;
   createNoteFromArtifact: (collectionId: number) => Promise<ResearchNote>;
+  updateNote: (input: { note_id: number; markdown: string }) => Promise<void>;
   exportNoteMarkdown: (noteId: number) => Promise<string>;
   exportCitation: (itemId: number) => Promise<string>;
 };

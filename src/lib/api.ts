@@ -40,6 +40,7 @@ async function createTauriApi(): Promise<AppApi> {
     listNotes: (collectionId) => invoke("list_notes", { collectionId }),
     createNoteFromArtifact: (collectionId) =>
       invoke("create_note_from_artifact", { collectionId }),
+    updateNote: (input) => invoke("update_note", { input }),
     exportNoteMarkdown: (noteId) => invoke("export_note_markdown", { noteId }),
     exportCitation: (itemId) => invoke("export_citation", { itemId }),
   };
