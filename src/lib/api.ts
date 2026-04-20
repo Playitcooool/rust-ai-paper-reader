@@ -27,6 +27,13 @@ async function createTauriApi(): Promise<AppApi> {
       if (!selection) return [];
       return Array.isArray(selection) ? selection : [selection];
     },
+    pickRelinkPath: async () => {
+      const selection = await open({
+        multiple: false,
+      });
+      if (!selection || Array.isArray(selection)) return null;
+      return selection;
+    },
     pickImportPaths: async () => {
       const selection = await open({
         multiple: true,
@@ -42,6 +49,7 @@ async function createTauriApi(): Promise<AppApi> {
     },
     importFiles: (input) => invoke("import_files", { input }),
     importCitations: (input) => invoke("import_citations", { input }),
+    relinkAttachment: (input) => invoke("relink_attachment", { input }),
     listItems: (collectionId) => invoke("list_items", { collectionId }),
     searchItems: (query) => invoke("search_items", { input: { query } }),
     getReaderView: (itemId) => invoke("get_reader_view", { itemId }),

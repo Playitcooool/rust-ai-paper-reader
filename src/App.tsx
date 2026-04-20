@@ -438,6 +438,24 @@ export default function App() {
     setStatusMessage(`Created research note for ${activeCollection.name}.`);
   }
 
+  async function handleRelinkAttachment() {
+    if (!activePaper) return;
+    const api = await getApi();
+    const replacement = await api.pickRelinkPath();
+    if (!replacement) {
+      setStatusMessage("Relink cancelled.");
+      return;
+    }
+    const message = `Relinked source for ${activePaper.title}.`;
+    await api.relinkAttachment({
+      attachment_id: activePaper.primary_attachment_id,
+      replacement_path: replacement,
+    });
+    setPendingCollectionStatus(message);
+    await refreshItemsForCollection(activePaper.collection_id, activePaper.id);
+    setStatusMessage(message);
+  }
+
   async function handleCreateCollection() {
     const name = newCollectionName.trim();
     if (!name) {
@@ -766,6 +784,11 @@ export default function App() {
               </p>
             </div>
             <div className="reader-actions">
+              {activePaper?.attachment_status === "missing" ? (
+                <button className="ghost-button" type="button" onClick={() => void handleRelinkAttachment()}>
+                  Relink Source
+                </button>
+              ) : null}
               <button className="ghost-button" type="button" onClick={handleCreateAnnotation}>
                 Highlight
               </button>

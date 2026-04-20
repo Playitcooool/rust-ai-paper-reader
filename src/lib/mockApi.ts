@@ -64,7 +64,7 @@ const initialState = (): MockState => ({
       title: "Distributed Consensus Notes",
       collection_id: 2,
       primary_attachment_id: 103,
-      attachment_status: "ready",
+      attachment_status: "missing",
       tags: [],
       plainText:
         "Consensus protocols coordinate replicas under partial failure. This note contrasts Paxos, Raft, and production trade-offs around operator ergonomics.",
@@ -246,6 +246,10 @@ export const mockApi: AppApi = {
     return [...citationSeedPaths];
   },
 
+  async pickRelinkPath() {
+    return "/relinked/distributed-consensus-notes.epub";
+  },
+
   async importFiles(input) {
     return input.paths.map((path) => {
       const title = titleFromPath(path);
@@ -290,6 +294,14 @@ export const mockApi: AppApi = {
         primary_attachment_id: attachmentId,
       };
     });
+  },
+
+  async relinkAttachment(input) {
+    const item = state.items.find((entry) => entry.primary_attachment_id === input.attachment_id);
+    if (!item) {
+      throw new Error(`Unknown attachment ${input.attachment_id}`);
+    }
+    item.attachment_status = "ready";
   },
 
   async listItems(collectionId) {

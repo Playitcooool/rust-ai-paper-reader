@@ -76,12 +76,14 @@ export type AppApi = {
   assignTag: (input: { item_id: number; tag_id: number }) => Promise<void>;
   pickImportPaths: () => Promise<string[]>;
   pickCitationPaths: () => Promise<string[]>;
+  pickRelinkPath: () => Promise<string | null>;
   importFiles: (input: {
     collection_id: number;
     paths: string[];
     mode: ImportMode;
   }) => Promise<ImportedItem[]>;
   importCitations: (input: { collection_id: number; paths: string[] }) => Promise<ImportedItem[]>;
+  relinkAttachment: (input: { attachment_id: number; replacement_path: string }) => Promise<void>;
   listItems: (collectionId?: number) => Promise<LibraryItem[]>;
   searchItems: (query: string) => Promise<LibraryItem[]>;
   getReaderView: (itemId: number) => Promise<ReaderView>;

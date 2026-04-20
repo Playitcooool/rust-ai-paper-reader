@@ -271,6 +271,24 @@ describe("App workspace", () => {
     expect(screen.getByText(/Imported 2 citation records into Machine Learning/i)).toBeInTheDocument();
   });
 
+  it("relinks a missing linked attachment from the reader actions", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /Systems/i }));
+    const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
+    await user.click(
+      await within(collectionPanel).findByRole("button", {
+        name: /Distributed Consensus Notes/i,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Relink Source" }));
+
+    expect(await screen.findByText(/Relinked source for Distributed Consensus Notes/i)).toBeInTheDocument();
+    expect(screen.getByText(/Systems · ready · EPUB/i)).toBeInTheDocument();
+  });
+
   it("closes reader tabs and keeps the workspace stable", async () => {
     const user = userEvent.setup();
 
