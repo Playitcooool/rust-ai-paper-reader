@@ -157,6 +157,17 @@ p {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.drop-zone-active {
+  border-color: rgba(226, 139, 83, 0.58);
+  background: rgba(226, 139, 83, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(226, 139, 83, 0.18);
+}
+
+.drop-helper {
+  margin-bottom: 12px;
+  color: #f7c9a1;
+}
+
 .section-title-row {
   justify-content: space-between;
 }

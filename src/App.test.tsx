@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -71,6 +71,30 @@ describe("App workspace", () => {
     expect(
       await screen.findByRole("button", { name: /Fresh Import Paper/i }),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
+  });
+
+  it("imports dropped files into the active collection", async () => {
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    const dropZone = screen.getByLabelText("Collection drop zone");
+    const files = [
+      new File(["pdf"], "dragged-paper.pdf", { type: "application/pdf" }),
+      new File(["epub"], "lab-notes.epub", { type: "application/epub+zip" }),
+    ];
+    const dataTransfer = {
+      files,
+      types: ["Files"],
+    };
+
+    fireEvent.dragEnter(dropZone, { dataTransfer });
+    expect(screen.getByText(/Drop 2 files into Machine Learning/i)).toBeInTheDocument();
+
+    fireEvent.drop(dropZone, { dataTransfer });
+
+    expect(await screen.findByRole("button", { name: /Dragged Paper/i })).toBeInTheDocument();
     expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
   });
 });

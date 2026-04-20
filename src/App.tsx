@@ -36,6 +36,19 @@ const formatHint = (title: string) => {
   return "PDF";
 };
 
+const supportedExtensions = [".pdf", ".docx", ".epub"];
+
+const isSupportedPath = (path: string) =>
+  supportedExtensions.some((extension) => path.toLowerCase().endsWith(extension));
+
+const droppedPathsFromFileList = (files: FileList | File[]) =>
+  Array.from(files)
+    .map((file) => {
+      const fileWithPath = file as File & { path?: string; webkitRelativePath?: string };
+      return fileWithPath.path || fileWithPath.webkitRelativePath || file.name;
+    })
+    .filter(isSupportedPath);
+
 export default function App() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [items, setItems] = useState<LibraryItem[]>([]);
@@ -50,6 +63,7 @@ export default function App() {
   const [paperArtifact, setPaperArtifact] = useState<AIArtifact | null>(null);
   const [collectionArtifact, setCollectionArtifact] = useState<AIArtifact | null>(null);
   const [notes, setNotes] = useState<ResearchNote[]>([]);
+  const [draggedFileCount, setDraggedFileCount] = useState(0);
   const [isImporting, setIsImporting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
 
@@ -212,11 +226,40 @@ export default function App() {
     });
   }
 
+  async function importPaths(paths: string[], sourceLabel: string) {
+    if (selectedCollectionId === null || !activeCollection || isImporting) return;
+    const acceptedPaths = paths.filter(isSupportedPath);
+    if (acceptedPaths.length === 0) {
+      setStatusMessage("Only PDF, DOCX, and EPUB files can be imported.");
+      return;
+    }
+
+    const api = await getApi();
+    setIsImporting(true);
+    try {
+      const importedItems = await api.importFiles({
+        collection_id: selectedCollectionId,
+        paths: acceptedPaths,
+        mode: importMode,
+      });
+
+      await refreshItemsForCollection(selectedCollectionId, importedItems[0]?.id);
+      setStatusMessage(
+        `Imported ${importedItems.length} files into ${activeCollection.name} from ${sourceLabel}.`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Import failed.";
+      setStatusMessage(message);
+    } finally {
+      setIsImporting(false);
+      setDraggedFileCount(0);
+    }
+  }
+
   async function handleImport() {
     if (selectedCollectionId === null || !activeCollection || isImporting) return;
 
     const api = await getApi();
-    setIsImporting(true);
     setStatusMessage(`Selecting files for ${activeCollection.name}...`);
 
     try {
@@ -225,20 +268,10 @@ export default function App() {
         setStatusMessage("Import cancelled.");
         return;
       }
-
-      const importedItems = await api.importFiles({
-        collection_id: selectedCollectionId,
-        paths,
-        mode: importMode,
-      });
-
-      await refreshItemsForCollection(selectedCollectionId, importedItems[0]?.id);
-      setStatusMessage(`Imported ${importedItems.length} files into ${activeCollection.name}.`);
+      await importPaths(paths, "picker");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Import failed.";
       setStatusMessage(message);
-    } finally {
-      setIsImporting(false);
     }
   }
 
@@ -291,6 +324,41 @@ export default function App() {
     const citation = await api.exportCitation(activePaper.id);
     setStatusMessage(citation);
   }
+
+  useEffect(() => {
+    if (selectedCollectionId === null) return;
+    let cancelled = false;
+    let teardown: (() => void) | undefined;
+
+    async function attachNativeDropListener() {
+      if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      const unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+        if (cancelled) return;
+
+        if (event.payload.type === "enter") {
+          setDraggedFileCount(event.payload.paths.filter(isSupportedPath).length);
+        } else if (event.payload.type === "over") {
+          setDraggedFileCount((current) => (current === 0 ? 1 : current));
+        } else if (event.payload.type === "drop") {
+          void importPaths(event.payload.paths, "drag & drop");
+        } else if (event.payload.type === "leave") {
+          setDraggedFileCount(0);
+        }
+      });
+      teardown = () => {
+        void unlisten();
+      };
+    }
+
+    void attachNativeDropListener();
+
+    return () => {
+      cancelled = true;
+      teardown?.();
+    };
+  }, [importMode, selectedCollectionId, activeCollection, isImporting, search]);
 
   return (
     <div className="app-shell">
@@ -347,11 +415,40 @@ export default function App() {
           </div>
         </section>
 
-        <section className="section-block">
+        <section
+          aria-label="Collection drop zone"
+          className={`section-block ${draggedFileCount > 0 ? "drop-zone-active" : ""}`}
+          role="region"
+          onDragEnter={(event) => {
+            const files = event.dataTransfer?.files;
+            if (!files) return;
+            setDraggedFileCount(droppedPathsFromFileList(files).length);
+          }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (event.dataTransfer) {
+              event.dataTransfer.dropEffect = "copy";
+            }
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setDraggedFileCount(0);
+            }
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const files = event.dataTransfer?.files;
+            const paths = files ? droppedPathsFromFileList(files) : [];
+            void importPaths(paths, "drag & drop");
+          }}
+        >
           <div className="section-title-row">
             <h2>Current Collection</h2>
             <span className="meta-count">{items.length} items</span>
           </div>
+          {draggedFileCount > 0 ? (
+            <p className="drop-helper">Drop {draggedFileCount} files into {activeCollection?.name ?? "this collection"}.</p>
+          ) : null}
           <div className="paper-list">
             {items.map((paper) => (
               <button
