@@ -5,6 +5,7 @@ import type {
   AIArtifact,
   Annotation,
   Collection,
+  ImportMode,
   LibraryItem,
   ReaderView,
   ResearchNote,
@@ -38,6 +39,7 @@ const formatHint = (title: string) => {
 export default function App() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [items, setItems] = useState<LibraryItem[]>([]);
+  const [importMode, setImportMode] = useState<ImportMode>("managed_copy");
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
   const [openPaperIds, setOpenPaperIds] = useState<number[]>([]);
   const [activePaperId, setActivePaperId] = useState<number | null>(null);
@@ -48,6 +50,7 @@ export default function App() {
   const [paperArtifact, setPaperArtifact] = useState<AIArtifact | null>(null);
   const [collectionArtifact, setCollectionArtifact] = useState<AIArtifact | null>(null);
   const [notes, setNotes] = useState<ResearchNote[]>([]);
+  const [isImporting, setIsImporting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
 
   useEffect(() => {
@@ -182,6 +185,63 @@ export default function App() {
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
 
+  async function refreshItemsForCollection(collectionId: number, nextActiveId?: number) {
+    const api = await getApi();
+    const loadedItems =
+      search.trim().length > 0
+        ? await api.searchItems(search.trim())
+        : await api.listItems(collectionId);
+    const filteredItems =
+      search.trim().length > 0
+        ? loadedItems.filter((item) => item.collection_id === collectionId)
+        : loadedItems;
+
+    setItems(filteredItems);
+    const fallbackActiveId = filteredItems[0]?.id ?? null;
+    const resolvedActiveId =
+      nextActiveId && filteredItems.some((item) => item.id === nextActiveId)
+        ? nextActiveId
+        : fallbackActiveId;
+    setActivePaperId(resolvedActiveId);
+    setOpenPaperIds((current) => {
+      const aliveIds = current.filter((id) => filteredItems.some((item) => item.id === id));
+      if (resolvedActiveId && !aliveIds.includes(resolvedActiveId)) {
+        return [...aliveIds, resolvedActiveId];
+      }
+      return aliveIds;
+    });
+  }
+
+  async function handleImport() {
+    if (selectedCollectionId === null || !activeCollection || isImporting) return;
+
+    const api = await getApi();
+    setIsImporting(true);
+    setStatusMessage(`Selecting files for ${activeCollection.name}...`);
+
+    try {
+      const paths = await api.pickImportPaths();
+      if (paths.length === 0) {
+        setStatusMessage("Import cancelled.");
+        return;
+      }
+
+      const importedItems = await api.importFiles({
+        collection_id: selectedCollectionId,
+        paths,
+        mode: importMode,
+      });
+
+      await refreshItemsForCollection(selectedCollectionId, importedItems[0]?.id);
+      setStatusMessage(`Imported ${importedItems.length} files into ${activeCollection.name}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Import failed.";
+      setStatusMessage(message);
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
   async function handleItemTask(kind: string) {
     if (!activePaper) return;
     const api = await getApi();
@@ -248,8 +308,17 @@ export default function App() {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
-          <button className="primary-button" type="button" onClick={() => setStatusMessage("Use the desktop import flow next.")}>
-            Import
+          <select
+            aria-label="Import mode"
+            className="mode-select"
+            value={importMode}
+            onChange={(event) => setImportMode(event.target.value as ImportMode)}
+          >
+            <option value="managed_copy">Managed Copy</option>
+            <option value="linked_file">Linked File</option>
+          </select>
+          <button className="primary-button" type="button" onClick={() => void handleImport()}>
+            {isImporting ? "Importing..." : "Import"}
           </button>
         </div>
 

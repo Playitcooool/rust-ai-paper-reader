@@ -4,6 +4,7 @@ import type {
   AppApi,
   AITask,
   Collection,
+  ImportMode,
   LibraryItem,
   ReaderView,
   ResearchNote,
@@ -114,6 +115,23 @@ const collectionName = (collectionId: number) =>
 
 const noteTitle = (collectionId: number) => `${collectionName(collectionId)} Review`;
 
+const importSeedPaths = [
+  "/imports/fresh-import-paper.pdf",
+  "/imports/method-bench.epub",
+];
+
+const titleFromPath = (path: string) =>
+  path
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.[^.]+$/, "")
+    .split(/[-_]/)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ") ?? "Imported Paper";
+
+const normalizedHtmlFromTitle = (title: string, mode: ImportMode) =>
+  `<article><h1>${title}</h1><p>Imported in ${mode} mode.</p><p>This mock document is ready for reading, annotation, and AI analysis.</p></article>`;
+
 export function resetMockApi() {
   state = initialState();
 }
@@ -131,6 +149,32 @@ export const mockApi: AppApi = {
     };
     state.collections.push(collection);
     return collection;
+  },
+
+  async pickImportPaths() {
+    return [...importSeedPaths];
+  },
+
+  async importFiles(input) {
+    return input.paths.map((path) => {
+      const title = titleFromPath(path);
+      const itemId = state.nextId++;
+      const attachmentId = state.nextId++;
+      state.items.unshift({
+        id: itemId,
+        title,
+        collection_id: input.collection_id,
+        primary_attachment_id: attachmentId,
+        attachment_status: "ready",
+        plainText: `${title} was imported into ${collectionName(input.collection_id)} and normalized for AI-assisted reading.`,
+        normalizedHtml: normalizedHtmlFromTitle(title, input.mode),
+      });
+      return {
+        id: itemId,
+        title,
+        primary_attachment_id: attachmentId,
+      };
+    });
   },
 
   async listItems(collectionId) {
@@ -282,4 +326,3 @@ export const mockApi: AppApi = {
     return `APA 7 · ${collectionName(item.collection_id)}. (${item.id}). ${item.title}. Paper Reader Library.`;
   },
 };
-

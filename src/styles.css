@@ -19,7 +19,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -96,6 +97,14 @@ p {
 
 .search-input {
   width: 100%;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+}
+
+.mode-select {
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;

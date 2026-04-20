@@ -58,4 +58,19 @@ describe("App workspace", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export Markdown" })).toBeInTheDocument();
   });
+
+  it("imports files into the current collection from the import action", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Import" }));
+
+    expect(
+      await screen.findByRole("button", { name: /Fresh Import Paper/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
+  });
 });

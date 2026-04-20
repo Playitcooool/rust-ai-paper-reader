@@ -6,10 +6,25 @@ const isTauriRuntime = () =>
 
 async function createTauriApi(): Promise<AppApi> {
   const { invoke } = await import("@tauri-apps/api/core");
+  const { open } = await import("@tauri-apps/plugin-dialog");
 
   return {
     listCollections: () => invoke("list_collections"),
     createCollection: (input) => invoke("create_collection", { input }),
+    pickImportPaths: async () => {
+      const selection = await open({
+        multiple: true,
+        filters: [
+          {
+            name: "Documents",
+            extensions: ["pdf", "docx", "epub"],
+          },
+        ],
+      });
+      if (!selection) return [];
+      return Array.isArray(selection) ? selection : [selection];
+    },
+    importFiles: (input) => invoke("import_files", { input }),
     listItems: (collectionId) => invoke("list_items", { collectionId }),
     searchItems: (query) => invoke("search_items", { input: { query } }),
     getReaderView: (itemId) => invoke("get_reader_view", { itemId }),
@@ -38,4 +53,3 @@ export function getApi(): Promise<AppApi> {
   }
   return apiPromise;
 }
-

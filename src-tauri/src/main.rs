@@ -301,6 +301,7 @@ fn export_citation(state: State<'_, AppState>, item_id: i64) -> Result<String, S
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let library_root = root_dir(app.handle());
             fs::create_dir_all(&library_root)?;

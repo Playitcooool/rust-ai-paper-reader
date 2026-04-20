@@ -4,6 +4,14 @@ export type Collection = {
   parent_id: number | null;
 };
 
+export type ImportMode = "managed_copy" | "linked_file";
+
+export type ImportedItem = {
+  id: number;
+  title: string;
+  primary_attachment_id: number;
+};
+
 export type LibraryItem = {
   id: number;
   title: string;
@@ -55,6 +63,12 @@ export type ResearchNote = {
 export type AppApi = {
   listCollections: () => Promise<Collection[]>;
   createCollection: (input: { name: string; parent_id?: number | null }) => Promise<Collection>;
+  pickImportPaths: () => Promise<string[]>;
+  importFiles: (input: {
+    collection_id: number;
+    paths: string[];
+    mode: ImportMode;
+  }) => Promise<ImportedItem[]>;
   listItems: (collectionId?: number) => Promise<LibraryItem[]>;
   searchItems: (query: string) => Promise<LibraryItem[]>;
   getReaderView: (itemId: number) => Promise<ReaderView>;
@@ -76,4 +90,3 @@ export type AppApi = {
   exportNoteMarkdown: (noteId: number) => Promise<string>;
   exportCitation: (itemId: number) => Promise<string>;
 };
-
