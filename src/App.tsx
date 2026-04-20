@@ -348,6 +348,20 @@ export default function App() {
     }
   }
 
+  function handleSourceJump(anchor: string) {
+    const annotation = annotations.find((entry) => entry.anchor === anchor);
+    if (annotation) {
+      handleAnnotationJump(annotation);
+      return;
+    }
+
+    setActiveReaderSection("Notes");
+    setActiveAnchor(anchor);
+    if (activePaper) {
+      setStatusMessage(`Jumped to annotation ${anchor} in ${activePaper.title}.`);
+    }
+  }
+
   useEffect(() => {
     if (selectedCollectionId === null) return;
     let cancelled = false;
@@ -633,6 +647,18 @@ export default function App() {
             <div className="result-card">
               <h3>Cached Summary</h3>
               <p>{paperArtifact?.markdown ?? "Run an AI paper task to cache the first artifact."}</p>
+              {annotations[0] ? (
+                <div className="export-row">
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => handleSourceJump(annotations[0].anchor)}
+                  >
+                    Source: {annotations[0].anchor}
+                  </button>
+                  <span className="meta-count">Jump to evidence</span>
+                </div>
+              ) : null}
             </div>
           </section>
         ) : (

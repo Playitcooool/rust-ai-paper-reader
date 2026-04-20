@@ -131,4 +131,20 @@ describe("App workspace", () => {
     expect(screen.getByText(/Jumped to annotation section-1/i)).toBeInTheDocument();
     expect(screen.getByText(/Active anchor: section-1/i)).toBeInTheDocument();
   });
+
+  it("jumps from AI source references back into the reader anchor", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    const sourceButton = screen.getByRole("button", { name: /Source: section-1/i });
+    await user.click(sourceButton);
+
+    expect(screen.getByText(/Jumped to annotation section-1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Active anchor: section-1/i)).toBeInTheDocument();
+  });
 });
