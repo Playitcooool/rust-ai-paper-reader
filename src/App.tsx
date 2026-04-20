@@ -56,6 +56,7 @@ export default function App() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [importMode, setImportMode] = useState<ImportMode>("managed_copy");
+  const [newCollectionName, setNewCollectionName] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
   const [openPaperIds, setOpenPaperIds] = useState<number[]>([]);
   const [activePaperId, setActivePaperId] = useState<number | null>(null);
@@ -72,6 +73,7 @@ export default function App() {
   const [noteDraft, setNoteDraft] = useState("");
   const [draggedFileCount, setDraggedFileCount] = useState(0);
   const [isImporting, setIsImporting] = useState(false);
+  const [pendingCollectionStatus, setPendingCollectionStatus] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
 
   useEffect(() => {
@@ -128,11 +130,16 @@ export default function App() {
         }
         return aliveIds;
       });
-      setStatusMessage(
-        filteredItems.length > 0
-          ? `${filteredItems.length} papers ready in the current collection.`
-          : "No papers match this view yet.",
-      );
+      if (pendingCollectionStatus) {
+        setStatusMessage(pendingCollectionStatus);
+        setPendingCollectionStatus(null);
+      } else {
+        setStatusMessage(
+          filteredItems.length > 0
+            ? `${filteredItems.length} papers ready in the current collection.`
+            : "No papers match this view yet.",
+        );
+      }
     }
 
     void loadItems();
@@ -347,6 +354,22 @@ export default function App() {
     setStatusMessage(`Created research note for ${activeCollection.name}.`);
   }
 
+  async function handleCreateCollection() {
+    const name = newCollectionName.trim();
+    if (!name) {
+      setStatusMessage("Enter a collection name first.");
+      return;
+    }
+
+    const api = await getApi();
+    const collection = await api.createCollection({ name });
+    setCollections((current) => [...current, collection]);
+    setSelectedCollectionId(collection.id);
+    setNewCollectionName("");
+    setPendingCollectionStatus(`Created collection ${collection.name}.`);
+    setStatusMessage(`Created collection ${collection.name}.`);
+  }
+
   async function handleSaveNoteEdits() {
     if (!activeCollection || activeNoteId === null) return;
     const api = await getApi();
@@ -455,6 +478,18 @@ export default function App() {
           <div className="section-title-row">
             <h2>Collections</h2>
             <span className="status-pill">Synced</span>
+          </div>
+          <div className="collection-create-row">
+            <input
+              aria-label="New collection name"
+              className="search-input"
+              placeholder="Create a new collection..."
+              value={newCollectionName}
+              onChange={(event) => setNewCollectionName(event.target.value)}
+            />
+            <button className="ghost-button" type="button" onClick={() => void handleCreateCollection()}>
+              Add Collection
+            </button>
           </div>
           <div className="nav-list">
             {collections.map((collection) => {

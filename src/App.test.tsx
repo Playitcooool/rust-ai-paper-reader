@@ -169,4 +169,18 @@ describe("App workspace", () => {
     expect(screen.getByDisplayValue("# Updated Review Note")).toBeInTheDocument();
     expect(screen.getByText(/Saved note edits for Machine Learning/i)).toBeInTheDocument();
   });
+
+  it("creates a new collection from the sidebar", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("New collection name"), "Reading Queue");
+    await user.click(screen.getByRole("button", { name: "Add Collection" }));
+
+    expect(await screen.findByRole("button", { name: /Reading Queue/i })).toBeInTheDocument();
+    expect(screen.getByText(/Created collection Reading Queue/i)).toBeInTheDocument();
+  });
 });

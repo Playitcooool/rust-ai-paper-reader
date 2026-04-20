@@ -83,7 +83,8 @@ p {
 .toolbar-row,
 .section-title-row,
 .reader-meta-row,
-.reader-actions {
+.reader-actions,
+.collection-create-row {
   display: flex;
   gap: 12px;
   align-items: center;
@@ -94,6 +95,10 @@ p {
 .result-card,
 .context-card {
   margin-bottom: 18px;
+}
+
+.collection-create-row {
+  margin-bottom: 14px;
 }
 
 .search-input {
