@@ -1252,7 +1252,17 @@ export default function App() {
                 collectionTaskRuns.slice(0, 4).map((task) => (
                   <div key={task.id} className="export-row">
                     <span>{task.kind}</span>
-                    <span className="meta-count">{task.status}</span>
+                    <div className="export-row">
+                      <button
+                        aria-label={`Run Again ${task.kind}`}
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => void handleCollectionTask(task.kind)}
+                      >
+                        Run Again
+                      </button>
+                      <span className="meta-count">{task.status}</span>
+                    </div>
                   </div>
                 ))
               ) : (

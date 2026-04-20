@@ -211,6 +211,23 @@ describe("App workspace", () => {
     expect(screen.getAllByText(/Machine Learning/i).length).toBeGreaterThan(0);
   });
 
+  it("reruns a collection task from task history", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.click(screen.getByRole("button", { name: "Theme Map" }));
+    await user.click(await screen.findByRole("button", { name: /Run Again collection\.theme_map/i }));
+
+    expect(await screen.findByText(/Completed collection\.theme_map for Machine Learning/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/collection\.theme_map/i).length).toBeGreaterThan(1);
+  });
+
   it("creates a new collection from the sidebar", async () => {
     const user = userEvent.setup();
 
