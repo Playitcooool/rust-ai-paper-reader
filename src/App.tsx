@@ -183,6 +183,7 @@ export default function App() {
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [paperArtifact, setPaperArtifact] = useState<AIArtifact | null>(null);
+  const [paperTaskRuns, setPaperTaskRuns] = useState<AITask[]>([]);
   const [collectionArtifact, setCollectionArtifact] = useState<AIArtifact | null>(null);
   const [collectionTaskRuns, setCollectionTaskRuns] = useState<AITask[]>([]);
   const [notes, setNotes] = useState<ResearchNote[]>([]);
@@ -305,6 +306,7 @@ export default function App() {
       setReaderView(null);
       setAnnotations([]);
       setPaperArtifact(null);
+      setPaperTaskRuns([]);
       setActiveReaderSection("Overview");
       setActiveAnchor(null);
       return;
@@ -314,10 +316,11 @@ export default function App() {
 
     async function loadReaderContext() {
       const api = await getApi();
-      const [view, itemAnnotations, artifact] = await Promise.all([
+      const [view, itemAnnotations, artifact, taskRuns] = await Promise.all([
         api.getReaderView(itemId),
         api.listAnnotations(itemId),
         api.getArtifact({ item_id: itemId }),
+        api.listTaskRuns({ item_id: itemId }),
       ]);
       if (cancelled) return;
 
@@ -326,6 +329,7 @@ export default function App() {
       setActiveAnchor(null);
       setAnnotations(itemAnnotations);
       setPaperArtifact(artifact);
+      setPaperTaskRuns(taskRuns);
       setOpenPaperIds((current) =>
         current.includes(itemId) ? current : [...current, itemId],
       );
@@ -523,8 +527,12 @@ export default function App() {
     if (!activePaper) return;
     const api = await getApi();
     await api.runItemTask({ item_id: activePaper.id, kind });
-    const artifact = await api.getArtifact({ item_id: activePaper.id });
+    const [artifact, taskRuns] = await Promise.all([
+      api.getArtifact({ item_id: activePaper.id }),
+      api.listTaskRuns({ item_id: activePaper.id }),
+    ]);
     setPaperArtifact(artifact);
+    setPaperTaskRuns(taskRuns);
     setStatusMessage(`Completed ${kind} for ${activePaper.title}.`);
   }
 
@@ -1152,6 +1160,34 @@ export default function App() {
                   <span className="meta-count">Jump to evidence</span>
                 </div>
               ) : null}
+            </div>
+            <div className="result-card">
+              <h3>Paper Task History</h3>
+              {paperTaskRuns.length > 0 ? (
+                paperTaskRuns.slice(0, 4).map((task) => (
+                  <div key={task.id} className="result-card">
+                    <div className="export-row">
+                      <span>{task.kind}</span>
+                      <span className="meta-count">{task.status}</span>
+                    </div>
+                    <p>{taskPreview(task)}</p>
+                    <div className="export-row">
+                      <button
+                        aria-label={`Run Again ${task.kind}`}
+                        className="ghost-button"
+                        disabled={!paperActionsEnabled}
+                        type="button"
+                        onClick={() => void handleItemTask(task.kind)}
+                      >
+                        Run Again
+                      </button>
+                      <span className="meta-count">{task.id === paperTaskRuns[0]?.id ? "Latest" : "History"}</span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p>No paper tasks have run yet.</p>
+              )}
             </div>
           </section>
         ) : (

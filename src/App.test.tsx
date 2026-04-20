@@ -49,7 +49,7 @@ describe("App workspace", () => {
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Summarize document" }));
-    expect(await screen.findAllByText(/item\.summarize/i)).toHaveLength(2);
+    expect((await screen.findAllByText(/item\.summarize/i)).length).toBeGreaterThanOrEqual(2);
 
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     await user.click(screen.getByRole("button", { name: "Generate Review Draft" }));
@@ -147,6 +147,27 @@ describe("App workspace", () => {
 
     expect(screen.getByText(/Jumped to annotation section-1/i)).toBeInTheDocument();
     expect(screen.getByText(/Active anchor: section-1/i)).toBeInTheDocument();
+  });
+
+  it("shows paper task history and reruns a paper task from history", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Translate selection" }));
+    expect(await screen.findByText(/Completed item\.translate for Transformer Scaling Laws\./i)).toBeInTheDocument();
+
+    expect(screen.getByText(/Paper Task History/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/item\.translate/i).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: /Run Again item\.summarize/i }));
+
+    expect(await screen.findByText(/Completed item\.summarize for Transformer Scaling Laws\./i)).toBeInTheDocument();
+    expect(screen.getAllByText(/item\.summarize/i).length).toBeGreaterThan(1);
   });
 
   it("creates and updates a research note from the collection workspace", async () => {
