@@ -171,6 +171,29 @@ describe("App workspace", () => {
     expect(screen.getByText(/Saved note edits for Machine Learning/i)).toBeInTheDocument();
   });
 
+  it("shows collection review scope and included papers in the AI workspace", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+
+    expect(screen.getByText(/Review Scope/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 papers included/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Transformer Scaling Laws/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Graph Neural Survey/i).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Filter tag Scaling" }));
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+
+    expect(screen.getByText(/Filtered by tag: Scaling/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 papers included/i)).toBeInTheDocument();
+  });
+
   it("creates a new collection from the sidebar", async () => {
     const user = userEvent.setup();
 

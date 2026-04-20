@@ -1150,6 +1150,26 @@ export default function App() {
               </p>
               {selectedTagName ? <p>Filtered by tag: {selectedTagName}</p> : null}
             </div>
+            <div className="context-card">
+              <p className="eyebrow">Review Scope</p>
+              <h3>{items.length} papers included</h3>
+              <p>
+                {selectedTagName
+                  ? `Current draft scope is filtered to tag ${selectedTagName}.`
+                  : "Current draft scope includes every visible paper in this collection."}
+              </p>
+              {items.length > 0 ? (
+                <div className="tag-chip-row">
+                  {items.map((item) => (
+                    <span key={item.id} className="status-pill">
+                      {item.title}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p>No papers are currently included in this review scope.</p>
+              )}
+            </div>
             <div className="action-grid">
               {collectionActions.map((task) => (
                 <button
