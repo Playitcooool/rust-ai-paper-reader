@@ -344,6 +344,7 @@ describe("App workspace", () => {
     expect(screen.getByText(/Source file missing/i)).toBeInTheDocument();
     expect(screen.getByText(/Relink this attachment to restore reading and AI actions/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Relink Source" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
   });
 
   it("shows a metadata-only state for citation imports", async () => {
@@ -362,6 +363,7 @@ describe("App workspace", () => {
     expect(screen.getByText(/Metadata-only entry/i)).toBeInTheDocument();
     expect(screen.getByText(/Import a PDF, DOCX, or EPUB later to enable full reading and AI extraction/i)).toBeInTheDocument();
     expect(screen.getByText(/Citation metadata is available for export and organization right now/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
   });
 
   it("relinks a missing linked attachment from the reader actions", async () => {
@@ -418,5 +420,6 @@ describe("App workspace", () => {
     expect(await screen.findAllByText("Open a paper to see its extracted text.")).toHaveLength(2);
     expect(screen.getByText(/No papers in this collection yet/i)).toBeInTheDocument();
     expect(screen.getByText(/Import PDF, DOCX, EPUB, or citation files to start this workspace/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
   });
 });

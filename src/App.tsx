@@ -96,6 +96,11 @@ const readerStateCopy = (activePaper: LibraryItem | null, itemCount: number) => 
   return null;
 };
 
+const canRunReaderActions = (activePaper: LibraryItem | null) =>
+  Boolean(activePaper) &&
+  activePaper?.attachment_status !== "missing" &&
+  activePaper?.attachment_status !== "citation_only";
+
 type CollectionTreeEntry = {
   collection: Collection;
   depth: number;
@@ -360,6 +365,7 @@ export default function App() {
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
   const readerState = readerStateCopy(activePaper, items.length);
+  const paperActionsEnabled = canRunReaderActions(activePaper);
   const collectionEntries = useMemo(() => orderedCollections(collections), [collections]);
   const moveDestinationOptions = useMemo(() => {
     if (selectedCollectionId === null) return collectionEntries;
@@ -974,16 +980,16 @@ export default function App() {
                   Relink Source
                 </button>
               ) : null}
-              <button className="ghost-button" type="button" onClick={handleCreateAnnotation}>
+              <button className="ghost-button" type="button" disabled={!paperActionsEnabled} onClick={handleCreateAnnotation}>
                 Highlight
               </button>
-              <button className="ghost-button" type="button" onClick={() => void handleExportCitation()}>
+              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation()}>
                 Copy Citation
               </button>
-              <button className="ghost-button" type="button" onClick={() => void handleExportCitation("bibtex")}>
+              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation("bibtex")}>
                 Export BibTeX
               </button>
-              <button className="ghost-button" type="button" onClick={() => void handleExportCitation("ris")}>
+              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation("ris")}>
                 Export RIS
               </button>
             </div>
@@ -1086,6 +1092,13 @@ export default function App() {
               <p className="eyebrow">Focused Context</p>
               <h3>{activePaper?.title ?? "No active paper"}</h3>
               <p>{excerptFromView(readerView)}</p>
+              {!paperActionsEnabled ? (
+                <p>
+                  {activePaper
+                    ? "This item needs a readable source file before paper-level AI tasks can run."
+                    : "Open a readable paper to enable paper-level AI tasks."}
+                </p>
+              ) : null}
               {activePaper?.tags.length ? (
                 <div className="tag-chip-row">
                   {activePaper.tags.map((tag) => (
@@ -1101,6 +1114,7 @@ export default function App() {
                 <button
                   key={action.kind}
                   className="action-card"
+                  disabled={!paperActionsEnabled}
                   type="button"
                   onClick={() => void handleItemTask(action.kind)}
                 >
