@@ -194,6 +194,23 @@ describe("App workspace", () => {
     expect(screen.getByText(/1 papers included/i)).toBeInTheDocument();
   });
 
+  it("shows the latest collection task kind in the workspace after running it", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.click(screen.getByRole("button", { name: "Theme Map" }));
+
+    expect(await screen.findByText(/Latest Run/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/collection\.theme_map/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Machine Learning/i).length).toBeGreaterThan(0);
+  });
+
   it("creates a new collection from the sidebar", async () => {
     const user = userEvent.setup();
 

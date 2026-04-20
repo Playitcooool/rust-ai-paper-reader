@@ -1184,6 +1184,14 @@ export default function App() {
             </div>
             <div className="result-card">
               <h3>Draft Status</h3>
+              {collectionArtifact ? (
+                <div className="export-row">
+                  <span className="eyebrow">Latest Run</span>
+                  <span className="meta-count">
+                    {collectionArtifact.kind} · {activeCollection?.name ?? "No collection"}
+                  </span>
+                </div>
+              ) : null}
               <p>{collectionArtifact?.markdown ?? "No collection draft yet."}</p>
               {collectionArtifact ? (
                 <div className="export-row">
