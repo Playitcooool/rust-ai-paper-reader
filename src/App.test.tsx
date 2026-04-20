@@ -185,6 +185,39 @@ describe("App workspace", () => {
     expect(screen.getByText(/Created collection Reading Queue/i)).toBeInTheDocument();
   });
 
+  it("creates a nested collection under the current collection", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("New collection name"), "Theory");
+    await user.click(screen.getByRole("button", { name: "Add Nested Collection" }));
+
+    expect(
+      await screen.findByRole("button", { name: /Open collection Machine Learning \/ Theory/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Created nested collection Theory under Machine Learning/i)).toBeInTheDocument();
+  });
+
+  it("moves the selected collection under a new parent", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Systems/i }));
+    await user.selectOptions(screen.getByLabelText("Move collection destination"), "1");
+    await user.click(screen.getByRole("button", { name: "Move Collection" }));
+
+    expect(
+      await screen.findByRole("button", { name: /Open collection Machine Learning \/ Systems/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Moved Systems into Machine Learning/i)).toBeInTheDocument();
+  });
+
   it("filters the current collection by tag from the sidebar", async () => {
     const user = userEvent.setup();
 

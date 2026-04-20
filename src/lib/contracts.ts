@@ -71,6 +71,7 @@ export type ResearchNote = {
 export type AppApi = {
   listCollections: () => Promise<Collection[]>;
   createCollection: (input: { name: string; parent_id?: number | null }) => Promise<Collection>;
+  moveCollection: (input: { collection_id: number; parent_id?: number | null }) => Promise<void>;
   listTags: (collectionId?: number) => Promise<Tag[]>;
   createTag: (input: { name: string }) => Promise<Tag>;
   assignTag: (input: { item_id: number; tag_id: number }) => Promise<void>;

@@ -223,3 +223,35 @@ fn imports_citation_records_and_exports_structured_formats() {
         .expect("ris exported");
     assert!(ris.contains("TY  - JOUR"));
 }
+
+#[test]
+fn moves_collections_without_allowing_cycles() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+
+    let ml = service
+        .create_collection("Machine Learning", None)
+        .expect("collection created");
+    let systems = service
+        .create_collection("Systems", None)
+        .expect("collection created");
+    let theory = service
+        .create_collection("Theory", Some(ml.id))
+        .expect("nested collection created");
+
+    service
+        .move_collection(systems.id, Some(ml.id))
+        .expect("move succeeds");
+
+    let collections = service.list_collections().expect("collections listed");
+    let moved = collections
+        .iter()
+        .find(|collection| collection.id == systems.id)
+        .expect("systems exists");
+    assert_eq!(moved.parent_id, Some(ml.id));
+
+    let cycle_error = service
+        .move_collection(ml.id, Some(theory.id))
+        .expect_err("cycle should fail");
+    assert!(cycle_error.to_string().contains("descendant"));
+}

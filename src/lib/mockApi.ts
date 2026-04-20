@@ -207,6 +207,35 @@ export const mockApi: AppApi = {
     return collection;
   },
 
+  async moveCollection(input) {
+    if (input.parent_id === input.collection_id) {
+      throw new Error("A collection cannot be moved into itself.");
+    }
+
+    const descendants = new Set<number>();
+    const stack = [input.collection_id];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (current === undefined) continue;
+      for (const collection of state.collections) {
+        if (collection.parent_id === current && !descendants.has(collection.id)) {
+          descendants.add(collection.id);
+          stack.push(collection.id);
+        }
+      }
+    }
+
+    if (input.parent_id != null && descendants.has(input.parent_id)) {
+      throw new Error("A collection cannot be moved into one of its descendants.");
+    }
+
+    const collection = state.collections.find((entry) => entry.id === input.collection_id);
+    if (!collection) {
+      throw new Error(`Unknown collection ${input.collection_id}`);
+    }
+    collection.parent_id = input.parent_id ?? null;
+  },
+
   async listTags(collectionId) {
     return buildTagView(collectionId);
   },

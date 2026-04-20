@@ -128,6 +128,60 @@ impl LibraryService {
         })
     }
 
+    pub fn move_collection(&self, collection_id: i64, parent_id: Option<i64>) -> Result<()> {
+        if parent_id == Some(collection_id) {
+            return Err(anyhow!("a collection cannot be moved into itself"));
+        }
+
+        let conn = self.connect()?;
+        let exists = conn
+            .query_row(
+                "SELECT id FROM collections WHERE id = ?1",
+                [collection_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(anyhow!("collection does not exist"));
+        }
+
+        if let Some(parent_id) = parent_id {
+            let parent_exists = conn
+                .query_row(
+                    "SELECT id FROM collections WHERE id = ?1",
+                    [parent_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            if parent_exists.is_none() {
+                return Err(anyhow!("parent collection does not exist"));
+            }
+
+            let mut current_parent = Some(parent_id);
+            while let Some(current_id) = current_parent {
+                if current_id == collection_id {
+                    return Err(anyhow!(
+                        "a collection cannot be moved into one of its descendants"
+                    ));
+                }
+                current_parent = conn
+                    .query_row(
+                        "SELECT parent_id FROM collections WHERE id = ?1",
+                        [current_id],
+                        |row| row.get::<_, Option<i64>>(0),
+                    )
+                    .optional()?
+                    .flatten();
+            }
+        }
+
+        conn.execute(
+            "UPDATE collections SET parent_id = ?1 WHERE id = ?2",
+            params![parent_id, collection_id],
+        )?;
+        Ok(())
+    }
+
     pub fn list_collections(&self) -> Result<Vec<Collection>> {
         let conn = self.connect()?;
         let mut statement =

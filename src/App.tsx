@@ -61,6 +61,59 @@ const applyTagFilter = (items: LibraryItem[], tags: Tag[], selectedTagId: number
   return items.filter((item) => item.tags.includes(selectedTagName));
 };
 
+type CollectionTreeEntry = {
+  collection: Collection;
+  depth: number;
+  pathLabel: string;
+};
+
+const orderedCollections = (collections: Collection[]): CollectionTreeEntry[] => {
+  const childrenByParent = new Map<number | null, Collection[]>();
+
+  for (const collection of collections) {
+    const siblings = childrenByParent.get(collection.parent_id) ?? [];
+    siblings.push(collection);
+    childrenByParent.set(collection.parent_id, siblings);
+  }
+
+  for (const siblings of childrenByParent.values()) {
+    siblings.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  const walk = (
+    parentId: number | null,
+    depth: number,
+    parentPath: string | null,
+  ): CollectionTreeEntry[] =>
+    (childrenByParent.get(parentId) ?? []).flatMap((collection) => {
+      const pathLabel = parentPath ? `${parentPath} / ${collection.name}` : collection.name;
+      return [
+        { collection, depth, pathLabel },
+        ...walk(collection.id, depth + 1, pathLabel),
+      ];
+    });
+
+  return walk(null, 0, null);
+};
+
+const descendantIdsForCollection = (collections: Collection[], collectionId: number) => {
+  const descendants = new Set<number>();
+  const stack = [collectionId];
+
+  while (stack.length > 0) {
+    const currentId = stack.pop();
+    if (currentId === undefined) continue;
+    for (const collection of collections) {
+      if (collection.parent_id === currentId && !descendants.has(collection.id)) {
+        descendants.add(collection.id);
+        stack.push(collection.id);
+      }
+    }
+  }
+
+  return descendants;
+};
+
 export default function App() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [items, setItems] = useState<LibraryItem[]>([]);
@@ -68,6 +121,7 @@ export default function App() {
   const [importMode, setImportMode] = useState<ImportMode>("managed_copy");
   const [newCollectionName, setNewCollectionName] = useState("");
   const [newTagName, setNewTagName] = useState("");
+  const [moveCollectionParentValue, setMoveCollectionParentValue] = useState("root");
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
   const [openPaperIds, setOpenPaperIds] = useState<number[]>([]);
@@ -183,6 +237,19 @@ export default function App() {
   }, [selectedCollectionId]);
 
   useEffect(() => {
+    if (selectedCollectionId === null) {
+      setMoveCollectionParentValue("root");
+      return;
+    }
+    const currentCollection = collections.find((collection) => collection.id === selectedCollectionId);
+    setMoveCollectionParentValue(
+      currentCollection?.parent_id !== null && currentCollection?.parent_id !== undefined
+        ? String(currentCollection.parent_id)
+        : "root",
+    );
+  }, [collections, selectedCollectionId]);
+
+  useEffect(() => {
     if (activePaperId === null) {
       setReaderView(null);
       setAnnotations([]);
@@ -257,6 +324,28 @@ export default function App() {
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
+  const collectionEntries = useMemo(() => orderedCollections(collections), [collections]);
+  const moveDestinationOptions = useMemo(() => {
+    if (selectedCollectionId === null) return collectionEntries;
+    const blockedIds = descendantIdsForCollection(collections, selectedCollectionId);
+    blockedIds.add(selectedCollectionId);
+    return collectionEntries.filter((entry) => !blockedIds.has(entry.collection.id));
+  }, [collectionEntries, collections, selectedCollectionId]);
+
+  async function refreshCollections(nextSelectedId?: number | null) {
+    const api = await getApi();
+    const loadedCollections = await api.listCollections();
+    setCollections(loadedCollections);
+    if (nextSelectedId !== undefined) {
+      setSelectedCollectionId(nextSelectedId);
+      return;
+    }
+    setSelectedCollectionId((current) =>
+      current && loadedCollections.some((collection) => collection.id === current)
+        ? current
+        : loadedCollections[0]?.id ?? null,
+    );
+  }
 
   function closePaperTab(itemId: number) {
     setOpenPaperIds((current) => {
@@ -456,7 +545,7 @@ export default function App() {
     setStatusMessage(message);
   }
 
-  async function handleCreateCollection() {
+  async function handleCreateCollection(parentId: number | null = null) {
     const name = newCollectionName.trim();
     if (!name) {
       setStatusMessage("Enter a collection name first.");
@@ -464,12 +553,43 @@ export default function App() {
     }
 
     const api = await getApi();
-    const collection = await api.createCollection({ name });
-    setCollections((current) => [...current, collection]);
-    setPendingCollectionStatus(`Created collection ${collection.name}.`);
-    setSelectedCollectionId(collection.id);
+    const collection = await api.createCollection({ name, parent_id: parentId });
+    const message =
+      parentId === null
+        ? `Created collection ${collection.name}.`
+        : `Created nested collection ${collection.name} under ${activeCollection?.name ?? "the selected collection"}.`;
+    setPendingCollectionStatus(message);
+    await refreshCollections(collection.id);
     setNewCollectionName("");
-    setStatusMessage(`Created collection ${collection.name}.`);
+    setStatusMessage(message);
+  }
+
+  async function handleMoveCollection() {
+    if (!activeCollection) {
+      setStatusMessage("Select a collection before moving it.");
+      return;
+    }
+
+    const parentId = moveCollectionParentValue === "root" ? null : Number(moveCollectionParentValue);
+    const destinationName =
+      parentId === null
+        ? "the root"
+        : collections.find((collection) => collection.id === parentId)?.name ?? "the selected parent";
+
+    try {
+      const api = await getApi();
+      await api.moveCollection({ collection_id: activeCollection.id, parent_id: parentId });
+      const message =
+        parentId === null
+          ? `Moved ${activeCollection.name} to the root.`
+          : `Moved ${activeCollection.name} into ${destinationName}.`;
+      setPendingCollectionStatus(message);
+      await refreshCollections(activeCollection.id);
+      setStatusMessage(message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Move collection failed.";
+      setStatusMessage(message);
+    }
   }
 
   async function handleCreateTag() {
@@ -616,16 +736,43 @@ export default function App() {
             <button className="ghost-button" type="button" onClick={() => void handleCreateCollection()}>
               Add Collection
             </button>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => void handleCreateCollection(selectedCollectionId)}
+            >
+              Add Nested Collection
+            </button>
+          </div>
+          <div className="collection-create-row">
+            <select
+              aria-label="Move collection destination"
+              className="mode-select"
+              value={moveCollectionParentValue}
+              onChange={(event) => setMoveCollectionParentValue(event.target.value)}
+            >
+              <option value="root">Move to Root</option>
+              {moveDestinationOptions.map((entry) => (
+                <option key={entry.collection.id} value={entry.collection.id}>
+                  {entry.pathLabel}
+                </option>
+              ))}
+            </select>
+            <button className="ghost-button" type="button" onClick={() => void handleMoveCollection()}>
+              Move Collection
+            </button>
           </div>
           <div className="nav-list">
-            {collections.map((collection) => {
+            {collectionEntries.map(({ collection, depth, pathLabel }) => {
               const itemCount = items.filter((item) => item.collection_id === collection.id).length;
               return (
               <button
                 key={collection.id}
+                aria-label={`Open collection ${pathLabel}`}
                 className={`nav-item ${
                   collection.id === selectedCollectionId ? "nav-item-active" : ""
                 }`}
+                style={{ paddingLeft: `${16 + depth * 18}px` }}
                 type="button"
                 onClick={() => setSelectedCollectionId(collection.id)}
               >

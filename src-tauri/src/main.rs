@@ -17,6 +17,12 @@ struct CreateCollectionInput {
 }
 
 #[derive(Deserialize)]
+struct MoveCollectionInput {
+    collection_id: i64,
+    parent_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
 struct CreateTagInput {
     name: String,
 }
@@ -166,6 +172,16 @@ fn create_collection(
 ) -> Result<Collection, String> {
     service(&state)?
         .create_collection(&input.name, input.parent_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn move_collection(
+    state: State<'_, AppState>,
+    input: MoveCollectionInput,
+) -> Result<(), String> {
+    service(&state)?
+        .move_collection(input.collection_id, input.parent_id)
         .map_err(|error| error.to_string())
 }
 
@@ -380,6 +396,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_collections,
             create_collection,
+            move_collection,
             list_tags,
             create_tag,
             assign_tag,
