@@ -63,6 +63,7 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [readerView, setReaderView] = useState<ReaderView | null>(null);
   const [activeReaderSection, setActiveReaderSection] = useState<ReaderSection>("Overview");
+  const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [paperArtifact, setPaperArtifact] = useState<AIArtifact | null>(null);
   const [collectionArtifact, setCollectionArtifact] = useState<AIArtifact | null>(null);
@@ -155,6 +156,7 @@ export default function App() {
 
       setReaderView(view);
       setActiveReaderSection("Overview");
+      setActiveAnchor(null);
       setAnnotations(itemAnnotations);
       setPaperArtifact(artifact);
       setOpenPaperIds((current) =>
@@ -332,8 +334,17 @@ export default function App() {
 
   function handleReaderSectionChange(section: ReaderSection) {
     setActiveReaderSection(section);
+    setActiveAnchor(null);
     if (activePaper) {
       setStatusMessage(`Focused reader outline on ${section} in ${activePaper.title}.`);
+    }
+  }
+
+  function handleAnnotationJump(annotation: Annotation) {
+    setActiveReaderSection("Notes");
+    setActiveAnchor(annotation.anchor);
+    if (activePaper) {
+      setStatusMessage(`Jumped to annotation ${annotation.anchor} in ${activePaper.title}.`);
     }
   }
 
@@ -544,12 +555,21 @@ export default function App() {
               <div className="reader-location-bar">
                 <span className="status-pill">{activeReaderSection}</span>
                 <span className="meta-count">Page {readerSections.indexOf(activeReaderSection) + 1}</span>
+                {activeAnchor ? <span className="meta-count">Active anchor: {activeAnchor}</span> : null}
               </div>
               <p className="document-lead">{excerptFromView(readerView)}</p>
               {annotations.map((annotation) => (
-                <div key={annotation.id} className="annotation-chip">
+                <button
+                  key={annotation.id}
+                  aria-label={`Jump to annotation ${annotation.anchor}`}
+                  className={`annotation-chip ${
+                    activeAnchor === annotation.anchor ? "annotation-chip-active" : ""
+                  }`}
+                  type="button"
+                  onClick={() => handleAnnotationJump(annotation)}
+                >
                   {annotation.anchor}: {annotation.body}
-                </div>
+                </button>
               ))}
               <div
                 className="reader-html"

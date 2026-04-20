@@ -187,6 +187,18 @@ p {
   font-size: 0.82rem;
 }
 
+.annotation-chip {
+  width: fit-content;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.annotation-chip-active {
+  background: rgba(226, 139, 83, 0.24);
+  color: #fff0df;
+}
+
 .nav-list,
 .paper-list,
 .ai-card-stack {

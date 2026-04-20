@@ -113,4 +113,22 @@ describe("App workspace", () => {
     expect(methodsButton).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText(/Focused reader outline on Methods/i)).toBeInTheDocument();
   });
+
+  it("jumps back to an annotation anchor from the reader chips", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    const annotationJump = screen.getByRole("button", {
+      name: /Jump to annotation section-1/i,
+    });
+    await user.click(annotationJump);
+
+    expect(screen.getByText(/Jumped to annotation section-1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Active anchor: section-1/i)).toBeInTheDocument();
+  });
 });
