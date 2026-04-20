@@ -294,7 +294,7 @@ fn run_item_task(
 ) -> Result<app_core::service::AITask, String> {
     match input.kind.as_str() {
         "item.summarize" | "item.translate" | "item.explain_term" | "item.ask" => service(&state)?
-            .run_item_summary(input.item_id)
+            .run_item_task(input.item_id, &input.kind)
             .map_err(|error| error.to_string()),
         _ => Err("unsupported item task".into()),
     }

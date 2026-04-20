@@ -572,7 +572,7 @@ impl LibraryService {
         .map_err(Into::into)
     }
 
-    pub fn run_item_summary(&self, item_id: i64) -> Result<AITask> {
+    pub fn run_item_task(&self, item_id: i64, kind: &str) -> Result<AITask> {
         let mut conn = self.connect()?;
         let (collection_id, title, excerpt) = conn.query_row(
             "
@@ -595,22 +595,34 @@ impl LibraryService {
             [collection_id],
             |row| row.get(0),
         )?;
-        let summary = format!(
-            "# Summary: {title}\n\nCollection: {collection_name}\n\n{}",
-            excerpt.lines().next().unwrap_or("No content extracted.")
-        );
+        let first_line = excerpt.lines().next().unwrap_or("No content extracted.");
+        let output = match kind {
+            "item.summarize" => format!(
+                "# Summary: {title}\n\nCollection: {collection_name}\n\n{first_line}"
+            ),
+            "item.translate" => format!(
+                "# Translation: {title}\n\n## Translated Passage\n{first_line}\n\n## Notes\nTranslated from the active reader selection."
+            ),
+            "item.explain_term" => format!(
+                "# Terminology Notes: {title}\n\n## Key Terms\n- Scaling law: {first_line}\n\n## Reading Tip\nUse this note to clarify repeated technical vocabulary."
+            ),
+            "item.ask" => format!(
+                "# Reading Q&A: {title}\n\n## Answer\n{first_line}\n\n## Evidence\nCollection: {collection_name}"
+            ),
+            _ => return Err(anyhow!("unsupported item task kind")),
+        };
 
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO ai_tasks(item_id, collection_id, kind, status, output_markdown)
-             VALUES (?1, ?2, 'item.summarize', 'succeeded', ?3)",
-            params![item_id, collection_id, summary],
+             VALUES (?1, ?2, ?3, 'succeeded', ?4)",
+            params![item_id, collection_id, kind, output],
         )?;
         let task_id = tx.last_insert_rowid();
         tx.execute(
             "INSERT INTO ai_artifacts(task_id, item_id, collection_id, kind, markdown)
-             VALUES (?1, ?2, ?3, 'item.summarize', ?4)",
-            params![task_id, item_id, collection_id, summary],
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![task_id, item_id, collection_id, kind, output],
         )?;
         tx.commit()?;
 
@@ -618,10 +630,14 @@ impl LibraryService {
             id: task_id,
             item_id: Some(item_id),
             collection_id: Some(collection_id),
-            kind: "item.summarize".into(),
+            kind: kind.into(),
             status: "succeeded".into(),
-            output_markdown: summary,
+            output_markdown: output,
         })
+    }
+
+    pub fn run_item_summary(&self, item_id: i64) -> Result<AITask> {
+        self.run_item_task(item_id, "item.summarize")
     }
 
     pub fn create_note_from_latest_collection_artifact(

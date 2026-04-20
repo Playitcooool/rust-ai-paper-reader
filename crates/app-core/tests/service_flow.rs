@@ -196,6 +196,40 @@ fn generates_task_specific_collection_outputs() {
 }
 
 #[test]
+fn generates_task_specific_item_outputs() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let collection = service
+        .create_collection("Machine Learning", None)
+        .expect("collection created");
+    let pdf = root.path().join("paper.pdf");
+    std::fs::write(
+        &pdf,
+        b"Scaling laws show predictable returns as compute, data, and parameters grow in sync.",
+    )
+    .unwrap();
+
+    let imported = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .expect("import succeeds");
+    let item_id = imported[0].id;
+
+    let translation = service
+        .run_item_task(item_id, "item.translate")
+        .expect("translation succeeds");
+    assert_eq!(translation.kind, "item.translate");
+    assert!(translation.output_markdown.contains("# Translation: paper"));
+    assert!(translation.output_markdown.contains("## Translated Passage"));
+
+    let explanation = service
+        .run_item_task(item_id, "item.explain_term")
+        .expect("term explanation succeeds");
+    assert_eq!(explanation.kind, "item.explain_term");
+    assert!(explanation.output_markdown.contains("# Terminology Notes: paper"));
+    assert!(explanation.output_markdown.contains("## Key Terms"));
+}
+
+#[test]
 fn lists_tags_scoped_to_the_current_collection() {
     let root = tempdir().unwrap();
     let service = LibraryService::new(root.path()).expect("service initializes");

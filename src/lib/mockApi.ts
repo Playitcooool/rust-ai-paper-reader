@@ -257,6 +257,23 @@ const collectionTaskOutput = (collectionId: number, kind: string) => {
   }
 };
 
+const itemTaskOutput = (item: MockItemDetails, kind: string) => {
+  const firstLine = item.plainText.split(".").shift()?.trim() ?? item.title;
+
+  switch (kind) {
+    case "item.summarize":
+      return `# Summary: ${item.title}\n\nCollection: ${collectionName(item.collection_id)}\n\n${firstLine}`;
+    case "item.translate":
+      return `# Translation: ${item.title}\n\n## Translated Passage\n${firstLine}\n\n## Notes\nTranslated from the active reader selection.`;
+    case "item.explain_term":
+      return `# Terminology Notes: ${item.title}\n\n## Key Terms\n- Scaling law: ${firstLine}\n\n## Reading Tip\nUse this note to clarify repeated technical vocabulary.`;
+    case "item.ask":
+      return `# Reading Q&A: ${item.title}\n\n## Answer\n${firstLine}\n\n## Evidence\nCollection: ${collectionName(item.collection_id)}`;
+    default:
+      return `# Summary: ${item.title}\n\nCollection: ${collectionName(item.collection_id)}\n\n${firstLine}`;
+  }
+};
+
 export function resetMockApi() {
   state = initialState();
 }
@@ -466,7 +483,7 @@ export const mockApi: AppApi = {
     if (!item) {
       throw new Error(`Unknown item ${input.item_id}`);
     }
-    const output = `# ${input.kind}\n\n${item.title}\n\n${item.plainText}`;
+    const output = itemTaskOutput(item, input.kind);
     const task = {
       id: state.nextId++,
       item_id: item.id,

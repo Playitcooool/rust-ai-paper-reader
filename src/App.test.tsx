@@ -170,6 +170,24 @@ describe("App workspace", () => {
     expect(screen.getAllByText(/item\.summarize/i).length).toBeGreaterThan(1);
   });
 
+  it("renders task-specific paper outputs", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Translate selection" }));
+    expect(await screen.findByText(/# Translation: Transformer Scaling Laws/i)).toBeInTheDocument();
+    expect(screen.getByText(/## Translated Passage/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Explain terminology" }));
+    expect(await screen.findByText(/# Terminology Notes: Transformer Scaling Laws/i)).toBeInTheDocument();
+    expect(screen.getByText(/## Key Terms/i)).toBeInTheDocument();
+  });
+
   it("creates and updates a research note from the collection workspace", async () => {
     const user = userEvent.setup();
 
