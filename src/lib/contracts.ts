@@ -101,6 +101,7 @@ export type AppApi = {
   }) => Promise<Annotation>;
   runItemTask: (input: { item_id: number; kind: string }) => Promise<AITask>;
   runCollectionTask: (input: { collection_id: number; kind: string }) => Promise<AITask>;
+  listTaskRuns: (input: { item_id?: number; collection_id?: number }) => Promise<AITask[]>;
   getArtifact: (input: {
     item_id?: number;
     collection_id?: number;

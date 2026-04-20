@@ -499,6 +499,18 @@ export const mockApi: AppApi = {
     return task;
   },
 
+  async listTaskRuns(input) {
+    return state.tasks.filter((task) => {
+      if (input.item_id !== undefined) {
+        return task.item_id === input.item_id;
+      }
+      if (input.collection_id !== undefined) {
+        return task.collection_id === input.collection_id;
+      }
+      return true;
+    });
+  },
+
   async getArtifact(input) {
     return (
       state.artifacts.find((artifact) => {

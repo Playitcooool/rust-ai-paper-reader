@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getApi } from "./lib/api";
 import type {
   AIArtifact,
+  AITask,
   Annotation,
   CitationFormat,
   Collection,
@@ -174,6 +175,7 @@ export default function App() {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [paperArtifact, setPaperArtifact] = useState<AIArtifact | null>(null);
   const [collectionArtifact, setCollectionArtifact] = useState<AIArtifact | null>(null);
+  const [collectionTaskRuns, setCollectionTaskRuns] = useState<AITask[]>([]);
   const [notes, setNotes] = useState<ResearchNote[]>([]);
   const [activeNoteId, setActiveNoteId] = useState<number | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
@@ -334,12 +336,14 @@ export default function App() {
 
     async function loadCollectionOutputs() {
       const api = await getApi();
-      const [artifact, collectionNotes] = await Promise.all([
+      const [artifact, collectionNotes, taskRuns] = await Promise.all([
         api.getArtifact({ collection_id: collectionId }),
         api.listNotes(collectionId),
+        api.listTaskRuns({ collection_id: collectionId }),
       ]);
       if (cancelled) return;
       setCollectionArtifact(artifact);
+      setCollectionTaskRuns(taskRuns);
       setNotes(collectionNotes);
       setActiveNoteId(collectionNotes[0]?.id ?? null);
       setNoteDraft(collectionNotes[0]?.markdown ?? "");
@@ -519,11 +523,13 @@ export default function App() {
     if (!activeCollection) return;
     const api = await getApi();
     await api.runCollectionTask({ collection_id: activeCollection.id, kind });
-    const [artifact, collectionNotes] = await Promise.all([
+    const [artifact, collectionNotes, taskRuns] = await Promise.all([
       api.getArtifact({ collection_id: activeCollection.id }),
       api.listNotes(activeCollection.id),
+      api.listTaskRuns({ collection_id: activeCollection.id }),
     ]);
     setCollectionArtifact(artifact);
+    setCollectionTaskRuns(taskRuns);
     setNotes(collectionNotes);
     setStatusMessage(`Completed ${kind} for ${activeCollection.name}.`);
   }
@@ -1239,6 +1245,19 @@ export default function App() {
                   <span className="meta-count">{notes[0].title}</span>
                 </div>
               ) : null}
+            </div>
+            <div className="result-card">
+              <h3>Task History</h3>
+              {collectionTaskRuns.length > 0 ? (
+                collectionTaskRuns.slice(0, 4).map((task) => (
+                  <div key={task.id} className="export-row">
+                    <span>{task.kind}</span>
+                    <span className="meta-count">{task.status}</span>
+                  </div>
+                ))
+              ) : (
+                <p>No collection tasks have run yet.</p>
+              )}
             </div>
           </section>
         )}

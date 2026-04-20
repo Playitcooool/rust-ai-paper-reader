@@ -58,6 +58,11 @@ async function createTauriApi(): Promise<AppApi> {
     createAnnotation: (input) => invoke("create_annotation", { input }),
     runItemTask: (input) => invoke("run_item_task", { input }),
     runCollectionTask: (input) => invoke("run_collection_task", { input }),
+    listTaskRuns: (input) =>
+      invoke("list_task_runs", {
+        itemId: input.item_id,
+        collectionId: input.collection_id,
+      }),
     getArtifact: (input) =>
       invoke("get_artifact", {
         itemId: input.item_id,
