@@ -198,6 +198,22 @@ describe("App workspace", () => {
     expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("110%");
   });
 
+  it("jumps between reader pages from the sidebar and keyboard", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Jump to reader page 2" }));
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+  });
+
   it("sorts the visible papers by newest year in the current collection", async () => {
     const user = userEvent.setup();
 

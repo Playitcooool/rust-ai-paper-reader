@@ -1096,6 +1096,28 @@ export default function App() {
     setReaderZoom((current) => Math.max(70, Math.min(180, current + delta)));
   }
 
+  useEffect(() => {
+    function handleWindowKeydown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const isTypingTarget =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+      if (isTypingTarget || readerPages.length === 0) return;
+
+      if (event.key === "ArrowRight") {
+        setReaderPage(activeReaderPage + 1);
+      } else if (event.key === "ArrowLeft") {
+        setReaderPage(activeReaderPage - 1);
+      }
+    }
+
+    window.addEventListener("keydown", handleWindowKeydown);
+    return () => {
+      window.removeEventListener("keydown", handleWindowKeydown);
+    };
+  }, [activeReaderPage, readerPages.length]);
+
   function handleAnnotationJump(annotation: Annotation) {
     setActiveReaderSection("Notes");
     setActiveAnchor(annotation.anchor);
@@ -1609,6 +1631,25 @@ export default function App() {
                   {section}
                 </button>
               ))}
+              {readerPages.length > 0 ? (
+                <>
+                  <p className="eyebrow">Pages</p>
+                  {readerPages.map((page, index) => (
+                    <button
+                      key={`${page.title}-${index}`}
+                      aria-label={`Jump to reader page ${index + 1}`}
+                      aria-pressed={activeReaderPage === index}
+                      className={`outline-link ${
+                        activeReaderPage === index ? "outline-link-active" : ""
+                      }`}
+                      type="button"
+                      onClick={() => setReaderPage(index)}
+                    >
+                      {index + 1}. {page.title}
+                    </button>
+                  ))}
+                </>
+              ) : null}
             </div>
             <article className="reader-document">
               <div className="reader-location-bar">
