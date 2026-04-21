@@ -484,6 +484,31 @@ impl LibraryService {
         hydrate_item_tags(&conn, base_items)
     }
 
+    pub fn update_item_metadata(
+        &self,
+        item_id: i64,
+        title: String,
+        authors: String,
+        publication_year: Option<i64>,
+        source: String,
+        doi: Option<String>,
+    ) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "
+            UPDATE items
+            SET title = ?1, authors = ?2, publication_year = ?3, source = ?4, doi = ?5
+            WHERE id = ?6
+            ",
+            params![title, authors, publication_year, source, doi, item_id],
+        )?;
+        conn.execute(
+            "UPDATE search_index SET title = ?1 WHERE item_id = ?2",
+            params![title, item_id],
+        )?;
+        Ok(())
+    }
+
     pub fn search_items(&self, query: &str) -> Result<Vec<LibraryItem>> {
         let conn = self.connect()?;
         let like_query = format!("%{}%", query.to_lowercase());

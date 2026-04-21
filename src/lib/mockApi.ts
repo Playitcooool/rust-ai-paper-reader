@@ -429,6 +429,18 @@ export const mockApi: AppApi = {
     item.attachment_status = "ready";
   },
 
+  async updateItemMetadata(input) {
+    const item = state.items.find((entry) => entry.id === input.item_id);
+    if (!item) {
+      throw new Error(`Unknown item ${input.item_id}`);
+    }
+    item.title = input.title;
+    item.authors = input.authors;
+    item.publication_year = input.publication_year;
+    item.source = input.source;
+    item.doi = input.doi;
+  },
+
   async listItems(collectionId) {
     return state.items
       .filter((item) => (collectionId === undefined ? true : item.collection_id === collectionId))

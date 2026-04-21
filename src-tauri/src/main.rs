@@ -66,6 +66,16 @@ struct RelinkAttachmentInput {
 }
 
 #[derive(Deserialize)]
+struct UpdateItemMetadataInput {
+    item_id: i64,
+    title: String,
+    authors: String,
+    publication_year: Option<i64>,
+    source: String,
+    doi: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct RunItemTaskInput {
     item_id: i64,
     kind: String,
@@ -264,6 +274,23 @@ fn relink_attachment(
 }
 
 #[tauri::command]
+fn update_item_metadata(
+    state: State<'_, AppState>,
+    input: UpdateItemMetadataInput,
+) -> Result<(), String> {
+    service(&state)?
+        .update_item_metadata(
+            input.item_id,
+            input.title,
+            input.authors,
+            input.publication_year,
+            input.source,
+            input.doi,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_reader_view(state: State<'_, AppState>, item_id: i64) -> Result<ReaderView, String> {
     service(&state)?
         .get_reader_view(item_id)
@@ -405,6 +432,7 @@ fn main() {
             import_files,
             import_citations,
             relink_attachment,
+            update_item_metadata,
             get_reader_view,
             create_annotation,
             list_annotations,

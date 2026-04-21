@@ -89,6 +89,14 @@ export type AppApi = {
   }) => Promise<ImportedItem[]>;
   importCitations: (input: { collection_id: number; paths: string[] }) => Promise<ImportedItem[]>;
   relinkAttachment: (input: { attachment_id: number; replacement_path: string }) => Promise<void>;
+  updateItemMetadata: (input: {
+    item_id: number;
+    title: string;
+    authors: string;
+    publication_year: number | null;
+    source: string;
+    doi: string | null;
+  }) => Promise<void>;
   listItems: (collectionId?: number) => Promise<LibraryItem[]>;
   searchItems: (query: string) => Promise<LibraryItem[]>;
   getReaderView: (itemId: number) => Promise<ReaderView>;

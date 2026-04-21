@@ -355,3 +355,50 @@ fn searches_items_by_metadata_fields() {
     let by_year = service.search_items("2020").expect("year search works");
     assert_eq!(by_year.len(), 1);
 }
+
+#[test]
+fn updates_item_metadata_and_search_uses_the_new_values() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+
+    let collection = service
+        .create_collection("Machine Learning", None)
+        .expect("collection created");
+    let paper = root.path().join("transformer-scaling-laws.pdf");
+    std::fs::write(&paper, b"scaling laws").unwrap();
+
+    let imported = service
+        .import_files(collection.id, &[paper], ImportMode::ManagedCopy)
+        .expect("import succeeds");
+    let item_id = imported[0].id;
+
+    service
+        .update_item_metadata(
+            item_id,
+            "Edited Scaling Laws".into(),
+            "OpenAI Research".into(),
+            Some(2024),
+            "NeurIPS".into(),
+            Some("10.1000/edited-scaling".into()),
+        )
+        .expect("metadata update succeeds");
+
+    let updated = service.list_items(Some(collection.id)).expect("items listed");
+    assert_eq!(updated[0].title, "Edited Scaling Laws");
+    assert_eq!(updated[0].authors, "OpenAI Research");
+    assert_eq!(updated[0].publication_year, Some(2024));
+    assert_eq!(updated[0].source, "NeurIPS");
+    assert_eq!(updated[0].doi.as_deref(), Some("10.1000/edited-scaling"));
+
+    let by_title = service
+        .search_items("edited scaling")
+        .expect("title search works");
+    assert_eq!(by_title.len(), 1);
+    assert_eq!(by_title[0].id, item_id);
+
+    let by_author = service
+        .search_items("openai research")
+        .expect("author search works");
+    assert_eq!(by_author.len(), 1);
+    assert_eq!(by_author[0].id, item_id);
+}

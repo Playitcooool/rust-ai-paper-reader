@@ -459,6 +459,35 @@ describe("App workspace", () => {
     expect(screen.getByText(/^ready · PDF$/i)).toBeInTheDocument();
   });
 
+  it("edits metadata for the active paper from the reader panel", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit Metadata" }));
+    await user.clear(screen.getByLabelText("Metadata title"));
+    await user.type(screen.getByLabelText("Metadata title"), "Edited Scaling Laws");
+    await user.clear(screen.getByLabelText("Metadata authors"));
+    await user.type(screen.getByLabelText("Metadata authors"), "OpenAI Research");
+    await user.clear(screen.getByLabelText("Metadata year"));
+    await user.type(screen.getByLabelText("Metadata year"), "2024");
+    await user.clear(screen.getByLabelText("Metadata source"));
+    await user.type(screen.getByLabelText("Metadata source"), "NeurIPS");
+    await user.clear(screen.getByLabelText("Metadata DOI"));
+    await user.type(screen.getByLabelText("Metadata DOI"), "10.1000/edited-scaling");
+    await user.click(screen.getByRole("button", { name: "Save Metadata" }));
+
+    expect(await screen.findByRole("heading", { name: "Edited Scaling Laws", level: 2 })).toBeInTheDocument();
+    expect(screen.getAllByText(/OpenAI Research · 2024 · NeurIPS/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/10\.1000\/edited-scaling/i)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Edited Scaling Laws/i }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/Saved metadata for Edited Scaling Laws/i)).toBeInTheDocument();
+  });
+
   it("exports BibTeX and RIS citations for the active paper", async () => {
     const user = userEvent.setup();
 

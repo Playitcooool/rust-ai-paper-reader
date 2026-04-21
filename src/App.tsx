@@ -199,6 +199,14 @@ export default function App() {
   const [draggedFileCount, setDraggedFileCount] = useState(0);
   const [isImporting, setIsImporting] = useState(false);
   const [latestCitation, setLatestCitation] = useState("");
+  const [isEditingMetadata, setIsEditingMetadata] = useState(false);
+  const [metadataDraft, setMetadataDraft] = useState({
+    title: "",
+    authors: "",
+    publication_year: "",
+    source: "",
+    doi: "",
+  });
   const [pendingCollectionStatus, setPendingCollectionStatus] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
 
@@ -390,6 +398,23 @@ export default function App() {
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
   const readerState = readerStateCopy(activePaper, items.length);
   const paperActionsEnabled = canRunReaderActions(activePaper);
+  useEffect(() => {
+    setIsEditingMetadata(false);
+    setMetadataDraft({
+      title: activePaper?.title ?? "",
+      authors: activePaper?.authors ?? "",
+      publication_year: activePaper?.publication_year ? String(activePaper.publication_year) : "",
+      source: activePaper?.source ?? "",
+      doi: activePaper?.doi ?? "",
+    });
+  }, [
+    activePaper?.id,
+    activePaper?.title,
+    activePaper?.authors,
+    activePaper?.publication_year,
+    activePaper?.source,
+    activePaper?.doi,
+  ]);
   const collectionEntries = useMemo(() => orderedCollections(collections), [collections]);
   const moveDestinationOptions = useMemo(() => {
     if (selectedCollectionId === null) return collectionEntries;
@@ -569,6 +594,40 @@ export default function App() {
     });
     setAnnotations((current) => [...current, annotation]);
     setStatusMessage(`Added note to ${activePaper.title}.`);
+  }
+
+  async function handleSaveMetadata() {
+    if (!activePaper || selectedCollectionId === null) return;
+    const api = await getApi();
+    const nextTitle = metadataDraft.title.trim();
+    const nextAuthors = metadataDraft.authors.trim();
+    const nextSource = metadataDraft.source.trim();
+    const nextDoi = metadataDraft.doi.trim();
+    if (!nextTitle || !nextAuthors || !nextSource) {
+      setStatusMessage("Title, authors, and source are required.");
+      return;
+    }
+
+    await api.updateItemMetadata({
+      item_id: activePaper.id,
+      title: nextTitle,
+      authors: nextAuthors,
+      publication_year: metadataDraft.publication_year.trim()
+        ? Number(metadataDraft.publication_year.trim())
+        : null,
+      source: nextSource,
+      doi: nextDoi ? nextDoi : null,
+    });
+
+    await refreshItemsForCollection(selectedCollectionId, activePaper.id);
+    const [view, artifact] = await Promise.all([
+      api.getReaderView(activePaper.id),
+      api.getArtifact({ item_id: activePaper.id }),
+    ]);
+    setReaderView(view);
+    setPaperArtifact(artifact);
+    setIsEditingMetadata(false);
+    setStatusMessage(`Saved metadata for ${nextTitle}.`);
   }
 
   async function handleExportMarkdown() {
@@ -1013,6 +1072,14 @@ export default function App() {
               </p>
             </div>
             <div className="reader-actions">
+              <button
+                className="ghost-button"
+                type="button"
+                disabled={!activePaper}
+                onClick={() => setIsEditingMetadata((current) => !current)}
+              >
+                {isEditingMetadata ? "Cancel Metadata" : "Edit Metadata"}
+              </button>
               {activePaper?.attachment_status === "missing" ? (
                 <button className="ghost-button" type="button" onClick={() => void handleRelinkAttachment()}>
                   Relink Source
@@ -1065,6 +1132,56 @@ export default function App() {
               {activePaper ? (
                 <div className="citation-card">
                   <p className="eyebrow">Document Metadata</p>
+                  {isEditingMetadata ? (
+                    <div className="note-editor-stack">
+                      <input
+                        aria-label="Metadata title"
+                        className="search-input"
+                        value={metadataDraft.title}
+                        onChange={(event) =>
+                          setMetadataDraft((current) => ({ ...current, title: event.target.value }))
+                        }
+                      />
+                      <input
+                        aria-label="Metadata authors"
+                        className="search-input"
+                        value={metadataDraft.authors}
+                        onChange={(event) =>
+                          setMetadataDraft((current) => ({ ...current, authors: event.target.value }))
+                        }
+                      />
+                      <input
+                        aria-label="Metadata year"
+                        className="search-input"
+                        value={metadataDraft.publication_year}
+                        onChange={(event) =>
+                          setMetadataDraft((current) => ({
+                            ...current,
+                            publication_year: event.target.value,
+                          }))
+                        }
+                      />
+                      <input
+                        aria-label="Metadata source"
+                        className="search-input"
+                        value={metadataDraft.source}
+                        onChange={(event) =>
+                          setMetadataDraft((current) => ({ ...current, source: event.target.value }))
+                        }
+                      />
+                      <input
+                        aria-label="Metadata DOI"
+                        className="search-input"
+                        value={metadataDraft.doi}
+                        onChange={(event) =>
+                          setMetadataDraft((current) => ({ ...current, doi: event.target.value }))
+                        }
+                      />
+                      <button className="ghost-button" type="button" onClick={() => void handleSaveMetadata()}>
+                        Save Metadata
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="export-row">
                     <span>Authors</span>
                     <span>{activePaper.authors}</span>
