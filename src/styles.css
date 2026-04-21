@@ -5,8 +5,10 @@
     radial-gradient(circle at bottom right, rgba(28, 77, 120, 0.24), transparent 34%),
     #14161a;
   font-family:
-    "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, "Times New Roman",
-    serif;
+    "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Helvetica Neue",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
 }
 
 * {
@@ -16,6 +18,9 @@
 body {
   margin: 0;
   min-height: 100vh;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 button,
@@ -68,8 +73,9 @@ textarea {
 .eyebrow {
   margin: 0 0 8px;
   color: #d3a377;
-  font-size: 0.82rem;
-  letter-spacing: 0.14em;
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -78,6 +84,17 @@ h2,
 h3,
 p {
   margin-top: 0;
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+p {
+  line-height: 1.58;
 }
 
 .toolbar-row,
@@ -103,6 +120,7 @@ p {
 
 .search-input {
   width: 100%;
+  min-width: 0;
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
@@ -111,6 +129,7 @@ p {
 }
 
 .mode-select {
+  min-width: 0;
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
@@ -146,6 +165,21 @@ p {
   padding: 10px 14px;
   background: rgba(255, 255, 255, 0.06);
   color: inherit;
+}
+
+.ghost-button,
+.primary-button,
+.reader-tab,
+.ai-tab,
+.nav-item,
+.paper-card,
+.action-card,
+.outline-link,
+.tab-close-button,
+.mode-select,
+.search-input,
+.note-editor {
+  font-size: 0.95rem;
 }
 
 .primary-button:hover,
@@ -192,7 +226,8 @@ p {
   border-radius: 999px;
   background: rgba(211, 163, 119, 0.14);
   color: #f7c9a1;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
 }
 
 .annotation-chip {
@@ -242,7 +277,7 @@ p {
 
 .paper-card {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .footer-block p,
@@ -252,6 +287,13 @@ p {
 .paper-card span,
 .paper-card small {
   color: rgba(244, 239, 230, 0.74);
+}
+
+.secondary-copy,
+.paper-card span,
+.paper-card small,
+.meta-count {
+  line-height: 1.45;
 }
 
 .paper-tag-row,
@@ -270,7 +312,7 @@ p {
 
 .reader-tab,
 .ai-tab {
-  padding: 12px 14px;
+  padding: 11px 14px;
   background: rgba(255, 255, 255, 0.04);
   color: inherit;
 }
@@ -286,6 +328,7 @@ p {
 
 .reader-tab {
   background: transparent;
+  white-space: nowrap;
 }
 
 .tab-close-button {
@@ -303,6 +346,7 @@ p {
 .reader-meta-row {
   justify-content: space-between;
   margin-bottom: 20px;
+  gap: 18px;
 }
 
 .reader-surface {
@@ -403,6 +447,20 @@ p {
   gap: 10px;
   align-items: center;
   margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+.toolbar-row,
+.reader-actions,
+.collection-create-row,
+.reader-tabs,
+.ai-tabs,
+.reader-location-bar {
+  flex-wrap: wrap;
+}
+
+.reader-actions {
+  justify-content: flex-end;
 }
 
 @media (max-width: 1100px) {

@@ -139,6 +139,47 @@ impl LibraryService {
         })
     }
 
+    pub fn rename_collection(&self, collection_id: i64, name: &str) -> Result<()> {
+        let conn = self.connect()?;
+        let updated = conn.execute(
+            "UPDATE collections SET name = ?1 WHERE id = ?2",
+            params![name, collection_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("collection does not exist"));
+        }
+        Ok(())
+    }
+
+    pub fn remove_collection(&self, collection_id: i64) -> Result<()> {
+        let conn = self.connect()?;
+        let child_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM collections WHERE parent_id = ?1",
+            [collection_id],
+            |row| row.get(0),
+        )?;
+        if child_count > 0 {
+            return Err(anyhow!(
+                "remove or move nested collections before deleting this collection"
+            ));
+        }
+
+        let item_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM items WHERE collection_id = ?1",
+            [collection_id],
+            |row| row.get(0),
+        )?;
+        if item_count > 0 {
+            return Err(anyhow!("move or remove papers before deleting this collection"));
+        }
+
+        let deleted = conn.execute("DELETE FROM collections WHERE id = ?1", [collection_id])?;
+        if deleted == 0 {
+            return Err(anyhow!("collection does not exist"));
+        }
+        Ok(())
+    }
+
     pub fn move_collection(&self, collection_id: i64, parent_id: Option<i64>) -> Result<()> {
         if parent_id == Some(collection_id) {
             return Err(anyhow!("a collection cannot be moved into itself"));

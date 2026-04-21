@@ -198,6 +198,7 @@ export default function App() {
   const [tags, setTags] = useState<Tag[]>([]);
   const [importMode, setImportMode] = useState<ImportMode>("managed_copy");
   const [newCollectionName, setNewCollectionName] = useState("");
+  const [collectionNameDraft, setCollectionNameDraft] = useState("");
   const [newTagName, setNewTagName] = useState("");
   const [moveCollectionParentValue, setMoveCollectionParentValue] = useState("root");
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
@@ -347,6 +348,7 @@ export default function App() {
   useEffect(() => {
     if (selectedCollectionId === null) {
       setMoveCollectionParentValue("root");
+      setCollectionNameDraft("");
       return;
     }
     const currentCollection = collections.find((collection) => collection.id === selectedCollectionId);
@@ -355,6 +357,7 @@ export default function App() {
         ? String(currentCollection.parent_id)
         : "root",
     );
+    setCollectionNameDraft(currentCollection?.name ?? "");
   }, [collections, selectedCollectionId]);
 
   useEffect(() => {
@@ -845,6 +848,44 @@ export default function App() {
     }
   }
 
+  async function handleRenameCollection() {
+    if (!activeCollection) {
+      setStatusMessage("Select a collection before renaming it.");
+      return;
+    }
+
+    const nextName = collectionNameDraft.trim();
+    if (!nextName) {
+      setStatusMessage("Enter a collection name first.");
+      return;
+    }
+
+    const api = await getApi();
+    await api.renameCollection({ collection_id: activeCollection.id, name: nextName });
+    setPendingCollectionStatus(`Renamed collection to ${nextName}.`);
+    await refreshCollections(activeCollection.id);
+    setStatusMessage(`Renamed collection to ${nextName}.`);
+  }
+
+  async function handleRemoveCollection() {
+    if (!activeCollection) {
+      setStatusMessage("Select a collection before deleting it.");
+      return;
+    }
+
+    const collectionName = activeCollection.name;
+    try {
+      const api = await getApi();
+      await api.removeCollection({ collection_id: activeCollection.id });
+      setPendingCollectionStatus(`Deleted collection ${collectionName}.`);
+      await refreshCollections();
+      setStatusMessage(`Deleted collection ${collectionName}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Delete collection failed.";
+      setStatusMessage(message);
+    }
+  }
+
   async function handleCreateTag() {
     const name = newTagName.trim();
     if (!name) {
@@ -1001,6 +1042,32 @@ export default function App() {
               onClick={() => void handleCreateCollection(selectedCollectionId)}
             >
               Add Nested Collection
+            </button>
+          </div>
+          <div className="collection-create-row">
+            <input
+              aria-label="Rename collection"
+              className="search-input"
+              disabled={!activeCollection}
+              placeholder="Rename selected collection..."
+              value={collectionNameDraft}
+              onChange={(event) => setCollectionNameDraft(event.target.value)}
+            />
+            <button
+              className="ghost-button"
+              disabled={!activeCollection}
+              type="button"
+              onClick={() => void handleRenameCollection()}
+            >
+              Rename Collection
+            </button>
+            <button
+              className="ghost-button"
+              disabled={!activeCollection}
+              type="button"
+              onClick={() => void handleRemoveCollection()}
+            >
+              Delete Collection
             </button>
           </div>
           <div className="collection-create-row">

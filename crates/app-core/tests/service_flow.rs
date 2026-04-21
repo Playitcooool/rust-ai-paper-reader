@@ -317,6 +317,37 @@ fn moves_items_between_collections_and_preserves_item_history() {
 }
 
 #[test]
+fn renames_and_removes_empty_collections_with_safety_checks() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let inbox = service
+        .create_collection("Inbox", None)
+        .expect("collection created");
+    let archive = service
+        .create_collection("Archive", None)
+        .expect("collection created");
+    let child = service
+        .create_collection("Child", Some(archive.id))
+        .expect("child created");
+
+    service
+        .rename_collection(inbox.id, "Reading Queue")
+        .expect("rename succeeds");
+    let renamed = service.list_collections().expect("collections listed");
+    assert!(renamed.iter().any(|collection| collection.name == "Reading Queue"));
+
+    let nested_delete = service.remove_collection(archive.id);
+    assert!(nested_delete.is_err());
+
+    service.remove_collection(child.id).expect("delete child");
+    service
+        .remove_collection(archive.id)
+        .expect("delete empty collection");
+    let remaining = service.list_collections().expect("collections listed");
+    assert!(!remaining.iter().any(|collection| collection.name == "Archive"));
+}
+
+#[test]
 fn lists_tags_scoped_to_the_current_collection() {
     let root = tempdir().unwrap();
     let service = LibraryService::new(root.path()).expect("service initializes");

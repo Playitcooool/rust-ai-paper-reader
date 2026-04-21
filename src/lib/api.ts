@@ -12,6 +12,8 @@ async function createTauriApi(): Promise<AppApi> {
     listCollections: () => invoke("list_collections"),
     createCollection: (input) => invoke("create_collection", { input }),
     moveCollection: (input) => invoke("move_collection", { input }),
+    renameCollection: (input) => invoke("rename_collection", { input }),
+    removeCollection: (input) => invoke("remove_collection", { input }),
     listTags: (collectionId) => invoke("list_tags", { collectionId }),
     createTag: (input) => invoke("create_tag", { input }),
     assignTag: (input) => invoke("assign_tag", { input }),

@@ -23,6 +23,17 @@ struct MoveCollectionInput {
 }
 
 #[derive(Deserialize)]
+struct RenameCollectionInput {
+    collection_id: i64,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RemoveCollectionInput {
+    collection_id: i64,
+}
+
+#[derive(Deserialize)]
 struct CreateTagInput {
     name: String,
 }
@@ -138,6 +149,26 @@ fn move_collection(
 ) -> Result<(), String> {
     service(&state)?
         .move_collection(input.collection_id, input.parent_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn rename_collection(
+    state: State<'_, AppState>,
+    input: RenameCollectionInput,
+) -> Result<(), String> {
+    service(&state)?
+        .rename_collection(input.collection_id, &input.name)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn remove_collection(
+    state: State<'_, AppState>,
+    input: RemoveCollectionInput,
+) -> Result<(), String> {
+    service(&state)?
+        .remove_collection(input.collection_id)
         .map_err(|error| error.to_string())
 }
 
@@ -383,6 +414,8 @@ fn main() {
             list_collections,
             create_collection,
             move_collection,
+            rename_collection,
+            remove_collection,
             list_tags,
             create_tag,
             assign_tag,

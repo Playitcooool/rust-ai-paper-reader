@@ -455,6 +455,37 @@ describe("App workspace", () => {
     expect(screen.getByText(/Moved Systems into Machine Learning/i)).toBeInTheDocument();
   });
 
+  it("renames the selected collection from the sidebar", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Rename collection"));
+    await user.type(screen.getByLabelText("Rename collection"), "ML Library");
+    await user.click(screen.getByRole("button", { name: "Rename Collection" }));
+
+    expect(await screen.findByRole("button", { name: /ML Library/i })).toBeInTheDocument();
+    expect(screen.getByText(/Renamed collection to ML Library/i)).toBeInTheDocument();
+  });
+
+  it("deletes an empty collection from the sidebar", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("New collection name"), "Temporary");
+    await user.click(screen.getByRole("button", { name: "Add Collection" }));
+    await user.click(await screen.findByRole("button", { name: /Temporary/i }));
+    await user.click(screen.getByRole("button", { name: "Delete Collection" }));
+
+    expect(await screen.findByText(/Deleted collection Temporary/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Temporary/i })).not.toBeInTheDocument();
+  });
+
   it("filters the current collection by tag from the sidebar", async () => {
     const user = userEvent.setup();
 

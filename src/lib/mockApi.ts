@@ -329,6 +329,31 @@ export const mockApi: AppApi = {
     collection.parent_id = input.parent_id ?? null;
   },
 
+  async renameCollection(input) {
+    const collection = state.collections.find((entry) => entry.id === input.collection_id);
+    if (!collection) {
+      throw new Error(`Unknown collection ${input.collection_id}`);
+    }
+    collection.name = input.name;
+  },
+
+  async removeCollection(input) {
+    const hasChildren = state.collections.some(
+      (collection) => collection.parent_id === input.collection_id,
+    );
+    if (hasChildren) {
+      throw new Error("Remove or move nested collections before deleting this collection.");
+    }
+    const hasItems = state.items.some((item) => item.collection_id === input.collection_id);
+    if (hasItems) {
+      throw new Error("Move or remove papers before deleting this collection.");
+    }
+    state.collections = state.collections.filter((entry) => entry.id !== input.collection_id);
+    state.notes = state.notes.filter((note) => note.collection_id !== input.collection_id);
+    state.tasks = state.tasks.filter((task) => task.collection_id !== input.collection_id);
+    state.artifacts = state.artifacts.filter((artifact) => artifact.collection_id !== input.collection_id);
+  },
+
   async listTags(collectionId) {
     return buildTagView(collectionId);
   },
