@@ -173,6 +173,31 @@ describe("App workspace", () => {
     expect(screen.getByText(/Focused reader outline on Methods/i)).toBeInTheDocument();
   });
 
+  it("navigates reader pages and updates zoom controls", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("100%");
+
+    await user.click(screen.getByRole("button", { name: "Next Page" }));
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+
+    const pageInput = screen.getByLabelText("Reader page input");
+    await user.clear(pageInput);
+    await user.type(pageInput, "1");
+    await user.keyboard("{Enter}");
+    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Zoom In" }));
+    expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("110%");
+  });
+
   it("sorts the visible papers by newest year in the current collection", async () => {
     const user = userEvent.setup();
 

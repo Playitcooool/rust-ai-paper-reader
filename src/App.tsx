@@ -18,6 +18,11 @@ type AiPanelMode = "paper" | "collection";
 type ReaderSection = "Overview" | "Methods" | "Results" | "Notes";
 type ItemSort = "recent" | "title" | "year_desc";
 type AttachmentFilter = "all" | "ready" | "missing" | "citation_only";
+type ReaderPage = {
+  title: string;
+  html: string;
+  text: string;
+};
 
 const itemActions = [
   { label: "Summarize document", kind: "item.summarize" },
@@ -58,6 +63,51 @@ const formatHint = (title: string) => {
   if (title.toLowerCase().endsWith("notes")) return "EPUB";
   if (title.toLowerCase().includes("survey")) return "DOCX";
   return "PDF";
+};
+
+const readerPagesFromView = (view: ReaderView | null): ReaderPage[] => {
+  if (!view || typeof DOMParser === "undefined") return [];
+
+  const parser = new DOMParser();
+  const document = parser.parseFromString(view.normalized_html, "text/html");
+  const article = document.body.querySelector("article") ?? document.body;
+  const elements = Array.from(article.children);
+  if (elements.length === 0) {
+    return [
+      {
+        title: view.title,
+        html: view.normalized_html,
+        text: view.plain_text,
+      },
+    ];
+  }
+
+  const pages: ReaderPage[] = [];
+  for (let index = 0; index < elements.length; index += 1) {
+    const current = elements[index];
+    const next = elements[index + 1];
+    const bundle =
+      /^h[1-6]$/i.test(current.tagName) && next
+        ? [current, next]
+        : [current];
+    if (bundle.length === 2) {
+      index += 1;
+    }
+
+    const text = bundle
+      .map((element) => element.textContent?.trim() ?? "")
+      .filter(Boolean)
+      .join(" ");
+    pages.push({
+      title:
+        bundle.find((element) => /^h[1-6]$/i.test(element.tagName))?.textContent?.trim() ??
+        `Page ${pages.length + 1}`,
+      html: `<article>${bundle.map((element) => element.outerHTML).join("")}</article>`,
+      text,
+    });
+  }
+
+  return pages;
 };
 
 const supportedExtensions = [".pdf", ".docx", ".epub"];
@@ -210,6 +260,9 @@ export default function App() {
   const [aiPanelMode, setAiPanelMode] = useState<AiPanelMode>("paper");
   const [search, setSearch] = useState("");
   const [readerView, setReaderView] = useState<ReaderView | null>(null);
+  const [activeReaderPage, setActiveReaderPage] = useState(0);
+  const [readerPageInput, setReaderPageInput] = useState("1");
+  const [readerZoom, setReaderZoom] = useState(100);
   const [activeReaderSection, setActiveReaderSection] = useState<ReaderSection>("Overview");
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -442,6 +495,8 @@ export default function App() {
     () => sortItems(filterItemsByAttachment(items, attachmentFilter), itemSort),
     [attachmentFilter, itemSort, items],
   );
+  const readerPages = useMemo(() => readerPagesFromView(readerView), [readerView]);
+  const currentReaderPage = readerPages[activeReaderPage] ?? null;
 
   useEffect(() => {
     setActivePaperId((current) =>
@@ -481,6 +536,9 @@ export default function App() {
     setIsEditingMetadata(false);
     setLatestCitation("");
     setMoveItemTargetId(activePaper?.collection_id ? String(activePaper.collection_id) : "current");
+    setActiveReaderPage(0);
+    setReaderPageInput("1");
+    setReaderZoom(100);
     setMetadataDraft({
       title: activePaper?.title ?? "",
       authors: activePaper?.authors ?? "",
@@ -1014,6 +1072,30 @@ export default function App() {
     }
   }
 
+  function clampReaderPage(page: number) {
+    if (readerPages.length === 0) return 0;
+    return Math.max(0, Math.min(page, readerPages.length - 1));
+  }
+
+  function setReaderPage(page: number) {
+    const nextPage = clampReaderPage(page);
+    setActiveReaderPage(nextPage);
+    setReaderPageInput(String(nextPage + 1));
+  }
+
+  function handleReaderPageSubmit() {
+    const parsed = Number(readerPageInput.trim());
+    if (!Number.isFinite(parsed)) {
+      setReaderPageInput(String(activeReaderPage + 1));
+      return;
+    }
+    setReaderPage(parsed - 1);
+  }
+
+  function handleReaderZoom(delta: number) {
+    setReaderZoom((current) => Math.max(70, Math.min(180, current + delta)));
+  }
+
   function handleAnnotationJump(annotation: Annotation) {
     setActiveReaderSection("Notes");
     setActiveAnchor(annotation.anchor);
@@ -1531,8 +1613,48 @@ export default function App() {
             <article className="reader-document">
               <div className="reader-location-bar">
                 <span className="status-pill">{activeReaderSection}</span>
-                <span className="meta-count">Page {readerSections.indexOf(activeReaderSection) + 1}</span>
+                <span className="meta-count">
+                  Page {readerPages.length === 0 ? 0 : activeReaderPage + 1} of {readerPages.length}
+                </span>
+                <span aria-label="Reader zoom level" className="meta-count">
+                  {readerZoom}%
+                </span>
                 {activeAnchor ? <span className="meta-count">Active anchor: {activeAnchor}</span> : null}
+              </div>
+              <div className="reader-toolbar">
+                <button
+                  className="ghost-button"
+                  disabled={readerPages.length === 0 || activeReaderPage === 0}
+                  type="button"
+                  onClick={() => setReaderPage(activeReaderPage - 1)}
+                >
+                  Previous Page
+                </button>
+                <input
+                  aria-label="Reader page input"
+                  className="reader-page-input"
+                  value={readerPageInput}
+                  onChange={(event) => setReaderPageInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      handleReaderPageSubmit();
+                    }
+                  }}
+                />
+                <button
+                  className="ghost-button"
+                  disabled={readerPages.length === 0 || activeReaderPage >= readerPages.length - 1}
+                  type="button"
+                  onClick={() => setReaderPage(activeReaderPage + 1)}
+                >
+                  Next Page
+                </button>
+                <button className="ghost-button" type="button" onClick={() => handleReaderZoom(-10)}>
+                  Zoom Out
+                </button>
+                <button className="ghost-button" type="button" onClick={() => handleReaderZoom(10)}>
+                  Zoom In
+                </button>
               </div>
               {latestCitation ? (
                 <div className="citation-card">
@@ -1627,7 +1749,9 @@ export default function App() {
                   {"secondary" in readerState && readerState.secondary ? <p>{readerState.secondary}</p> : null}
                 </div>
               ) : null}
-              <p className="document-lead">{excerptFromView(readerView)}</p>
+              <p className="document-lead">
+                {currentReaderPage?.text ?? excerptFromView(readerView)}
+              </p>
               {annotations.map((annotation) => (
                 <button
                   key={annotation.id}
@@ -1643,8 +1767,10 @@ export default function App() {
               ))}
               <div
                 className="reader-html"
+                style={{ fontSize: `${readerZoom}%` }}
                 dangerouslySetInnerHTML={{
                   __html:
+                    currentReaderPage?.html ??
                     readerView?.normalized_html ??
                     "<article><p>No reader view available yet.</p></article>",
                 }}
