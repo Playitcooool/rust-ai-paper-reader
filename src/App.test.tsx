@@ -185,7 +185,9 @@ describe("App workspace", () => {
     await user.selectOptions(screen.getByLabelText("Sort papers"), "year_desc");
 
     const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
-    const paperButtons = within(collectionPanel).getAllByRole("button");
+    const paperButtons = within(collectionPanel).getAllByRole("button", {
+      name: /Transformer Scaling Laws|Graph Neural Survey/i,
+    });
     expect(paperButtons[0]).toHaveTextContent("Graph Neural Survey");
     expect(paperButtons[1]).toHaveTextContent("Transformer Scaling Laws");
   });
@@ -526,6 +528,42 @@ describe("App workspace", () => {
 
     expect(await screen.findByRole("button", { name: "Filter tag Foundations" })).toBeInTheDocument();
     expect(screen.getByText(/Tagged Transformer Scaling Laws with Foundations/i)).toBeInTheDocument();
+  });
+
+  it("batch-tags the selected visible papers", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Select Visible Papers" }));
+    await user.type(screen.getByLabelText("Batch tag papers"), "Batch Read");
+    await user.click(screen.getByRole("button", { name: "Tag Selected" }));
+
+    expect(await screen.findByRole("button", { name: "Filter tag Batch Read" })).toBeInTheDocument();
+    expect(screen.getByText(/Tagged 2 papers with Batch Read/i)).toBeInTheDocument();
+  });
+
+  it("batch-moves the selected visible papers into another collection", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Select Visible Papers" }));
+    await user.selectOptions(screen.getByLabelText("Batch move papers"), "2");
+    await user.click(screen.getByRole("button", { name: "Move Selected" }));
+
+    expect(await screen.findByText(/Moved 2 papers to Systems/i)).toBeInTheDocument();
+    expect(screen.getByText(/Systems · ready · PDF/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    expect(screen.getByText(/3 papers included/i)).toBeInTheDocument();
   });
 
   it("shows the latest formatted citation in the reader panel", async () => {

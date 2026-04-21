@@ -200,9 +200,11 @@ export default function App() {
   const [newCollectionName, setNewCollectionName] = useState("");
   const [collectionNameDraft, setCollectionNameDraft] = useState("");
   const [newTagName, setNewTagName] = useState("");
+  const [batchTagName, setBatchTagName] = useState("");
   const [moveCollectionParentValue, setMoveCollectionParentValue] = useState("root");
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
+  const [selectedItemIds, setSelectedItemIds] = useState<number[]>([]);
   const [openPaperIds, setOpenPaperIds] = useState<number[]>([]);
   const [activePaperId, setActivePaperId] = useState<number | null>(null);
   const [aiPanelMode, setAiPanelMode] = useState<AiPanelMode>("paper");
@@ -234,6 +236,7 @@ export default function App() {
   const [itemSort, setItemSort] = useState<ItemSort>("recent");
   const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>("all");
   const [moveItemTargetId, setMoveItemTargetId] = useState("current");
+  const [batchMoveTargetId, setBatchMoveTargetId] = useState("current");
   const hasCollections = collections.length > 0;
 
   useEffect(() => {
@@ -452,6 +455,12 @@ export default function App() {
       }
       return aliveIds;
     });
+  }, [visibleItems]);
+
+  useEffect(() => {
+    setSelectedItemIds((current) =>
+      current.filter((id) => visibleItems.some((item) => item.id === id)),
+    );
   }, [visibleItems]);
 
   const openPapers = useMemo(
@@ -747,6 +756,58 @@ export default function App() {
     setStatusMessage(`Moved ${activePaper.title} to ${destination.name}.`);
   }
 
+  async function handleBatchMove() {
+    if (selectedItemIds.length === 0) {
+      setStatusMessage("Select at least one paper first.");
+      return;
+    }
+
+    const destinationId =
+      batchMoveTargetId === "current" ? selectedCollectionId : Number(batchMoveTargetId);
+    if (!destinationId) {
+      setStatusMessage("Choose a destination collection first.");
+      return;
+    }
+
+    const destination = collections.find((collection) => collection.id === destinationId);
+    if (!destination) {
+      setStatusMessage("Choose a valid destination collection.");
+      return;
+    }
+
+    const api = await getApi();
+    await Promise.all(
+      selectedItemIds.map((itemId) =>
+        api.moveItem({ item_id: itemId, collection_id: destination.id }),
+      ),
+    );
+    const message = `Moved ${selectedItemIds.length} papers to ${destination.name}.`;
+    setSelectedItemIds([]);
+    setPendingCollectionStatus(message);
+    await refreshCollections(destination.id);
+    await refreshItemsForCollection(destination.id);
+    setStatusMessage(message);
+  }
+
+  function toggleSelectedItem(itemId: number) {
+    setSelectedItemIds((current) =>
+      current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId],
+    );
+  }
+
+  function handleToggleSelectAllVisible() {
+    const visibleIds = visibleItems.map((item) => item.id);
+    const allVisibleSelected =
+      visibleIds.length > 0 && visibleIds.every((id) => selectedItemIds.includes(id));
+
+    setSelectedItemIds((current) => {
+      if (allVisibleSelected) {
+        return current.filter((id) => !visibleIds.includes(id));
+      }
+      return Array.from(new Set([...current, ...visibleIds]));
+    });
+  }
+
   async function handleExportMarkdown() {
     const note = notes.find((entry) => entry.id === activeNoteId);
     if (!note) return;
@@ -905,6 +966,35 @@ export default function App() {
     await refreshItemsForCollection(activePaper.collection_id, activePaper.id);
     setNewTagName("");
     setStatusMessage(tagMessage);
+  }
+
+  async function handleBatchTag() {
+    const name = batchTagName.trim();
+    if (!name) {
+      setStatusMessage("Enter a tag name first.");
+      return;
+    }
+    if (selectedItemIds.length === 0) {
+      setStatusMessage("Select at least one paper first.");
+      return;
+    }
+
+    const collectionId = selectedCollectionId ?? activeCollection?.id ?? null;
+    if (collectionId === null) {
+      setStatusMessage("Select a collection first.");
+      return;
+    }
+
+    const api = await getApi();
+    const tag = await api.createTag({ name });
+    await Promise.all(
+      selectedItemIds.map((itemId) => api.assignTag({ item_id: itemId, tag_id: tag.id })),
+    );
+    await refreshItemsForCollection(collectionId, activePaper?.id);
+    setBatchTagName("");
+    const message = `Tagged ${selectedItemIds.length} papers with ${tag.name}.`;
+    setPendingCollectionStatus(message);
+    setStatusMessage(message);
   }
 
   async function handleSaveNoteEdits() {
@@ -1204,6 +1294,14 @@ export default function App() {
             <span className="meta-count">{visibleItems.length} items</span>
           </div>
           <div className="collection-create-row">
+            <button className="ghost-button" type="button" onClick={handleToggleSelectAllVisible}>
+              {visibleItems.length > 0 && visibleItems.every((item) => selectedItemIds.includes(item.id))
+                ? "Clear Visible Selection"
+                : "Select Visible Papers"}
+            </button>
+            <span className="meta-count">{selectedItemIds.length} selected</span>
+          </div>
+          <div className="collection-create-row">
             <select
               aria-label="Attachment filter"
               className="mode-select"
@@ -1225,6 +1323,38 @@ export default function App() {
               <option value="title">Title A-Z</option>
               <option value="year_desc">Year (Newest)</option>
             </select>
+          </div>
+          <div className="collection-create-row">
+            <input
+              aria-label="Batch tag papers"
+              className="search-input"
+              placeholder="Tag selected papers..."
+              value={batchTagName}
+              onChange={(event) => setBatchTagName(event.target.value)}
+            />
+            <button className="ghost-button" type="button" onClick={() => void handleBatchTag()}>
+              Tag Selected
+            </button>
+          </div>
+          <div className="collection-create-row">
+            <select
+              aria-label="Batch move papers"
+              className="mode-select"
+              value={batchMoveTargetId}
+              onChange={(event) => setBatchMoveTargetId(event.target.value)}
+            >
+              <option value="current">Current Collection</option>
+              {collections
+                .filter((collection) => collection.id !== selectedCollectionId)
+                .map((collection) => (
+                  <option key={collection.id} value={collection.id}>
+                    {collection.name}
+                  </option>
+                ))}
+            </select>
+            <button className="ghost-button" type="button" onClick={() => void handleBatchMove()}>
+              Move Selected
+            </button>
           </div>
           {draggedFileCount > 0 ? (
             <p className="drop-helper">Drop {draggedFileCount} files into {activeCollection?.name ?? "this collection"}.</p>
@@ -1259,6 +1389,18 @@ export default function App() {
                     );
                   }}
                 >
+                  <span className="paper-selection-row">
+                    <input
+                      aria-label={`Select paper ${paper.title}`}
+                      checked={selectedItemIds.includes(paper.id)}
+                      onChange={() => toggleSelectedItem(paper.id)}
+                      onClick={(event) => event.stopPropagation()}
+                      type="checkbox"
+                    />
+                    <span className="meta-count">
+                      {selectedItemIds.includes(paper.id) ? "Selected" : "Available"}
+                    </span>
+                  </span>
                   <strong>{paper.title}</strong>
                   <span>Collection #{paper.collection_id} · {paper.attachment_status}</span>
                   <span>{formatItemMetadata(paper)}</span>

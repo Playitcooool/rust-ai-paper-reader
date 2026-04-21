@@ -303,6 +303,16 @@ p {
   flex-wrap: wrap;
 }
 
+.paper-selection-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.paper-selection-row input {
+  accent-color: #e28b53;
+}
+
 .reader-tabs,
 .ai-tabs {
   display: flex;
