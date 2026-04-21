@@ -544,6 +544,43 @@ impl LibraryService {
         Ok(())
     }
 
+    pub fn move_item(&self, item_id: i64, collection_id: i64) -> Result<()> {
+        let conn = self.connect()?;
+        let item_exists = conn
+            .query_row("SELECT id FROM items WHERE id = ?1", [item_id], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?;
+        if item_exists.is_none() {
+            return Err(anyhow!("item does not exist"));
+        }
+
+        let collection_exists = conn
+            .query_row(
+                "SELECT id FROM collections WHERE id = ?1",
+                [collection_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if collection_exists.is_none() {
+            return Err(anyhow!("collection does not exist"));
+        }
+
+        conn.execute(
+            "UPDATE items SET collection_id = ?1 WHERE id = ?2",
+            params![collection_id, item_id],
+        )?;
+        conn.execute(
+            "UPDATE ai_tasks SET collection_id = ?1 WHERE item_id = ?2",
+            params![collection_id, item_id],
+        )?;
+        conn.execute(
+            "UPDATE ai_artifacts SET collection_id = ?1 WHERE item_id = ?2",
+            params![collection_id, item_id],
+        )?;
+        Ok(())
+    }
+
     pub fn search_items(&self, query: &str) -> Result<Vec<LibraryItem>> {
         let conn = self.connect()?;
         let like_query = format!("%{}%", query.to_lowercase());

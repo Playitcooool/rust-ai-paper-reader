@@ -98,6 +98,7 @@ export type AppApi = {
     doi: string | null;
   }) => Promise<void>;
   removeItem: (input: { item_id: number }) => Promise<void>;
+  moveItem: (input: { item_id: number; collection_id: number }) => Promise<void>;
   listItems: (collectionId?: number) => Promise<LibraryItem[]>;
   searchItems: (query: string) => Promise<LibraryItem[]>;
   getReaderView: (itemId: number) => Promise<ReaderView>;

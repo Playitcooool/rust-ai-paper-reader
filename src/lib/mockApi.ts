@@ -468,6 +468,22 @@ export const mockApi: AppApi = {
     );
   },
 
+  async moveItem(input) {
+    const item = state.items.find((entry) => entry.id === input.item_id);
+    if (!item) {
+      throw new Error(`Unknown item ${input.item_id}`);
+    }
+    item.collection_id = input.collection_id;
+    state.tasks = state.tasks.map((task) =>
+      task.item_id === input.item_id ? { ...task, collection_id: input.collection_id } : task,
+    );
+    state.artifacts = state.artifacts.map((artifact) =>
+      artifact.item_id === input.item_id
+        ? { ...artifact, collection_id: input.collection_id }
+        : artifact,
+    );
+  },
+
   async listItems(collectionId) {
     return state.items
       .filter((item) => (collectionId === undefined ? true : item.collection_id === collectionId))

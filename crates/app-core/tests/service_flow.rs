@@ -272,6 +272,51 @@ fn removes_items_and_cleans_managed_files_and_indexes() {
 }
 
 #[test]
+fn moves_items_between_collections_and_preserves_item_history() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let inbox = service
+        .create_collection("Inbox", None)
+        .expect("collection created");
+    let reading = service
+        .create_collection("Reading", None)
+        .expect("collection created");
+    let pdf = root.path().join("paper.pdf");
+    std::fs::write(
+        &pdf,
+        b"Scaling laws show predictable returns as compute, data, and parameters grow in sync.",
+    )
+    .unwrap();
+
+    let imported = service
+        .import_files(inbox.id, &[pdf], ImportMode::ManagedCopy)
+        .expect("import succeeds");
+    let item_id = imported[0].id;
+    service
+        .run_item_task(item_id, "item.summarize")
+        .expect("summary succeeds");
+
+    service.move_item(item_id, reading.id).expect("item moved");
+
+    let inbox_items = service.list_items(Some(inbox.id)).expect("inbox items listed");
+    let reading_items = service
+        .list_items(Some(reading.id))
+        .expect("reading items listed");
+    assert!(inbox_items.is_empty());
+    assert_eq!(reading_items.len(), 1);
+    assert_eq!(reading_items[0].collection_id, reading.id);
+
+    let item_tasks = service.list_task_runs(Some(item_id), None).expect("tasks listed");
+    assert_eq!(item_tasks[0].collection_id, Some(reading.id));
+
+    let item_artifact = service
+        .get_latest_artifact(Some(item_id), None)
+        .expect("artifact lookup succeeds")
+        .expect("artifact exists");
+    assert_eq!(item_artifact.collection_id, Some(reading.id));
+}
+
+#[test]
 fn lists_tags_scoped_to_the_current_collection() {
     let root = tempdir().unwrap();
     let service = LibraryService::new(root.path()).expect("service initializes");

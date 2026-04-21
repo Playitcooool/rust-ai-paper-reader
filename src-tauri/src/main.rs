@@ -81,6 +81,12 @@ struct RemoveItemInput {
 }
 
 #[derive(Deserialize)]
+struct MoveItemInput {
+    item_id: i64,
+    collection_id: i64,
+}
+
+#[derive(Deserialize)]
 struct RunItemTaskInput {
     item_id: i64,
     kind: String,
@@ -238,6 +244,13 @@ fn remove_item(state: State<'_, AppState>, input: RemoveItemInput) -> Result<(),
 }
 
 #[tauri::command]
+fn move_item(state: State<'_, AppState>, input: MoveItemInput) -> Result<(), String> {
+    service(&state)?
+        .move_item(input.item_id, input.collection_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_reader_view(state: State<'_, AppState>, item_id: i64) -> Result<ReaderView, String> {
     service(&state)?
         .get_reader_view(item_id)
@@ -380,6 +393,7 @@ fn main() {
             relink_attachment,
             update_item_metadata,
             remove_item,
+            move_item,
             get_reader_view,
             create_annotation,
             list_annotations,

@@ -140,6 +140,23 @@ describe("App workspace", () => {
     expect(screen.getByRole("heading", { name: "Graph Neural Survey", level: 2 })).toBeInTheDocument();
   });
 
+  it("moves the active paper into another collection", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Move paper destination"), "2");
+    await user.click(screen.getByRole("button", { name: "Move Paper" }));
+
+    expect(await screen.findByText(/Moved Transformer Scaling Laws to Systems/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Transformer Scaling Laws", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText(/Systems · ready · PDF/i)).toBeInTheDocument();
+  });
+
   it("lets the reader jump between outline sections", async () => {
     const user = userEvent.setup();
 

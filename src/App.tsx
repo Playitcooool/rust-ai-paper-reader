@@ -232,6 +232,7 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState("Loading library...");
   const [itemSort, setItemSort] = useState<ItemSort>("recent");
   const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>("all");
+  const [moveItemTargetId, setMoveItemTargetId] = useState("current");
   const hasCollections = collections.length > 0;
 
   useEffect(() => {
@@ -467,6 +468,7 @@ export default function App() {
   useEffect(() => {
     setIsEditingMetadata(false);
     setLatestCitation("");
+    setMoveItemTargetId(activePaper?.collection_id ? String(activePaper.collection_id) : "current");
     setMetadataDraft({
       title: activePaper?.title ?? "",
       authors: activePaper?.authors ?? "",
@@ -716,6 +718,30 @@ export default function App() {
     setLatestCitation("");
     await refreshItemsForCollection(selectedCollectionId);
     setStatusMessage(`Removed ${activePaper.title} from the library.`);
+  }
+
+  async function handleMoveItem() {
+    if (!activePaper || selectedCollectionId === null) return;
+
+    const destinationId =
+      moveItemTargetId === "current" ? activePaper.collection_id : Number(moveItemTargetId);
+    if (destinationId === activePaper.collection_id) {
+      setStatusMessage(`${activePaper.title} is already in ${activeCollection?.name ?? "this collection"}.`);
+      return;
+    }
+
+    const destination = collections.find((collection) => collection.id === destinationId);
+    if (!destination) {
+      setStatusMessage("Choose a valid destination collection.");
+      return;
+    }
+
+    const api = await getApi();
+    await api.moveItem({ item_id: activePaper.id, collection_id: destination.id });
+    setPendingCollectionStatus(`Moved ${activePaper.title} to ${destination.name}.`);
+    await refreshCollections(destination.id);
+    await refreshItemsForCollection(destination.id, activePaper.id);
+    setStatusMessage(`Moved ${activePaper.title} to ${destination.name}.`);
   }
 
   async function handleExportMarkdown() {
@@ -1241,6 +1267,25 @@ export default function App() {
               ) : null}
               <button className="ghost-button" type="button" disabled={!paperActionsEnabled} onClick={handleCreateAnnotation}>
                 Highlight
+              </button>
+              <select
+                aria-label="Move paper destination"
+                className="mode-select"
+                disabled={!activePaper}
+                value={moveItemTargetId}
+                onChange={(event) => setMoveItemTargetId(event.target.value)}
+              >
+                <option value="current">Current Collection</option>
+                {collections
+                  .filter((collection) => collection.id !== activePaper?.collection_id)
+                  .map((collection) => (
+                    <option key={collection.id} value={collection.id}>
+                      {collection.name}
+                    </option>
+                  ))}
+              </select>
+              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleMoveItem()}>
+                Move Paper
               </button>
               <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleRemoveItem()}>
                 Remove from Library
