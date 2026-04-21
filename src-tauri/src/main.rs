@@ -1,4 +1,4 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{fs, path::PathBuf};
 
 use app_core::service::{
     Annotation, Collection, ImportMode, LibraryItem, LibraryService, ReaderView, ResearchNote, Tag,
@@ -101,71 +101,6 @@ fn root_dir(app: &AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("paper-reader-dev"))
-}
-
-fn seed_library_if_empty(library_root: &Path) -> Result<(), String> {
-    let service = LibraryService::new(library_root).map_err(|error| error.to_string())?;
-    if !service
-        .list_collections()
-        .map_err(|error| error.to_string())?
-        .is_empty()
-    {
-        return Ok(());
-    }
-
-    let ml = service
-        .create_collection("Machine Learning", None)
-        .map_err(|error| error.to_string())?;
-    let systems = service
-        .create_collection("Systems", None)
-        .map_err(|error| error.to_string())?;
-
-    let seed_dir = library_root.join("seed-inputs");
-    fs::create_dir_all(&seed_dir).map_err(|error| error.to_string())?;
-
-    let ml_pdf = seed_dir.join("transformer-scaling-laws.pdf");
-    let ml_docx = seed_dir.join("graph-neural-survey.docx");
-    let systems_epub = seed_dir.join("distributed-consensus-notes.epub");
-
-    fs::write(
-        &ml_pdf,
-        b"Scaling behavior emerges when model size, data volume, and compute are balanced. This seed PDF powers the default reader workspace.",
-    )
-    .map_err(|error| error.to_string())?;
-    fs::write(
-        &ml_docx,
-        b"Graph representation learning unifies message passing, pooling, and graph-level reasoning into a broad survey of architectures and benchmarks.",
-    )
-    .map_err(|error| error.to_string())?;
-    fs::write(
-        &systems_epub,
-        b"Consensus protocols coordinate replicas under partial failure. This seed EPUB contrasts Paxos, Raft, and operational ergonomics.",
-    )
-    .map_err(|error| error.to_string())?;
-
-    let ml_items = service
-        .import_files(ml.id, &[ml_pdf, ml_docx], ImportMode::ManagedCopy)
-        .map_err(|error| error.to_string())?;
-    let systems_items = service
-        .import_files(systems.id, &[systems_epub], ImportMode::ManagedCopy)
-        .map_err(|error| error.to_string())?;
-
-    let scaling = service.create_tag("Scaling").map_err(|error| error.to_string())?;
-    let survey = service.create_tag("Survey").map_err(|error| error.to_string())?;
-    let distributed = service
-        .create_tag("Distributed")
-        .map_err(|error| error.to_string())?;
-    service
-        .assign_tag(ml_items[0].id, scaling.id)
-        .map_err(|error| error.to_string())?;
-    service
-        .assign_tag(ml_items[1].id, survey.id)
-        .map_err(|error| error.to_string())?;
-    service
-        .assign_tag(systems_items[0].id, distributed.id)
-        .map_err(|error| error.to_string())?;
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -416,7 +351,6 @@ fn main() {
         .setup(|app| {
             let library_root = root_dir(app.handle());
             fs::create_dir_all(&library_root)?;
-            seed_library_if_empty(&library_root)?;
             app.manage(AppState { library_root });
             Ok(())
         })

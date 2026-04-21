@@ -278,6 +278,13 @@ export function resetMockApi() {
   state = initialState();
 }
 
+export function replaceMockApiState(nextState: Partial<MockState>) {
+  state = {
+    ...initialState(),
+    ...nextState,
+  };
+}
+
 export const mockApi: AppApi = {
   async listCollections() {
     return [...state.collections];

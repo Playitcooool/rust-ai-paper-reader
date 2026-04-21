@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import App from "./App";
-import { resetMockApi } from "./lib/mockApi";
+import { replaceMockApiState, resetMockApi } from "./lib/mockApi";
 
 beforeEach(() => {
   resetMockApi();
@@ -73,6 +73,28 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Fresh Import Paper" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
+  });
+
+  it("shows a true empty-library workspace when no collections exist", async () => {
+    replaceMockApiState({
+      collections: [],
+      items: [],
+      tags: [],
+      itemTags: [],
+      annotations: [],
+      tasks: [],
+      artifacts: [],
+      notes: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText(/Start with a collection/i)).toBeInTheDocument();
+    expect(screen.getByText(/Create a root collection on the left/i)).toBeInTheDocument();
+    expect(screen.getByText(/No collection selected/i)).toBeInTheDocument();
+    expect(screen.getByText(/Create your first collection to start building the desktop library/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Import Citations" })).toBeDisabled();
   });
 
   it("imports dropped files into the active collection", async () => {

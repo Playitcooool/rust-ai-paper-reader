@@ -209,6 +209,7 @@ export default function App() {
   });
   const [pendingCollectionStatus, setPendingCollectionStatus] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
+  const hasCollections = collections.length > 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -224,7 +225,7 @@ export default function App() {
       setStatusMessage(
         loadedCollections.length > 0
           ? `Loaded ${loadedCollections.length} collections.`
-          : "Create a collection to begin building your library.",
+          : "Create your first collection to start building the desktop library.",
       );
     }
 
@@ -236,7 +237,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (selectedCollectionId === null) return;
+    if (selectedCollectionId === null) {
+      setItems([]);
+      setOpenPaperIds([]);
+      setActivePaperId(null);
+      if (!pendingCollectionStatus) {
+        setStatusMessage(
+          hasCollections
+            ? "Select a collection to view its library."
+            : "Create your first collection to start building the desktop library.",
+        );
+      }
+      return;
+    }
     const collectionId = selectedCollectionId;
     let cancelled = false;
 
@@ -279,10 +292,14 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [search, selectedCollectionId, selectedTagId, tags]);
+  }, [hasCollections, pendingCollectionStatus, search, selectedCollectionId, selectedTagId, tags]);
 
   useEffect(() => {
-    if (selectedCollectionId === null) return;
+    if (selectedCollectionId === null) {
+      setTags([]);
+      setSelectedTagId(null);
+      return;
+    }
     const collectionId = selectedCollectionId;
     let cancelled = false;
 
@@ -358,7 +375,14 @@ export default function App() {
   }, [activePaperId]);
 
   useEffect(() => {
-    if (selectedCollectionId === null) return;
+    if (selectedCollectionId === null) {
+      setCollectionArtifact(null);
+      setCollectionTaskRuns([]);
+      setNotes([]);
+      setActiveNoteId(null);
+      setNoteDraft("");
+      return;
+    }
     const collectionId = selectedCollectionId;
     let cancelled = false;
 
@@ -511,7 +535,12 @@ export default function App() {
   }
 
   async function handleImport() {
-    if (selectedCollectionId === null || !activeCollection || isImporting) return;
+    if (selectedCollectionId === null || !activeCollection || isImporting) {
+      if (!hasCollections) {
+        setStatusMessage("Create a collection before importing files.");
+      }
+      return;
+    }
 
     const api = await getApi();
     setStatusMessage(`Selecting files for ${activeCollection.name}...`);
@@ -530,7 +559,12 @@ export default function App() {
   }
 
   async function handleImportCitations() {
-    if (selectedCollectionId === null || !activeCollection || isImporting) return;
+    if (selectedCollectionId === null || !activeCollection || isImporting) {
+      if (!hasCollections) {
+        setStatusMessage("Create a collection before importing citation files.");
+      }
+      return;
+    }
 
     const api = await getApi();
     setStatusMessage(`Selecting citation files for ${activeCollection.name}...`);
@@ -854,7 +888,12 @@ export default function App() {
           <button className="primary-button" type="button" onClick={() => void handleImport()}>
             {isImporting ? "Importing..." : "Import"}
           </button>
-          <button className="ghost-button" type="button" onClick={() => void handleImportCitations()}>
+          <button
+            className="ghost-button"
+            disabled={!activeCollection || isImporting}
+            type="button"
+            onClick={() => void handleImportCitations()}
+          >
             Import Citations
           </button>
         </div>
@@ -877,6 +916,7 @@ export default function App() {
             </button>
             <button
               className="ghost-button"
+              disabled={!activeCollection}
               type="button"
               onClick={() => void handleCreateCollection(selectedCollectionId)}
             >
@@ -887,6 +927,7 @@ export default function App() {
             <select
               aria-label="Move collection destination"
               className="mode-select"
+              disabled={!activeCollection}
               value={moveCollectionParentValue}
               onChange={(event) => setMoveCollectionParentValue(event.target.value)}
             >
@@ -897,30 +938,43 @@ export default function App() {
                 </option>
               ))}
             </select>
-            <button className="ghost-button" type="button" onClick={() => void handleMoveCollection()}>
+            <button
+              className="ghost-button"
+              disabled={!activeCollection}
+              type="button"
+              onClick={() => void handleMoveCollection()}
+            >
               Move Collection
             </button>
           </div>
-          <div className="nav-list">
-            {collectionEntries.map(({ collection, depth, pathLabel }) => {
-              const itemCount = items.filter((item) => item.collection_id === collection.id).length;
-              return (
-              <button
-                key={collection.id}
-                aria-label={`Open collection ${pathLabel}`}
-                className={`nav-item ${
-                  collection.id === selectedCollectionId ? "nav-item-active" : ""
-                }`}
-                style={{ paddingLeft: `${16 + depth * 18}px` }}
-                type="button"
-                onClick={() => setSelectedCollectionId(collection.id)}
-              >
-                <span>{collection.name}</span>
-                <span className="meta-count">{itemCount}</span>
-              </button>
-              );
-            })}
-          </div>
+          {collectionEntries.length === 0 ? (
+            <div className="citation-card">
+              <p className="eyebrow">Empty Library</p>
+              <h3>Start with a collection</h3>
+              <p>Create a root collection on the left, then import PDF, DOCX, EPUB, or citation files.</p>
+            </div>
+          ) : (
+            <div className="nav-list">
+              {collectionEntries.map(({ collection, depth, pathLabel }) => {
+                const itemCount = items.filter((item) => item.collection_id === collection.id).length;
+                return (
+                <button
+                  key={collection.id}
+                  aria-label={`Open collection ${pathLabel}`}
+                  className={`nav-item ${
+                    collection.id === selectedCollectionId ? "nav-item-active" : ""
+                  }`}
+                  style={{ paddingLeft: `${16 + depth * 18}px` }}
+                  type="button"
+                  onClick={() => setSelectedCollectionId(collection.id)}
+                >
+                  <span>{collection.name}</span>
+                  <span className="meta-count">{itemCount}</span>
+                </button>
+                );
+              })}
+            </div>
+          )}
         </section>
 
         <section className="section-block">
@@ -936,7 +990,12 @@ export default function App() {
               value={newTagName}
               onChange={(event) => setNewTagName(event.target.value)}
             />
-            <button className="ghost-button" type="button" onClick={() => void handleCreateTag()}>
+            <button
+              className="ghost-button"
+              disabled={!activePaper}
+              type="button"
+              onClick={() => void handleCreateTag()}
+            >
               Add Tag to Current Paper
             </button>
           </div>
@@ -1000,29 +1059,43 @@ export default function App() {
           {draggedFileCount > 0 ? (
             <p className="drop-helper">Drop {draggedFileCount} files into {activeCollection?.name ?? "this collection"}.</p>
           ) : null}
-          <div className="paper-list">
-            {items.map((paper) => (
-              <button
-                key={paper.id}
-                className={`paper-card ${paper.id === activePaper?.id ? "paper-card-active" : ""}`}
-                type="button"
-                onClick={() => {
-                  setActivePaperId(paper.id);
-                  setOpenPaperIds((current) =>
-                    current.includes(paper.id) ? current : [...current, paper.id],
-                  );
-                }}
-              >
-                <strong>{paper.title}</strong>
-                <span>Collection #{paper.collection_id} · {paper.attachment_status}</span>
-                <span>{formatItemMetadata(paper)}</span>
-                {paper.tags.length > 0 ? (
-                  <span className="paper-tag-row">{paper.tags.join(" · ")}</span>
-                ) : null}
-                <small>{formatHint(paper.title)}</small>
-              </button>
-            ))}
-          </div>
+          {!activeCollection ? (
+            <div className="citation-card">
+              <p className="eyebrow">Library Queue</p>
+              <h3>No collection selected</h3>
+              <p>Create or select a collection before importing and organizing papers.</p>
+            </div>
+          ) : items.length === 0 ? (
+            <div className="citation-card">
+              <p className="eyebrow">Ready for Import</p>
+              <h3>{activeCollection.name} is empty</h3>
+              <p>Use Import, drag and drop files, or add citation records to populate this collection.</p>
+            </div>
+          ) : (
+            <div className="paper-list">
+              {items.map((paper) => (
+                <button
+                  key={paper.id}
+                  className={`paper-card ${paper.id === activePaper?.id ? "paper-card-active" : ""}`}
+                  type="button"
+                  onClick={() => {
+                    setActivePaperId(paper.id);
+                    setOpenPaperIds((current) =>
+                      current.includes(paper.id) ? current : [...current, paper.id],
+                    );
+                  }}
+                >
+                  <strong>{paper.title}</strong>
+                  <span>Collection #{paper.collection_id} · {paper.attachment_status}</span>
+                  <span>{formatItemMetadata(paper)}</span>
+                  {paper.tags.length > 0 ? (
+                    <span className="paper-tag-row">{paper.tags.join(" · ")}</span>
+                  ) : null}
+                  <small>{formatHint(paper.title)}</small>
+                </button>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="section-block footer-block">
