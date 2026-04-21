@@ -448,6 +448,26 @@ export const mockApi: AppApi = {
     item.doi = input.doi;
   },
 
+  async removeItem(input) {
+    const item = state.items.find((entry) => entry.id === input.item_id);
+    if (!item) {
+      throw new Error(`Unknown item ${input.item_id}`);
+    }
+
+    state.items = state.items.filter((entry) => entry.id !== input.item_id);
+    state.itemTags = state.itemTags.filter((entry) => entry.item_id !== input.item_id);
+    state.annotations = state.annotations.filter((entry) => entry.item_id !== input.item_id);
+
+    const removedTaskIds = state.tasks
+      .filter((task) => task.item_id === input.item_id)
+      .map((task) => task.id);
+    state.tasks = state.tasks.filter((task) => task.item_id !== input.item_id);
+    state.artifacts = state.artifacts.filter(
+      (artifact) =>
+        artifact.item_id !== input.item_id && !removedTaskIds.includes(artifact.task_id),
+    );
+  },
+
   async listItems(collectionId) {
     return state.items
       .filter((item) => (collectionId === undefined ? true : item.collection_id === collectionId))

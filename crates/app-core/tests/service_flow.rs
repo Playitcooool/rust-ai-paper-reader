@@ -230,6 +230,48 @@ fn generates_task_specific_item_outputs() {
 }
 
 #[test]
+fn removes_items_and_cleans_managed_files_and_indexes() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let collection = service
+        .create_collection("Machine Learning", None)
+        .expect("collection created");
+    let pdf = root.path().join("paper.pdf");
+    std::fs::write(
+        &pdf,
+        b"Scaling laws show predictable returns as compute, data, and parameters grow in sync.",
+    )
+    .unwrap();
+
+    let imported = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .expect("import succeeds");
+    let item_id = imported[0].id;
+    service
+        .create_annotation(
+            item_id,
+            "section-1".into(),
+            "highlight".into(),
+            "Important paragraph".into(),
+        )
+        .expect("annotation created");
+    service
+        .run_item_task(item_id, "item.summarize")
+        .expect("summary succeeds");
+
+    let managed_files = root.path().join("library-files");
+    assert_eq!(std::fs::read_dir(&managed_files).unwrap().count(), 1);
+
+    service.remove_item(item_id).expect("item removed");
+
+    assert!(service.list_items(Some(collection.id)).unwrap().is_empty());
+    assert!(service.search_items("scaling").unwrap().is_empty());
+    assert!(service.list_annotations(item_id).unwrap().is_empty());
+    assert!(service.list_task_runs(Some(item_id), None).unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(&managed_files).unwrap().count(), 0);
+}
+
+#[test]
 fn lists_tags_scoped_to_the_current_collection() {
     let root = tempdir().unwrap();
     let service = LibraryService::new(root.path()).expect("service initializes");

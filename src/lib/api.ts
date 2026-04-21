@@ -52,6 +52,7 @@ async function createTauriApi(): Promise<AppApi> {
     importCitations: (input) => invoke("import_citations", { input }),
     relinkAttachment: (input) => invoke("relink_attachment", { input }),
     updateItemMetadata: (input) => invoke("update_item_metadata", { input }),
+    removeItem: (input) => invoke("remove_item", { input }),
     listItems: (collectionId) => invoke("list_items", { collectionId }),
     searchItems: (query) => invoke("search_items", { input: { query } }),
     getReaderView: (itemId) => invoke("get_reader_view", { itemId }),

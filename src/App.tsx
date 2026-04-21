@@ -424,6 +424,7 @@ export default function App() {
   const paperActionsEnabled = canRunReaderActions(activePaper);
   useEffect(() => {
     setIsEditingMetadata(false);
+    setLatestCitation("");
     setMetadataDraft({
       title: activePaper?.title ?? "",
       authors: activePaper?.authors ?? "",
@@ -662,6 +663,17 @@ export default function App() {
     setPaperArtifact(artifact);
     setIsEditingMetadata(false);
     setStatusMessage(`Saved metadata for ${nextTitle}.`);
+  }
+
+  async function handleRemoveItem() {
+    if (!activePaper || selectedCollectionId === null) return;
+
+    const api = await getApi();
+    await api.removeItem({ item_id: activePaper.id });
+    setPendingCollectionStatus(`Removed ${activePaper.title} from the library.`);
+    setLatestCitation("");
+    await refreshItemsForCollection(selectedCollectionId);
+    setStatusMessage(`Removed ${activePaper.title} from the library.`);
   }
 
   async function handleExportMarkdown() {
@@ -1160,6 +1172,9 @@ export default function App() {
               ) : null}
               <button className="ghost-button" type="button" disabled={!paperActionsEnabled} onClick={handleCreateAnnotation}>
                 Highlight
+              </button>
+              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleRemoveItem()}>
+                Remove from Library
               </button>
               <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation()}>
                 Copy Citation

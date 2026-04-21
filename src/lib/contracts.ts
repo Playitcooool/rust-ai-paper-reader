@@ -97,6 +97,7 @@ export type AppApi = {
     source: string;
     doi: string | null;
   }) => Promise<void>;
+  removeItem: (input: { item_id: number }) => Promise<void>;
   listItems: (collectionId?: number) => Promise<LibraryItem[]>;
   searchItems: (query: string) => Promise<LibraryItem[]>;
   getReaderView: (itemId: number) => Promise<ReaderView>;

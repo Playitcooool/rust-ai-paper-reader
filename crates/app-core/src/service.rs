@@ -509,6 +509,41 @@ impl LibraryService {
         Ok(())
     }
 
+    pub fn remove_item(&self, item_id: i64) -> Result<()> {
+        let mut conn = self.connect()?;
+        let attachments = {
+            let mut statement = conn.prepare(
+                "SELECT path, import_mode FROM attachments WHERE item_id = ?1 ORDER BY id ASC",
+            )?;
+            let rows = statement.query_map([item_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if attachments.is_empty() {
+            return Err(anyhow!("item does not exist"));
+        }
+
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM ai_artifacts WHERE item_id = ?1", [item_id])?;
+        tx.execute("DELETE FROM ai_tasks WHERE item_id = ?1", [item_id])?;
+        tx.execute("DELETE FROM search_index WHERE item_id = ?1", [item_id])?;
+        tx.execute("DELETE FROM items WHERE id = ?1", [item_id])?;
+        tx.commit()?;
+
+        for (path, import_mode) in attachments {
+            if import_mode == ImportMode::ManagedCopy.as_str() {
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn search_items(&self, query: &str) -> Result<Vec<LibraryItem>> {
         let conn = self.connect()?;
         let like_query = format!("%{}%", query.to_lowercase());

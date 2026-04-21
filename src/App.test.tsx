@@ -121,6 +121,22 @@ describe("App workspace", () => {
     expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
   });
 
+  it("removes the active paper from the library and closes its reader tab", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove from Library" }));
+
+    expect(await screen.findByText(/Removed Transformer Scaling Laws from the library/i)).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Transformer Scaling Laws" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Graph Neural Survey", level: 2 })).toBeInTheDocument();
+  });
+
   it("lets the reader jump between outline sections", async () => {
     const user = userEvent.setup();
 
