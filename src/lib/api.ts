@@ -61,6 +61,7 @@ async function createTauriApi(): Promise<AppApi> {
     getReaderView: (itemId) => invoke("get_reader_view", { itemId }),
     listAnnotations: (itemId) => invoke("list_annotations", { itemId }),
     createAnnotation: (input) => invoke("create_annotation", { input }),
+    removeAnnotation: (input) => invoke("remove_annotation", { input }),
     runItemTask: (input) => invoke("run_item_task", { input }),
     runCollectionTask: (input) => invoke("run_collection_task", { input }),
     listTaskRuns: (input) =>

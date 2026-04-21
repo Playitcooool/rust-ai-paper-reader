@@ -558,6 +558,10 @@ export const mockApi: AppApi = {
     return annotation;
   },
 
+  async removeAnnotation(input) {
+    state.annotations = state.annotations.filter((annotation) => annotation.id !== input.annotation_id);
+  },
+
   async runItemTask(input) {
     const item = state.items.find((entry) => entry.id === input.item_id);
     if (!item) {

@@ -688,6 +688,12 @@ impl LibraryService {
             .map_err(Into::into)
     }
 
+    pub fn remove_annotation(&self, annotation_id: i64) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM annotations WHERE id = ?1", [annotation_id])?;
+        Ok(())
+    }
+
     pub fn get_reader_view(&self, item_id: i64) -> Result<ReaderView> {
         let conn = self.connect()?;
         conn.query_row(

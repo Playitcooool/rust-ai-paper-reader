@@ -47,6 +47,8 @@ export type Annotation = {
   body: string;
 };
 
+export type AnnotationFilter = "all" | "current_page" | "search_matches";
+
 export type AITask = {
   id: number;
   item_id: number | null;
@@ -111,6 +113,7 @@ export type AppApi = {
     kind: string;
     body: string;
   }) => Promise<Annotation>;
+  removeAnnotation: (input: { annotation_id: number }) => Promise<void>;
   runItemTask: (input: { item_id: number; kind: string }) => Promise<AITask>;
   runCollectionTask: (input: { collection_id: number; kind: string }) => Promise<AITask>;
   listTaskRuns: (input: { item_id?: number; collection_id?: number }) => Promise<AITask[]>;

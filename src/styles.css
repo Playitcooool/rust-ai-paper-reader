@@ -237,6 +237,28 @@ p {
   text-align: left;
 }
 
+.annotation-panel,
+.annotation-list {
+  display: grid;
+  gap: 12px;
+}
+
+.annotation-panel {
+  margin-bottom: 14px;
+}
+
+.annotation-filter-row,
+.annotation-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.annotation-row .annotation-chip {
+  flex: 1 1 260px;
+}
+
 .annotation-chip-active {
   background: rgba(226, 139, 83, 0.24);
   color: #fff0df;

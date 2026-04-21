@@ -5,6 +5,7 @@ import type {
   AIArtifact,
   AITask,
   Annotation,
+  AnnotationFilter,
   CitationFormat,
   Collection,
   ImportMode,
@@ -47,6 +48,11 @@ const annotationPreview = (text: string) => {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= 96) return normalized;
   return `${normalized.slice(0, 93).trimEnd()}...`;
+};
+
+const pageFromAnchor = (anchor: string) => {
+  const match = anchor.match(/^page-(\d+)$/);
+  return match ? Number(match[1]) : null;
 };
 
 const taskPreview = (task: AITask) =>
@@ -330,6 +336,7 @@ export default function App() {
   const [readerSearchQuery, setReaderSearchQuery] = useState("");
   const [activeReaderMatchIndex, setActiveReaderMatchIndex] = useState(0);
   const [annotationDraft, setAnnotationDraft] = useState("");
+  const [annotationFilter, setAnnotationFilter] = useState<AnnotationFilter>("all");
   const [activeReaderSection, setActiveReaderSection] = useState<ReaderSection>("Overview");
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -571,6 +578,21 @@ export default function App() {
       .filter(({ page }) => page.text.toLowerCase().includes(query));
   }, [readerPages, readerSearchQuery]);
   const currentReaderPage = readerPages[activeReaderPage] ?? null;
+  const visibleAnnotations = useMemo(() => {
+    if (annotationFilter === "current_page") {
+      return annotations.filter(
+        (annotation) => pageFromAnchor(annotation.anchor) === activeReaderPage + 1,
+      );
+    }
+    if (annotationFilter === "search_matches") {
+      const matchedPages = new Set(readerMatches.map((match) => match.index + 1));
+      return annotations.filter((annotation) => {
+        const page = pageFromAnchor(annotation.anchor);
+        return page !== null && matchedPages.has(page);
+      });
+    }
+    return annotations;
+  }, [activeReaderPage, annotationFilter, annotations, readerMatches]);
   const readerHtml = useMemo(
     () =>
       highlightReaderHtml(
@@ -626,6 +648,7 @@ export default function App() {
     setReaderSearchQuery("");
     setActiveReaderMatchIndex(0);
     setAnnotationDraft("");
+    setAnnotationFilter("all");
     setMetadataDraft({
       title: activePaper?.title ?? "",
       authors: activePaper?.authors ?? "",
@@ -1235,9 +1258,9 @@ export default function App() {
   }, [activeReaderPage, readerPages.length]);
 
   function handleAnnotationJump(annotation: Annotation) {
-    const pageMatch = annotation.anchor.match(/^page-(\d+)$/);
-    if (pageMatch) {
-      setReaderPage(Number(pageMatch[1]) - 1);
+    const page = pageFromAnchor(annotation.anchor);
+    if (page !== null) {
+      setReaderPage(page - 1);
     }
     setActiveReaderSection("Notes");
     setActiveAnchor(annotation.anchor);
@@ -1258,6 +1281,17 @@ export default function App() {
     if (activePaper) {
       setStatusMessage(`Jumped to annotation ${anchor} in ${activePaper.title}.`);
     }
+  }
+
+  async function handleRemoveAnnotation(annotation: Annotation) {
+    if (!activePaper) return;
+    const api = await getApi();
+    await api.removeAnnotation({ annotation_id: annotation.id });
+    setAnnotations((current) => current.filter((entry) => entry.id !== annotation.id));
+    if (activeAnchor === annotation.anchor) {
+      setActiveAnchor(null);
+    }
+    setStatusMessage(`Removed annotation ${annotation.anchor} from ${activePaper.title}.`);
   }
 
   useEffect(() => {
@@ -1948,19 +1982,67 @@ export default function App() {
               <p className="document-lead">
                 {currentReaderPage?.text ?? excerptFromView(readerView)}
               </p>
-              {annotations.map((annotation) => (
-                <button
-                  key={annotation.id}
-                  aria-label={`Jump to annotation ${annotation.anchor}`}
-                  className={`annotation-chip ${
-                    activeAnchor === annotation.anchor ? "annotation-chip-active" : ""
-                  }`}
-                  type="button"
-                  onClick={() => handleAnnotationJump(annotation)}
-                >
-                  {annotation.anchor}: {annotation.body}
-                </button>
-              ))}
+              <div className="annotation-panel">
+                <div className="section-title-row">
+                  <h3>Annotations</h3>
+                  <span className="meta-count">{visibleAnnotations.length} annotations</span>
+                </div>
+                <div className="annotation-filter-row">
+                  <button
+                    aria-pressed={annotationFilter === "all"}
+                    className={`ghost-button ${annotationFilter === "all" ? "nav-item-active" : ""}`}
+                    type="button"
+                    onClick={() => setAnnotationFilter("all")}
+                  >
+                    All Annotations
+                  </button>
+                  <button
+                    aria-pressed={annotationFilter === "current_page"}
+                    className={`ghost-button ${annotationFilter === "current_page" ? "nav-item-active" : ""}`}
+                    type="button"
+                    onClick={() => setAnnotationFilter("current_page")}
+                  >
+                    Current Page Annotations
+                  </button>
+                  <button
+                    aria-pressed={annotationFilter === "search_matches"}
+                    className={`ghost-button ${annotationFilter === "search_matches" ? "nav-item-active" : ""}`}
+                    disabled={readerSearchQuery.trim().length === 0}
+                    type="button"
+                    onClick={() => setAnnotationFilter("search_matches")}
+                  >
+                    Search Match Annotations
+                  </button>
+                </div>
+                {visibleAnnotations.length > 0 ? (
+                  <div className="annotation-list">
+                    {visibleAnnotations.map((annotation) => (
+                      <div key={annotation.id} className="annotation-row">
+                        <button
+                          aria-label={`Jump to annotation ${annotation.anchor}`}
+                          className={`annotation-chip ${
+                            activeAnchor === annotation.anchor ? "annotation-chip-active" : ""
+                          }`}
+                          type="button"
+                          onClick={() => handleAnnotationJump(annotation)}
+                        >
+                          {annotation.anchor}: {annotation.body}
+                        </button>
+                        <button
+                          aria-label={`Delete annotation ${annotation.anchor}`}
+                          className="tab-close-button"
+                          type="button"
+                          onClick={() => void handleRemoveAnnotation(annotation)}
+                        >
+                          x
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="secondary-copy">No annotations in the current scope.</p>
+                )}
+              </div>
               <div
                 className="reader-html"
                 style={{ fontSize: `${readerZoom}%` }}

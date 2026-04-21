@@ -71,6 +71,11 @@ struct CreateAnnotationInput {
 }
 
 #[derive(Deserialize)]
+struct RemoveAnnotationInput {
+    annotation_id: i64,
+}
+
+#[derive(Deserialize)]
 struct RelinkAttachmentInput {
     attachment_id: i64,
     replacement_path: String,
@@ -306,6 +311,16 @@ fn list_annotations(state: State<'_, AppState>, item_id: i64) -> Result<Vec<Anno
 }
 
 #[tauri::command]
+fn remove_annotation(
+    state: State<'_, AppState>,
+    input: RemoveAnnotationInput,
+) -> Result<(), String> {
+    service(&state)?
+        .remove_annotation(input.annotation_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn run_item_task(
     state: State<'_, AppState>,
     input: RunItemTaskInput,
@@ -430,6 +445,7 @@ fn main() {
             get_reader_view,
             create_annotation,
             list_annotations,
+            remove_annotation,
             run_item_task,
             run_collection_task,
             list_task_runs,

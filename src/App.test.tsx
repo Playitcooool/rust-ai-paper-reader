@@ -311,6 +311,55 @@ describe("App workspace", () => {
     expect(screen.getByText(/Active anchor: page-2/i)).toBeInTheDocument();
   });
 
+  it("filters annotations for the current page and search matches", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next Page" }));
+    await user.type(screen.getByLabelText("Annotation note"), "Heuristic evidence");
+    await user.click(screen.getByRole("button", { name: "Highlight" }));
+
+    expect(await screen.findByRole("heading", { name: "Annotations", level: 3 })).toBeInTheDocument();
+    expect(screen.getByText(/2 annotations/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Current Page Annotations" }));
+    expect(screen.getByRole("button", { name: /Jump to annotation page-2/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Jump to annotation section-1/i }),
+    ).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Find in document"), "heuristics");
+    await user.click(screen.getByRole("button", { name: "Search Match Annotations" }));
+    expect(screen.getByRole("button", { name: /Jump to annotation page-2/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Jump to annotation section-1/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("deletes annotations from the annotation panel", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    const deleteButton = screen.getByRole("button", { name: "Delete annotation section-1" });
+    await user.click(deleteButton);
+
+    expect(await screen.findByText(/Removed annotation section-1 from Transformer Scaling Laws/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Jump to annotation section-1/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/0 annotations/i)).toBeInTheDocument();
+  });
+
   it("jumps from AI source references back into the reader anchor", async () => {
     const user = userEvent.setup();
 
