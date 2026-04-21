@@ -285,6 +285,32 @@ describe("App workspace", () => {
     expect(screen.getByText(/Active anchor: section-1/i)).toBeInTheDocument();
   });
 
+  it("creates a page-linked annotation from the active reader page", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next Page" }));
+    await user.type(screen.getByLabelText("Annotation note"), "Keep this for the review");
+    await user.click(screen.getByRole("button", { name: "Highlight" }));
+
+    expect(await screen.findByText(/Added highlight on page 2 to Transformer Scaling Laws/i)).toBeInTheDocument();
+
+    const pageAnnotation = screen.getByRole("button", { name: /Jump to annotation page-2/i });
+    expect(pageAnnotation).toHaveTextContent(/Keep this for the review/i);
+
+    await user.click(screen.getByRole("button", { name: "Jump to reader page 1" }));
+    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+
+    await user.click(pageAnnotation);
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(screen.getByText(/Active anchor: page-2/i)).toBeInTheDocument();
+  });
+
   it("jumps from AI source references back into the reader anchor", async () => {
     const user = userEvent.setup();
 

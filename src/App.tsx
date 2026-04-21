@@ -43,6 +43,12 @@ const readerSections: ReaderSection[] = ["Overview", "Methods", "Results", "Note
 const excerptFromView = (view: ReaderView | null) =>
   view?.plain_text.split(". ").slice(0, 2).join(". ") ?? "Open a paper to see its extracted text.";
 
+const annotationPreview = (text: string) => {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 96) return normalized;
+  return `${normalized.slice(0, 93).trimEnd()}...`;
+};
+
 const taskPreview = (task: AITask) =>
   (() => {
     const lines = task.output_markdown
@@ -323,6 +329,7 @@ export default function App() {
   const [readerZoom, setReaderZoom] = useState(100);
   const [readerSearchQuery, setReaderSearchQuery] = useState("");
   const [activeReaderMatchIndex, setActiveReaderMatchIndex] = useState(0);
+  const [annotationDraft, setAnnotationDraft] = useState("");
   const [activeReaderSection, setActiveReaderSection] = useState<ReaderSection>("Overview");
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -618,6 +625,7 @@ export default function App() {
     setReaderZoom(100);
     setReaderSearchQuery("");
     setActiveReaderMatchIndex(0);
+    setAnnotationDraft("");
     setMetadataDraft({
       title: activePaper?.title ?? "",
       authors: activePaper?.authors ?? "",
@@ -814,14 +822,19 @@ export default function App() {
   async function handleCreateAnnotation() {
     if (!activePaper) return;
     const api = await getApi();
+    const pageNumber = activeReaderPage + 1;
+    const sourceText = currentReaderPage?.text ?? excerptFromView(readerView);
+    const preview = annotationPreview(sourceText);
+    const note = annotationDraft.trim();
     const annotation = await api.createAnnotation({
       item_id: activePaper.id,
-      anchor: `anchor-${annotations.length + 1}`,
-      kind: "note",
-      body: "Flag this passage for the review draft.",
+      anchor: `page-${pageNumber}`,
+      kind: "highlight",
+      body: note.length > 0 ? `${note} · ${preview}` : preview,
     });
     setAnnotations((current) => [...current, annotation]);
-    setStatusMessage(`Added note to ${activePaper.title}.`);
+    setAnnotationDraft("");
+    setStatusMessage(`Added highlight on page ${pageNumber} to ${activePaper.title}.`);
   }
 
   async function handleSaveMetadata() {
@@ -1222,6 +1235,10 @@ export default function App() {
   }, [activeReaderPage, readerPages.length]);
 
   function handleAnnotationJump(annotation: Annotation) {
+    const pageMatch = annotation.anchor.match(/^page-(\d+)$/);
+    if (pageMatch) {
+      setReaderPage(Number(pageMatch[1]) - 1);
+    }
     setActiveReaderSection("Notes");
     setActiveAnchor(annotation.anchor);
     if (activePaper) {
@@ -1827,6 +1844,13 @@ export default function App() {
                 >
                   Next Match
                 </button>
+                <input
+                  aria-label="Annotation note"
+                  className="reader-search-input"
+                  placeholder="Add a note to the next highlight..."
+                  value={annotationDraft}
+                  onChange={(event) => setAnnotationDraft(event.target.value)}
+                />
               </div>
               {latestCitation ? (
                 <div className="citation-card">
