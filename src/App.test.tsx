@@ -388,6 +388,26 @@ describe("App workspace", () => {
     expect(screen.getByText(/1 \/ 1 matches/i)).toBeInTheDocument();
   });
 
+  it("supports keyboard shortcuts for focusing and clearing document search", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.keyboard("{Meta>}f{/Meta}");
+    expect(screen.getByLabelText("Find in document")).toHaveFocus();
+
+    await user.type(screen.getByLabelText("Find in document"), "heuristics");
+    expect(screen.getByText(/1 \/ 1 matches/i)).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.getByLabelText("Find in document")).toHaveValue("");
+    expect(screen.getByText(/0 \/ 0 matches/i)).toBeInTheDocument();
+  });
+
   it("jumps from AI source references back into the reader anchor", async () => {
     const user = userEvent.setup();
 

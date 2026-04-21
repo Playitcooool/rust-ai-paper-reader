@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getApi } from "./lib/api";
 import type {
@@ -385,6 +385,7 @@ export default function App() {
   const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>("all");
   const [moveItemTargetId, setMoveItemTargetId] = useState("current");
   const [batchMoveTargetId, setBatchMoveTargetId] = useState("current");
+  const readerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const hasCollections = collections.length > 0;
 
   useEffect(() => {
@@ -1267,6 +1268,12 @@ export default function App() {
     updateReaderSession({ searchQuery: value, matchIndex: 0 });
   }
 
+  function clearReaderSearch() {
+    setReaderSearchQuery("");
+    setActiveReaderMatchIndex(0);
+    updateReaderSession({ searchQuery: "", matchIndex: 0 });
+  }
+
   useEffect(() => {
     if (readerMatches.length === 0) {
       setActiveReaderMatchIndex(0);
@@ -1287,6 +1294,12 @@ export default function App() {
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         target?.isContentEditable;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        readerSearchInputRef.current?.focus();
+        readerSearchInputRef.current?.select();
+        return;
+      }
       if (isTypingTarget || readerPages.length === 0) return;
 
       if (event.key === "ArrowRight") {
@@ -1901,8 +1914,14 @@ export default function App() {
                   aria-label="Find in document"
                   className="reader-search-input"
                   placeholder="Find in document..."
+                  ref={readerSearchInputRef}
                   value={readerSearchQuery}
                   onChange={(event) => handleReaderSearchChange(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      clearReaderSearch();
+                    }
+                  }}
                 />
                 <span className="meta-count">
                   {readerMatches.length === 0 && readerSearchQuery.trim().length > 0
