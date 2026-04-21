@@ -16,6 +16,8 @@ import type {
 
 type AiPanelMode = "paper" | "collection";
 type ReaderSection = "Overview" | "Methods" | "Results" | "Notes";
+type ItemSort = "recent" | "title" | "year_desc";
+type AttachmentFilter = "all" | "ready" | "missing" | "citation_only";
 
 const itemActions = [
   { label: "Summarize document", kind: "item.summarize" },
@@ -76,6 +78,25 @@ const applyTagFilter = (items: LibraryItem[], tags: Tag[], selectedTagId: number
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name;
   if (!selectedTagName) return items;
   return items.filter((item) => item.tags.includes(selectedTagName));
+};
+
+const filterItemsByAttachment = (items: LibraryItem[], attachmentFilter: AttachmentFilter) => {
+  if (attachmentFilter === "all") return items;
+  return items.filter((item) => item.attachment_status === attachmentFilter);
+};
+
+const sortItems = (items: LibraryItem[], itemSort: ItemSort) => {
+  const nextItems = [...items];
+  nextItems.sort((left, right) => {
+    if (itemSort === "title") {
+      return left.title.localeCompare(right.title);
+    }
+    if (itemSort === "year_desc") {
+      return (right.publication_year ?? 0) - (left.publication_year ?? 0);
+    }
+    return right.id - left.id;
+  });
+  return nextItems;
 };
 
 const formatItemMetadata = (item: LibraryItem | null) => {
@@ -209,6 +230,8 @@ export default function App() {
   });
   const [pendingCollectionStatus, setPendingCollectionStatus] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
+  const [itemSort, setItemSort] = useState<ItemSort>("recent");
+  const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>("all");
   const hasCollections = collections.length > 0;
 
   useEffect(() => {
@@ -408,19 +431,38 @@ export default function App() {
     };
   }, [selectedCollectionId]);
 
+  const visibleItems = useMemo(
+    () => sortItems(filterItemsByAttachment(items, attachmentFilter), itemSort),
+    [attachmentFilter, itemSort, items],
+  );
+
+  useEffect(() => {
+    setActivePaperId((current) =>
+      current && visibleItems.some((item) => item.id === current) ? current : visibleItems[0]?.id ?? null,
+    );
+    setOpenPaperIds((current) => {
+      const aliveIds = current.filter((id) => visibleItems.some((item) => item.id === id));
+      const nextActiveId = visibleItems[0]?.id;
+      if (nextActiveId && !aliveIds.includes(nextActiveId)) {
+        return [...aliveIds, nextActiveId];
+      }
+      return aliveIds;
+    });
+  }, [visibleItems]);
+
   const openPapers = useMemo(
     () =>
       openPaperIds
-        .map((id) => items.find((item) => item.id === id))
+        .map((id) => visibleItems.find((item) => item.id === id))
         .filter((item): item is LibraryItem => Boolean(item)),
-    [items, openPaperIds],
+    [openPaperIds, visibleItems],
   );
 
-  const activePaper = items.find((item) => item.id === activePaperId) ?? openPapers[0] ?? null;
+  const activePaper = visibleItems.find((item) => item.id === activePaperId) ?? openPapers[0] ?? null;
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
-  const readerState = readerStateCopy(activePaper, items.length);
+  const readerState = readerStateCopy(activePaper, visibleItems.length);
   const paperActionsEnabled = canRunReaderActions(activePaper);
   useEffect(() => {
     setIsEditingMetadata(false);
@@ -1019,7 +1061,7 @@ export default function App() {
               onClick={() => setSelectedTagId(null)}
             >
               <span>All Tags</span>
-              <span className="meta-count">{items.length}</span>
+              <span className="meta-count">{visibleItems.length}</span>
             </button>
             {tags.map((tag) => (
               <button
@@ -1066,7 +1108,30 @@ export default function App() {
         >
           <div className="section-title-row">
             <h2>Current Collection</h2>
-            <span className="meta-count">{items.length} items</span>
+            <span className="meta-count">{visibleItems.length} items</span>
+          </div>
+          <div className="collection-create-row">
+            <select
+              aria-label="Attachment filter"
+              className="mode-select"
+              value={attachmentFilter}
+              onChange={(event) => setAttachmentFilter(event.target.value as AttachmentFilter)}
+            >
+              <option value="all">All Attachments</option>
+              <option value="ready">Readable Files</option>
+              <option value="missing">Missing Files</option>
+              <option value="citation_only">Citation Only</option>
+            </select>
+            <select
+              aria-label="Sort papers"
+              className="mode-select"
+              value={itemSort}
+              onChange={(event) => setItemSort(event.target.value as ItemSort)}
+            >
+              <option value="recent">Recently Added</option>
+              <option value="title">Title A-Z</option>
+              <option value="year_desc">Year (Newest)</option>
+            </select>
           </div>
           {draggedFileCount > 0 ? (
             <p className="drop-helper">Drop {draggedFileCount} files into {activeCollection?.name ?? "this collection"}.</p>
@@ -1077,15 +1142,19 @@ export default function App() {
               <h3>No collection selected</h3>
               <p>Create or select a collection before importing and organizing papers.</p>
             </div>
-          ) : items.length === 0 ? (
+          ) : visibleItems.length === 0 ? (
             <div className="citation-card">
               <p className="eyebrow">Ready for Import</p>
-              <h3>{activeCollection.name} is empty</h3>
-              <p>Use Import, drag and drop files, or add citation records to populate this collection.</p>
+              <h3>No papers match the current view</h3>
+              <p>
+                {items.length === 0
+                  ? `Use Import, drag and drop files, or add citation records to populate ${activeCollection.name}.`
+                  : "Adjust the current attachment filter, tag, or search query to show matching papers."}
+              </p>
             </div>
           ) : (
             <div className="paper-list">
-              {items.map((paper) => (
+              {visibleItems.map((paper) => (
                 <button
                   key={paper.id}
                   className={`paper-card ${paper.id === activePaper?.id ? "paper-card-active" : ""}`}
@@ -1449,18 +1518,21 @@ export default function App() {
                 and an editable review note.
               </p>
               {selectedTagName ? <p>Filtered by tag: {selectedTagName}</p> : null}
+              {attachmentFilter !== "all" ? <p>Filtered by attachment: {attachmentFilter}</p> : null}
             </div>
             <div className="context-card">
               <p className="eyebrow">Review Scope</p>
-              <h3>{items.length} papers included</h3>
+              <h3>{visibleItems.length} papers included</h3>
               <p>
                 {selectedTagName
                   ? `Current draft scope is filtered to tag ${selectedTagName}.`
-                  : "Current draft scope includes every visible paper in this collection."}
+                  : attachmentFilter !== "all"
+                    ? `Current draft scope is filtered to ${attachmentFilter} items.`
+                    : "Current draft scope includes every visible paper in this collection."}
               </p>
-              {items.length > 0 ? (
+              {visibleItems.length > 0 ? (
                 <div className="tag-chip-row">
-                  {items.map((item) => (
+                  {visibleItems.map((item) => (
                     <span key={item.id} className="status-pill">
                       {item.title}
                     </span>

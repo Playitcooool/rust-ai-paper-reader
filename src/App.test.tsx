@@ -29,7 +29,10 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
-    await user.click(await screen.findByRole("button", { name: /Graph Neural Survey/i }));
+    const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
+    await user.click(
+      await within(collectionPanel).findByRole("button", { name: /Graph Neural Survey/i }),
+    );
     expect(
       screen.getByRole("heading", { name: "Graph Neural Survey", level: 2 }),
     ).toBeInTheDocument();
@@ -151,6 +154,41 @@ describe("App workspace", () => {
 
     expect(methodsButton).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText(/Focused reader outline on Methods/i)).toBeInTheDocument();
+  });
+
+  it("sorts the visible papers by newest year in the current collection", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Sort papers"), "year_desc");
+
+    const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
+    const paperButtons = within(collectionPanel).getAllByRole("button");
+    expect(paperButtons[0]).toHaveTextContent("Graph Neural Survey");
+    expect(paperButtons[1]).toHaveTextContent("Transformer Scaling Laws");
+  });
+
+  it("filters the visible papers by attachment state", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Systems/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Systems/i }));
+    await user.selectOptions(screen.getByLabelText("Attachment filter"), "missing");
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Distributed Consensus Notes", level: 2 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Filtered by attachment: missing/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 papers included/i)).toBeInTheDocument();
   });
 
   it("jumps back to an annotation anchor from the reader chips", async () => {
@@ -620,7 +658,10 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Graph Neural Survey/i }));
+    const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
+    await user.click(
+      within(collectionPanel).getByRole("button", { name: /Graph Neural Survey/i }),
+    );
     expect(await screen.findByRole("tab", { name: "Graph Neural Survey" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Close tab Graph Neural Survey" }));
