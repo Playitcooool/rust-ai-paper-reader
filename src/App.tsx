@@ -263,6 +263,8 @@ export default function App() {
   const [activeReaderPage, setActiveReaderPage] = useState(0);
   const [readerPageInput, setReaderPageInput] = useState("1");
   const [readerZoom, setReaderZoom] = useState(100);
+  const [readerSearchQuery, setReaderSearchQuery] = useState("");
+  const [activeReaderMatchIndex, setActiveReaderMatchIndex] = useState(0);
   const [activeReaderSection, setActiveReaderSection] = useState<ReaderSection>("Overview");
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -496,6 +498,13 @@ export default function App() {
     [attachmentFilter, itemSort, items],
   );
   const readerPages = useMemo(() => readerPagesFromView(readerView), [readerView]);
+  const readerMatches = useMemo(() => {
+    const query = readerSearchQuery.trim().toLowerCase();
+    if (query.length === 0) return [];
+    return readerPages
+      .map((page, index) => ({ page, index }))
+      .filter(({ page }) => page.text.toLowerCase().includes(query));
+  }, [readerPages, readerSearchQuery]);
   const currentReaderPage = readerPages[activeReaderPage] ?? null;
 
   useEffect(() => {
@@ -539,6 +548,8 @@ export default function App() {
     setActiveReaderPage(0);
     setReaderPageInput("1");
     setReaderZoom(100);
+    setReaderSearchQuery("");
+    setActiveReaderMatchIndex(0);
     setMetadataDraft({
       title: activePaper?.title ?? "",
       authors: activePaper?.authors ?? "",
@@ -1095,6 +1106,30 @@ export default function App() {
   function handleReaderZoom(delta: number) {
     setReaderZoom((current) => Math.max(70, Math.min(180, current + delta)));
   }
+
+  function setReaderMatch(index: number) {
+    if (readerMatches.length === 0) return;
+    const nextIndex = ((index % readerMatches.length) + readerMatches.length) % readerMatches.length;
+    setActiveReaderMatchIndex(nextIndex);
+    setReaderPage(readerMatches[nextIndex].index);
+  }
+
+  function handleReaderSearchChange(value: string) {
+    setReaderSearchQuery(value);
+    setActiveReaderMatchIndex(0);
+  }
+
+  useEffect(() => {
+    if (readerMatches.length === 0) {
+      setActiveReaderMatchIndex(0);
+      return;
+    }
+    const nextIndex = Math.min(activeReaderMatchIndex, readerMatches.length - 1);
+    if (nextIndex !== activeReaderMatchIndex) {
+      setActiveReaderMatchIndex(nextIndex);
+    }
+    setReaderPage(readerMatches[nextIndex].index);
+  }, [activeReaderMatchIndex, readerMatches]);
 
   useEffect(() => {
     function handleWindowKeydown(event: KeyboardEvent) {
@@ -1695,6 +1730,34 @@ export default function App() {
                 </button>
                 <button className="ghost-button" type="button" onClick={() => handleReaderZoom(10)}>
                   Zoom In
+                </button>
+                <input
+                  aria-label="Find in document"
+                  className="reader-search-input"
+                  placeholder="Find in document..."
+                  value={readerSearchQuery}
+                  onChange={(event) => handleReaderSearchChange(event.target.value)}
+                />
+                <span className="meta-count">
+                  {readerMatches.length === 0 && readerSearchQuery.trim().length > 0
+                    ? "0 / 0 matches"
+                    : `${readerMatches.length === 0 ? 0 : activeReaderMatchIndex + 1} / ${readerMatches.length} matches`}
+                </span>
+                <button
+                  className="ghost-button"
+                  disabled={readerMatches.length === 0}
+                  type="button"
+                  onClick={() => setReaderMatch(activeReaderMatchIndex - 1)}
+                >
+                  Previous Match
+                </button>
+                <button
+                  className="ghost-button"
+                  disabled={readerMatches.length === 0}
+                  type="button"
+                  onClick={() => setReaderMatch(activeReaderMatchIndex + 1)}
+                >
+                  Next Match
                 </button>
               </div>
               {latestCitation ? (

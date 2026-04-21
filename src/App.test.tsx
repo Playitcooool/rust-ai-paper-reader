@@ -214,6 +214,21 @@ describe("App workspace", () => {
     expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
   });
 
+  it("finds matches inside the active document and jumps to the matching page", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Find in document"), "heuristics");
+
+    expect(screen.getByText(/1 \/ 1 matches/i)).toBeInTheDocument();
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+  });
+
   it("sorts the visible papers by newest year in the current collection", async () => {
     const user = userEvent.setup();
 
