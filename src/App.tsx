@@ -45,6 +45,13 @@ const taskPreview = (task: AITask) =>
     return lines[lines.length - 1]?.replace(/^- /, "") ?? "No preview available.";
   })();
 
+const noteHeading = (note: ResearchNote) =>
+  note.markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("#"))
+    ?.replace(/^#+\s*/, "") ?? note.title;
+
 const formatHint = (title: string) => {
   if (title.toLowerCase().endsWith("notes")) return "EPUB";
   if (title.toLowerCase().includes("survey")) return "DOCX";
@@ -565,11 +572,11 @@ export default function App() {
   }
 
   async function handleExportMarkdown() {
-    const note = notes[0];
+    const note = notes.find((entry) => entry.id === activeNoteId);
     if (!note) return;
     const api = await getApi();
     const markdown = await api.exportNoteMarkdown(note.id);
-    setStatusMessage(`Exported Markdown (${markdown.length} chars).`);
+    setStatusMessage(`Exported Markdown for # ${noteHeading(note)} (${markdown.length} chars).`);
   }
 
   async function handleExportCitation(format: CitationFormat = "apa7") {
@@ -590,6 +597,14 @@ export default function App() {
     setActiveNoteId(note.id);
     setNoteDraft(note.markdown);
     setStatusMessage(`Created research note for ${activeCollection.name}.`);
+  }
+
+  function handleSelectNote(noteId: number) {
+    const note = notes.find((entry) => entry.id === noteId);
+    if (!note) return;
+    setActiveNoteId(note.id);
+    setNoteDraft(note.markdown);
+    setStatusMessage(`Opened research note ${noteHeading(note)}.`);
   }
 
   async function handleRelinkAttachment() {
@@ -1047,6 +1062,35 @@ export default function App() {
                   <p>{latestCitation}</p>
                 </div>
               ) : null}
+              {activePaper ? (
+                <div className="citation-card">
+                  <p className="eyebrow">Document Metadata</p>
+                  <div className="export-row">
+                    <span>Authors</span>
+                    <span>{activePaper.authors}</span>
+                  </div>
+                  <div className="export-row">
+                    <span>Year</span>
+                    <span>{activePaper.publication_year ?? "Unknown"}</span>
+                  </div>
+                  <div className="export-row">
+                    <span>Source</span>
+                    <span>{activePaper.source}</span>
+                  </div>
+                  <div className="export-row">
+                    <span>DOI</span>
+                    <span>{activePaper.doi ?? "Not available"}</span>
+                  </div>
+                  <div className="export-row">
+                    <span>Attachment</span>
+                    <span>{activePaper.attachment_status} · {formatHint(activePaper.title)}</span>
+                  </div>
+                  <div className="export-row">
+                    <span>Tags</span>
+                    <span>{activePaper.tags.length > 0 ? activePaper.tags.join(" · ") : "No tags"}</span>
+                  </div>
+                </div>
+              ) : null}
               {readerState ? (
                 <div className="citation-card">
                   <p className="eyebrow">Workspace State</p>
@@ -1258,6 +1302,23 @@ export default function App() {
               ) : null}
               {activeNoteId ? (
                 <div className="note-editor-stack">
+                  {notes.length > 0 ? (
+                    <div className="result-card">
+                      <h3>Research Notes</h3>
+                      {notes.map((note) => (
+                        <button
+                          key={note.id}
+                          aria-label={`Open research note ${noteHeading(note)}`}
+                          className={`nav-item ${note.id === activeNoteId ? "nav-item-active" : ""}`}
+                          type="button"
+                          onClick={() => handleSelectNote(note.id)}
+                        >
+                          <span>{noteHeading(note)}</span>
+                          <span className="meta-count">{note.id === activeNoteId ? "Active" : "Saved"}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <label className="eyebrow" htmlFor="research-note-editor">
                     Research Note
                   </label>
@@ -1287,7 +1348,9 @@ export default function App() {
                   <button className="ghost-button" type="button" onClick={handleExportMarkdown}>
                     Export Markdown
                   </button>
-                  <span className="meta-count">{notes[0].title}</span>
+                  <span className="meta-count">
+                    {(notes.find((note) => note.id === activeNoteId) ?? notes[0]).title}
+                  </span>
                 </div>
               ) : null}
             </div>

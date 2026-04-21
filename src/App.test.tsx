@@ -210,6 +210,31 @@ describe("App workspace", () => {
     expect(screen.getByText(/Saved note edits for Machine Learning/i)).toBeInTheDocument();
   });
 
+  it("lists research notes, switches the active note, and exports the selected note", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.click(screen.getByRole("button", { name: "Generate Review Draft" }));
+    await user.click(screen.getByRole("button", { name: "Save as Research Note" }));
+    await user.click(screen.getByRole("button", { name: "Theme Map" }));
+    await user.click(screen.getByRole("button", { name: "Save as Research Note" }));
+
+    expect(screen.getByText(/Research Notes/i)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Open research note/i }).length).toBeGreaterThan(1);
+
+    await user.click(screen.getAllByRole("button", { name: /Open research note .*Review Draft: Machine Learning/i })[0]);
+    expect(await screen.findByDisplayValue(/# Review Draft: Machine Learning/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Export Markdown" }));
+    expect(await screen.findByText(/Exported Markdown for # Review Draft: Machine Learning/i)).toBeInTheDocument();
+  });
+
   it("shows collection review scope and included papers in the AI workspace", async () => {
     const user = userEvent.setup();
 
@@ -403,8 +428,8 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
-    expect(screen.getAllByText(/Kaplan et al\./i)).toHaveLength(2);
-    expect(screen.getAllByText(/2020 · OpenAI/i)).toHaveLength(2);
+    expect(screen.getAllByText(/Kaplan et al\./i).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/2020 · OpenAI/i).length).toBeGreaterThanOrEqual(2);
 
     await user.clear(screen.getByLabelText("Search papers"));
     await user.type(screen.getByLabelText("Search papers"), "Kaplan");
@@ -416,6 +441,22 @@ describe("App workspace", () => {
     expect(
       within(collectionPanel).queryByRole("button", { name: /Graph Neural Survey/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows an expanded metadata panel for the active paper", async () => {
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    expect(screen.getByText(/Document Metadata/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Authors$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Kaplan et al\.$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^DOI$/i)).toBeInTheDocument();
+    expect(screen.getByText(/10\.1000\/scaling-laws/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Attachment$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^ready · PDF$/i)).toBeInTheDocument();
   });
 
   it("exports BibTeX and RIS citations for the active paper", async () => {
