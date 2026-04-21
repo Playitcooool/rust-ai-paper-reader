@@ -24,6 +24,16 @@ type ReaderPage = {
   html: string;
   text: string;
 };
+type ReaderSessionState = {
+  page: number;
+  pageInput: string;
+  zoom: number;
+  searchQuery: string;
+  matchIndex: number;
+  section: ReaderSection;
+  annotationFilter: AnnotationFilter;
+  anchor: string | null;
+};
 
 const itemActions = [
   { label: "Summarize document", kind: "item.summarize" },
@@ -40,6 +50,16 @@ const collectionActions = [
 ];
 
 const readerSections: ReaderSection[] = ["Overview", "Methods", "Results", "Notes"];
+const defaultReaderSession = (): ReaderSessionState => ({
+  page: 0,
+  pageInput: "1",
+  zoom: 100,
+  searchQuery: "",
+  matchIndex: 0,
+  section: "Overview",
+  annotationFilter: "all",
+  anchor: null,
+});
 
 const excerptFromView = (view: ReaderView | null) =>
   view?.plain_text.split(". ").slice(0, 2).join(". ") ?? "Open a paper to see its extracted text.";
@@ -337,6 +357,7 @@ export default function App() {
   const [activeReaderMatchIndex, setActiveReaderMatchIndex] = useState(0);
   const [annotationDraft, setAnnotationDraft] = useState("");
   const [annotationFilter, setAnnotationFilter] = useState<AnnotationFilter>("all");
+  const [readerSessions, setReaderSessions] = useState<Record<number, ReaderSessionState>>({});
   const [activeReaderSection, setActiveReaderSection] = useState<ReaderSection>("Overview");
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -642,13 +663,16 @@ export default function App() {
     setIsEditingMetadata(false);
     setLatestCitation("");
     setMoveItemTargetId(activePaper?.collection_id ? String(activePaper.collection_id) : "current");
-    setActiveReaderPage(0);
-    setReaderPageInput("1");
-    setReaderZoom(100);
-    setReaderSearchQuery("");
-    setActiveReaderMatchIndex(0);
+    const session = activePaper?.id ? readerSessions[activePaper.id] ?? defaultReaderSession() : defaultReaderSession();
+    setActiveReaderPage(session.page);
+    setReaderPageInput(session.pageInput);
+    setReaderZoom(session.zoom);
+    setReaderSearchQuery(session.searchQuery);
+    setActiveReaderMatchIndex(session.matchIndex);
     setAnnotationDraft("");
-    setAnnotationFilter("all");
+    setAnnotationFilter(session.annotationFilter);
+    setActiveReaderSection(session.section);
+    setActiveAnchor(session.anchor);
     setMetadataDraft({
       title: activePaper?.title ?? "",
       authors: activePaper?.authors ?? "",
@@ -663,6 +687,7 @@ export default function App() {
     activePaper?.publication_year,
     activePaper?.source,
     activePaper?.doi,
+    readerSessions,
   ]);
   const collectionEntries = useMemo(() => orderedCollections(collections), [collections]);
   const moveDestinationOptions = useMemo(() => {
@@ -671,6 +696,17 @@ export default function App() {
     blockedIds.add(selectedCollectionId);
     return collectionEntries.filter((entry) => !blockedIds.has(entry.collection.id));
   }, [collectionEntries, collections, selectedCollectionId]);
+
+  function updateReaderSession(patch: Partial<ReaderSessionState>, itemId = activePaperId) {
+    if (itemId === null) return;
+    setReaderSessions((current) => ({
+      ...current,
+      [itemId]: {
+        ...(current[itemId] ?? defaultReaderSession()),
+        ...patch,
+      },
+    }));
+  }
 
   async function refreshCollections(nextSelectedId?: number | null) {
     const api = await getApi();
@@ -1182,6 +1218,7 @@ export default function App() {
   function handleReaderSectionChange(section: ReaderSection) {
     setActiveReaderSection(section);
     setActiveAnchor(null);
+    updateReaderSession({ section, anchor: null });
     if (activePaper) {
       setStatusMessage(`Focused reader outline on ${section} in ${activePaper.title}.`);
     }
@@ -1196,6 +1233,7 @@ export default function App() {
     const nextPage = clampReaderPage(page);
     setActiveReaderPage(nextPage);
     setReaderPageInput(String(nextPage + 1));
+    updateReaderSession({ page: nextPage, pageInput: String(nextPage + 1) });
   }
 
   function handleReaderPageSubmit() {
@@ -1208,19 +1246,25 @@ export default function App() {
   }
 
   function handleReaderZoom(delta: number) {
-    setReaderZoom((current) => Math.max(70, Math.min(180, current + delta)));
+    setReaderZoom((current) => {
+      const nextZoom = Math.max(70, Math.min(180, current + delta));
+      updateReaderSession({ zoom: nextZoom });
+      return nextZoom;
+    });
   }
 
   function setReaderMatch(index: number) {
     if (readerMatches.length === 0) return;
     const nextIndex = ((index % readerMatches.length) + readerMatches.length) % readerMatches.length;
     setActiveReaderMatchIndex(nextIndex);
+    updateReaderSession({ matchIndex: nextIndex });
     setReaderPage(readerMatches[nextIndex].index);
   }
 
   function handleReaderSearchChange(value: string) {
     setReaderSearchQuery(value);
     setActiveReaderMatchIndex(0);
+    updateReaderSession({ searchQuery: value, matchIndex: 0 });
   }
 
   useEffect(() => {
@@ -1231,6 +1275,7 @@ export default function App() {
     const nextIndex = Math.min(activeReaderMatchIndex, readerMatches.length - 1);
     if (nextIndex !== activeReaderMatchIndex) {
       setActiveReaderMatchIndex(nextIndex);
+      updateReaderSession({ matchIndex: nextIndex });
     }
     setReaderPage(readerMatches[nextIndex].index);
   }, [activeReaderMatchIndex, readerMatches]);
@@ -1264,6 +1309,7 @@ export default function App() {
     }
     setActiveReaderSection("Notes");
     setActiveAnchor(annotation.anchor);
+    updateReaderSession({ section: "Notes", anchor: annotation.anchor });
     if (activePaper) {
       setStatusMessage(`Jumped to annotation ${annotation.anchor} in ${activePaper.title}.`);
     }
@@ -1290,6 +1336,7 @@ export default function App() {
     setAnnotations((current) => current.filter((entry) => entry.id !== annotation.id));
     if (activeAnchor === annotation.anchor) {
       setActiveAnchor(null);
+      updateReaderSession({ anchor: null });
     }
     setStatusMessage(`Removed annotation ${annotation.anchor} from ${activePaper.title}.`);
   }
@@ -1992,7 +2039,10 @@ export default function App() {
                     aria-pressed={annotationFilter === "all"}
                     className={`ghost-button ${annotationFilter === "all" ? "nav-item-active" : ""}`}
                     type="button"
-                    onClick={() => setAnnotationFilter("all")}
+                    onClick={() => {
+                      setAnnotationFilter("all");
+                      updateReaderSession({ annotationFilter: "all" });
+                    }}
                   >
                     All Annotations
                   </button>
@@ -2000,7 +2050,10 @@ export default function App() {
                     aria-pressed={annotationFilter === "current_page"}
                     className={`ghost-button ${annotationFilter === "current_page" ? "nav-item-active" : ""}`}
                     type="button"
-                    onClick={() => setAnnotationFilter("current_page")}
+                    onClick={() => {
+                      setAnnotationFilter("current_page");
+                      updateReaderSession({ annotationFilter: "current_page" });
+                    }}
                   >
                     Current Page Annotations
                   </button>
@@ -2009,7 +2062,10 @@ export default function App() {
                     className={`ghost-button ${annotationFilter === "search_matches" ? "nav-item-active" : ""}`}
                     disabled={readerSearchQuery.trim().length === 0}
                     type="button"
-                    onClick={() => setAnnotationFilter("search_matches")}
+                    onClick={() => {
+                      setAnnotationFilter("search_matches");
+                      updateReaderSession({ annotationFilter: "search_matches" });
+                    }}
                   >
                     Search Match Annotations
                   </button>

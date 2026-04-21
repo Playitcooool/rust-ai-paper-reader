@@ -360,6 +360,34 @@ describe("App workspace", () => {
     expect(screen.getByText(/0 annotations/i)).toBeInTheDocument();
   });
 
+  it("preserves reader state per open paper tab", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next Page" }));
+    await user.click(screen.getByRole("button", { name: "Zoom In" }));
+    await user.type(screen.getByLabelText("Find in document"), "heuristics");
+
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("110%");
+
+    await user.click(screen.getByRole("tab", { name: "Graph Neural Survey" }));
+    expect(screen.getByRole("heading", { name: "Graph Neural Survey", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText(/Page 1 of 1/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Transformer Scaling Laws" }));
+
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("110%");
+    expect(screen.getByLabelText("Find in document")).toHaveValue("heuristics");
+    expect(screen.getByText(/1 \/ 1 matches/i)).toBeInTheDocument();
+  });
+
   it("jumps from AI source references back into the reader anchor", async () => {
     const user = userEvent.setup();
 
