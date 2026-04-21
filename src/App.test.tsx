@@ -227,6 +227,7 @@ describe("App workspace", () => {
 
     expect(screen.getByText(/1 \/ 1 matches/i)).toBeInTheDocument();
     expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(document.querySelector(".reader-html mark")?.textContent).toMatch(/heuristics/i);
   });
 
   it("sorts the visible papers by newest year in the current collection", async () => {

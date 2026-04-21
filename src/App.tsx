@@ -65,6 +65,8 @@ const formatHint = (title: string) => {
   return "PDF";
 };
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const readerPagesFromView = (view: ReaderView | null): ReaderPage[] => {
   if (!view || typeof DOMParser === "undefined") return [];
 
@@ -108,6 +110,62 @@ const readerPagesFromView = (view: ReaderView | null): ReaderPage[] => {
   }
 
   return pages;
+};
+
+const highlightReaderHtml = (html: string | null | undefined, query: string) => {
+  if (!html) return "<article><p>No reader view available yet.</p></article>";
+  const normalizedQuery = query.trim();
+  if (
+    normalizedQuery.length === 0 ||
+    typeof DOMParser === "undefined" ||
+    typeof NodeFilter === "undefined"
+  ) {
+    return html;
+  }
+
+  const parser = new DOMParser();
+  const document = parser.parseFromString(html, "text/html");
+  const matcher = new RegExp(escapeRegExp(normalizedQuery), "gi");
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    if (currentNode.textContent?.trim()) {
+      textNodes.push(currentNode as Text);
+    }
+    currentNode = walker.nextNode();
+  }
+
+  for (const node of textNodes) {
+    const text = node.textContent ?? "";
+    matcher.lastIndex = 0;
+    if (!matcher.test(text)) continue;
+
+    matcher.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    let match = matcher.exec(text);
+    while (match) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (start > lastIndex) {
+        fragment.append(text.slice(lastIndex, start));
+      }
+      const mark = document.createElement("mark");
+      mark.textContent = text.slice(start, end);
+      fragment.append(mark);
+      lastIndex = end;
+      match = matcher.exec(text);
+    }
+
+    if (lastIndex < text.length) {
+      fragment.append(text.slice(lastIndex));
+    }
+    node.parentNode?.replaceChild(fragment, node);
+  }
+
+  return document.body.innerHTML;
 };
 
 const supportedExtensions = [".pdf", ".docx", ".epub"];
@@ -506,6 +564,16 @@ export default function App() {
       .filter(({ page }) => page.text.toLowerCase().includes(query));
   }, [readerPages, readerSearchQuery]);
   const currentReaderPage = readerPages[activeReaderPage] ?? null;
+  const readerHtml = useMemo(
+    () =>
+      highlightReaderHtml(
+        currentReaderPage?.html ??
+          readerView?.normalized_html ??
+          "<article><p>No reader view available yet.</p></article>",
+        readerSearchQuery,
+      ),
+    [currentReaderPage?.html, readerSearchQuery, readerView?.normalized_html],
+  );
 
   useEffect(() => {
     setActivePaperId((current) =>
@@ -1873,10 +1941,7 @@ export default function App() {
                 className="reader-html"
                 style={{ fontSize: `${readerZoom}%` }}
                 dangerouslySetInnerHTML={{
-                  __html:
-                    currentReaderPage?.html ??
-                    readerView?.normalized_html ??
-                    "<article><p>No reader view available yet.</p></article>",
+                  __html: readerHtml,
                 }}
               />
             </article>

@@ -460,6 +460,13 @@ p {
   gap: 12px;
 }
 
+.reader-html mark {
+  padding: 0 0.15em;
+  border-radius: 0.3em;
+  background: rgba(226, 139, 83, 0.42);
+  color: #fff7ee;
+}
+
 .document-lead {
   font-size: 1.1rem;
   color: #f8dfc7;
