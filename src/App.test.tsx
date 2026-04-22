@@ -214,6 +214,28 @@ describe("App workspace", () => {
     expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
   });
 
+  it("bookmarks reader pages and jumps back from the bookmark list", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next Page" }));
+    await user.click(screen.getByRole("button", { name: "Bookmark Page" }));
+
+    expect(await screen.findByText(/Bookmarked page 2 in Transformer Scaling Laws/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Jump to bookmark page 2" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Jump to reader page 1" }));
+    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Jump to bookmark page 2" }));
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+  });
+
   it("finds matches inside the active document and jumps to the matching page", async () => {
     const user = userEvent.setup();
 

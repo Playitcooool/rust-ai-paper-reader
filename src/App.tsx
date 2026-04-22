@@ -35,6 +35,7 @@ type ReaderSessionState = {
   anchor: string | null;
   history: number[];
   historyIndex: number;
+  bookmarks: number[];
 };
 
 const itemActions = [
@@ -63,6 +64,7 @@ const defaultReaderSession = (): ReaderSessionState => ({
   anchor: null,
   history: [0],
   historyIndex: 0,
+  bookmarks: [],
 });
 
 const excerptFromView = (view: ReaderView | null) =>
@@ -661,6 +663,7 @@ export default function App() {
   const activePaper = visibleItems.find((item) => item.id === activePaperId) ?? openPapers[0] ?? null;
   const activeReaderSession =
     activePaper?.id ? readerSessions[activePaper.id] ?? defaultReaderSession() : defaultReaderSession();
+  const isCurrentPageBookmarked = activeReaderSession.bookmarks.includes(activeReaderPage);
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
@@ -1305,6 +1308,19 @@ export default function App() {
     updateReaderSession({ historyIndex: nextIndex });
   }
 
+  function handleToggleBookmark() {
+    if (!activePaper) return;
+    const nextBookmarks = isCurrentPageBookmarked
+      ? activeReaderSession.bookmarks.filter((page) => page !== activeReaderPage)
+      : [...activeReaderSession.bookmarks, activeReaderPage].sort((left, right) => left - right);
+    updateReaderSession({ bookmarks: nextBookmarks });
+    setStatusMessage(
+      isCurrentPageBookmarked
+        ? `Removed bookmark from page ${activeReaderPage + 1} in ${activePaper.title}.`
+        : `Bookmarked page ${activeReaderPage + 1} in ${activePaper.title}.`,
+    );
+  }
+
   useEffect(() => {
     if (readerMatches.length === 0) {
       setActiveReaderMatchIndex(0);
@@ -1893,6 +1909,24 @@ export default function App() {
                       {index + 1}. {page.title}
                     </button>
                   ))}
+                  {activeReaderSession.bookmarks.length > 0 ? (
+                    <>
+                      <p className="eyebrow">Bookmarks</p>
+                      {activeReaderSession.bookmarks.map((pageIndex) => (
+                        <button
+                          key={`bookmark-${pageIndex}`}
+                          aria-label={`Jump to bookmark page ${pageIndex + 1}`}
+                          className={`outline-link ${
+                            activeReaderPage === pageIndex ? "outline-link-active" : ""
+                          }`}
+                          type="button"
+                          onClick={() => setReaderPage(pageIndex)}
+                        >
+                          Bookmark: Page {pageIndex + 1}
+                        </button>
+                      ))}
+                    </>
+                  ) : null}
                 </>
               ) : null}
             </div>
@@ -1925,6 +1959,9 @@ export default function App() {
                   onClick={() => handleReaderHistory("forward")}
                 >
                   Forward
+                </button>
+                <button className="ghost-button" type="button" onClick={handleToggleBookmark}>
+                  {isCurrentPageBookmarked ? "Remove Bookmark" : "Bookmark Page"}
                 </button>
                 <button
                   className="ghost-button"
