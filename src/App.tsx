@@ -16,13 +16,17 @@ import type {
 } from "./lib/contracts";
 
 type AiPanelMode = "paper" | "collection";
-type ReaderSection = "Overview" | "Methods" | "Results" | "Notes";
+type ReaderSection = string;
 type ItemSort = "recent" | "title" | "year_desc";
 type AttachmentFilter = "all" | "ready" | "missing" | "citation_only";
 type ReaderPage = {
   title: string;
   html: string;
   text: string;
+};
+type ReaderOutlineEntry = {
+  label: string;
+  page: number;
 };
 type ReaderSessionState = {
   page: number;
@@ -52,14 +56,13 @@ const collectionActions = [
   { label: "Generate Review Draft", kind: "collection.review_draft" },
 ];
 
-const readerSections: ReaderSection[] = ["Overview", "Methods", "Results", "Notes"];
 const defaultReaderSession = (): ReaderSessionState => ({
   page: 0,
   pageInput: "1",
   zoom: 100,
   searchQuery: "",
   matchIndex: 0,
-  section: "Overview",
+  section: "Document",
   annotationFilter: "all",
   anchor: null,
   history: [0],
@@ -149,6 +152,15 @@ const readerPagesFromView = (view: ReaderView | null): ReaderPage[] => {
 
   return pages;
 };
+
+const readerOutlineFromPages = (pages: ReaderPage[]): ReaderOutlineEntry[] =>
+  pages
+    .map((page, index) => ({ label: page.title.trim(), page: index }))
+    .filter((entry, index, all) => {
+      if (entry.label.length === 0) return false;
+      if (/^Page \d+$/i.test(entry.label)) return false;
+      return all.findIndex((candidate) => candidate.label === entry.label) === index;
+    });
 
 const highlightReaderHtml = (html: string | null | undefined, query: string) => {
   if (!html) return "<article><p>No reader view available yet.</p></article>";
@@ -598,6 +610,7 @@ export default function App() {
     [attachmentFilter, itemSort, items],
   );
   const readerPages = useMemo(() => readerPagesFromView(readerView), [readerView]);
+  const readerOutline = useMemo(() => readerOutlineFromPages(readerPages), [readerPages]);
   const readerMatches = useMemo(() => {
     const query = readerSearchQuery.trim().toLowerCase();
     if (query.length === 0) return [];
@@ -631,6 +644,15 @@ export default function App() {
       ),
     [currentReaderPage?.html, readerSearchQuery, readerView?.normalized_html],
   );
+
+  useEffect(() => {
+    if (readerOutline.length === 0) return;
+    const currentOutlineLabel =
+      readerOutline.find((entry) => entry.page === activeReaderPage)?.label ?? readerOutline[0].label;
+    if (activeReaderSection !== currentOutlineLabel) {
+      setActiveReaderSection(currentOutlineLabel);
+    }
+  }, [activeReaderPage, activeReaderSection, readerOutline]);
 
   useEffect(() => {
     setActivePaperId((current) =>
@@ -1226,6 +1248,10 @@ export default function App() {
   }
 
   function handleReaderSectionChange(section: ReaderSection) {
+    const matchingEntry = readerOutline.find((entry) => entry.label === section);
+    if (matchingEntry) {
+      setReaderPage(matchingEntry.page);
+    }
     setActiveReaderSection(section);
     setActiveAnchor(null);
     updateReaderSession({ section, anchor: null });
@@ -1879,19 +1905,32 @@ export default function App() {
           <div className="reader-surface">
             <div className="reader-outline">
               <p className="eyebrow">Outline</p>
-              {readerSections.map((section) => (
+              {readerOutline.length > 0 ? (
+                readerOutline.map((section) => (
+                  <button
+                    key={section.label}
+                    aria-pressed={activeReaderSection === section.label}
+                    className={`outline-link ${
+                      activeReaderSection === section.label ? "outline-link-active" : ""
+                    }`}
+                    type="button"
+                    onClick={() => handleReaderSectionChange(section.label)}
+                  >
+                    {section.label}
+                  </button>
+                ))
+              ) : (
                 <button
-                  key={section}
-                  aria-pressed={activeReaderSection === section}
+                  aria-pressed={activeReaderSection === "Document"}
                   className={`outline-link ${
-                    activeReaderSection === section ? "outline-link-active" : ""
+                    activeReaderSection === "Document" ? "outline-link-active" : ""
                   }`}
                   type="button"
-                  onClick={() => handleReaderSectionChange(section)}
+                  onClick={() => handleReaderSectionChange("Document")}
                 >
-                  {section}
+                  Document
                 </button>
-              ))}
+              )}
               {readerPages.length > 0 ? (
                 <>
                   <p className="eyebrow">Pages</p>

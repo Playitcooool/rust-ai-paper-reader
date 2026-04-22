@@ -47,9 +47,9 @@ const initialState = (): MockState => ({
       doi: "10.1000/scaling-laws",
       tags: [],
       plainText:
-        "Scaling behavior emerges when model size, data volume, and compute are balanced. This paper discusses predictable loss curves and practical planning heuristics.",
+        "Overview. Scaling behavior emerges when model size, data volume, and compute are balanced. Methods. This paper discusses predictable loss curves and practical planning heuristics.",
       normalizedHtml:
-        "<article><h1>Transformer Scaling Laws</h1><p>Scaling behavior emerges when model size, data volume, and compute are balanced.</p><p>This paper discusses predictable loss curves and practical planning heuristics.</p></article>",
+        "<article><h1>Transformer Scaling Laws</h1><p>Scaling behavior emerges when model size, data volume, and compute are balanced.</p><h2>Methods</h2><p>This paper discusses predictable loss curves and practical planning heuristics.</p></article>",
     },
     {
       id: 2,
