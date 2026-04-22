@@ -378,6 +378,7 @@ export default function App() {
   const [annotationDraft, setAnnotationDraft] = useState("");
   const [annotationFilter, setAnnotationFilter] = useState<AnnotationFilter>("all");
   const [readerSessions, setReaderSessions] = useState<Record<number, ReaderSessionState>>({});
+  const [pdfPageCounts, setPdfPageCounts] = useState<Record<number, number>>({});
   const [activeReaderSection, setActiveReaderSection] = useState<ReaderSection>("Overview");
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -647,8 +648,6 @@ export default function App() {
       ),
     [currentReaderPage?.html, readerSearchQuery, readerView?.normalized_html],
   );
-  const readerPageCount = isPdfReader ? Math.max(readerView?.page_count ?? 1, 1) : readerPages.length;
-
   useEffect(() => {
     if (readerOutline.length === 0) return;
     const currentOutlineLabel =
@@ -689,6 +688,11 @@ export default function App() {
   const activePaper = visibleItems.find((item) => item.id === activePaperId) ?? openPapers[0] ?? null;
   const activeReaderSession =
     activePaper?.id ? readerSessions[activePaper.id] ?? defaultReaderSession() : defaultReaderSession();
+  const activePdfPageCount =
+    activePaper?.id && readerView?.reader_kind === "pdf"
+      ? pdfPageCounts[activePaper.id] ?? readerView.page_count
+      : null;
+  const readerPageCount = isPdfReader ? Math.max(activePdfPageCount ?? 1, 1) : readerPages.length;
   const isCurrentPageBookmarked = activeReaderSession.bookmarks.includes(activeReaderPage);
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
@@ -2266,7 +2270,19 @@ export default function App() {
                 )}
               </div>
               {isPdfReader && readerView ? (
-                <PdfReader view={readerView} page={activeReaderPage} zoom={readerZoom} />
+                <PdfReader
+                  view={readerView}
+                  page={activeReaderPage}
+                  zoom={readerZoom}
+                  onPageCountChange={(pageCount) => {
+                    if (!activePaper) return;
+                    setPdfPageCounts((current) =>
+                      current[activePaper.id] === pageCount
+                        ? current
+                        : { ...current, [activePaper.id]: pageCount },
+                    );
+                  }}
+                />
               ) : (
                 <NormalizedReader pageHtml={readerHtml} zoom={readerZoom} />
               )}

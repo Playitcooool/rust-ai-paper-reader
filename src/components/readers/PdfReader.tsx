@@ -6,9 +6,10 @@ type PdfReaderProps = {
   view: ReaderView;
   page: number;
   zoom: number;
+  onPageCountChange?: (pageCount: number) => void;
 };
 
-export function PdfReader({ view, page, zoom }: PdfReaderProps) {
+export function PdfReader({ view, page, zoom, onPageCountChange }: PdfReaderProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [pageCount, setPageCount] = useState(view.page_count);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -49,6 +50,7 @@ export function PdfReader({ view, page, zoom }: PdfReaderProps) {
 
         const nextPageCount = pdfDocument.numPages ?? view.page_count ?? 1;
         setPageCount(nextPageCount);
+        onPageCountChange?.(nextPageCount);
 
         const currentPage = await pdfDocument.getPage(Math.min(page + 1, nextPageCount));
         if (cancelled) return;
@@ -79,7 +81,7 @@ export function PdfReader({ view, page, zoom }: PdfReaderProps) {
     return () => {
       cancelled = true;
     };
-  }, [page, view.page_count, view.primary_attachment_path, zoom]);
+  }, [onPageCountChange, page, view.page_count, view.primary_attachment_path, zoom]);
 
   return (
     <section className="pdf-reader" data-testid="pdf-reader">
