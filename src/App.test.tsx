@@ -408,6 +408,25 @@ describe("App workspace", () => {
     expect(screen.getByText(/0 \/ 0 matches/i)).toBeInTheDocument();
   });
 
+  it("tracks reader navigation history across page jumps", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next Page" }));
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Reader Back" }));
+    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Reader Forward" }));
+    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+  });
+
   it("jumps from AI source references back into the reader anchor", async () => {
     const user = userEvent.setup();
 

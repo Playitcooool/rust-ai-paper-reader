@@ -33,6 +33,8 @@ type ReaderSessionState = {
   section: ReaderSection;
   annotationFilter: AnnotationFilter;
   anchor: string | null;
+  history: number[];
+  historyIndex: number;
 };
 
 const itemActions = [
@@ -59,6 +61,8 @@ const defaultReaderSession = (): ReaderSessionState => ({
   section: "Overview",
   annotationFilter: "all",
   anchor: null,
+  history: [0],
+  historyIndex: 0,
 });
 
 const excerptFromView = (view: ReaderView | null) =>
@@ -655,6 +659,8 @@ export default function App() {
   );
 
   const activePaper = visibleItems.find((item) => item.id === activePaperId) ?? openPapers[0] ?? null;
+  const activeReaderSession =
+    activePaper?.id ? readerSessions[activePaper.id] ?? defaultReaderSession() : defaultReaderSession();
   const activeCollection =
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
@@ -1230,10 +1236,24 @@ export default function App() {
     return Math.max(0, Math.min(page, readerPages.length - 1));
   }
 
-  function setReaderPage(page: number) {
+  function setReaderPage(page: number, options?: { recordHistory?: boolean }) {
     const nextPage = clampReaderPage(page);
+    const shouldRecordHistory = options?.recordHistory ?? true;
     setActiveReaderPage(nextPage);
     setReaderPageInput(String(nextPage + 1));
+    if (shouldRecordHistory) {
+      const history = activeReaderSession.history.slice(0, activeReaderSession.historyIndex + 1);
+      if (history[history.length - 1] !== nextPage) {
+        history.push(nextPage);
+      }
+      updateReaderSession({
+        page: nextPage,
+        pageInput: String(nextPage + 1),
+        history,
+        historyIndex: history.length - 1,
+      });
+      return;
+    }
     updateReaderSession({ page: nextPage, pageInput: String(nextPage + 1) });
   }
 
@@ -1272,6 +1292,17 @@ export default function App() {
     setReaderSearchQuery("");
     setActiveReaderMatchIndex(0);
     updateReaderSession({ searchQuery: "", matchIndex: 0 });
+  }
+
+  function handleReaderHistory(direction: "back" | "forward") {
+    const nextIndex =
+      direction === "back"
+        ? activeReaderSession.historyIndex - 1
+        : activeReaderSession.historyIndex + 1;
+    const nextPage = activeReaderSession.history[nextIndex];
+    if (nextPage === undefined) return;
+    setReaderPage(nextPage, { recordHistory: false });
+    updateReaderSession({ historyIndex: nextIndex });
   }
 
   useEffect(() => {
@@ -1877,6 +1908,24 @@ export default function App() {
                 {activeAnchor ? <span className="meta-count">Active anchor: {activeAnchor}</span> : null}
               </div>
               <div className="reader-toolbar">
+                <button
+                  aria-label="Reader Back"
+                  className="ghost-button"
+                  disabled={activeReaderSession.historyIndex === 0}
+                  type="button"
+                  onClick={() => handleReaderHistory("back")}
+                >
+                  Back
+                </button>
+                <button
+                  aria-label="Reader Forward"
+                  className="ghost-button"
+                  disabled={activeReaderSession.historyIndex >= activeReaderSession.history.length - 1}
+                  type="button"
+                  onClick={() => handleReaderHistory("forward")}
+                >
+                  Forward
+                </button>
                 <button
                   className="ghost-button"
                   disabled={readerPages.length === 0 || activeReaderPage === 0}
