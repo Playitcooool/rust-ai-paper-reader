@@ -12,6 +12,8 @@ export type Tag = {
 
 export type ImportMode = "managed_copy" | "linked_file";
 export type CitationFormat = "apa7" | "bibtex" | "ris";
+export type ReaderKind = "pdf" | "normalized";
+export type AttachmentFormat = "pdf" | "docx" | "epub" | "unknown";
 
 export type ImportedItem = {
   id: number;
@@ -35,6 +37,11 @@ export type LibraryItem = {
 export type ReaderView = {
   item_id: number;
   title: string;
+  reader_kind: ReaderKind;
+  attachment_format: AttachmentFormat;
+  primary_attachment_id: number | null;
+  primary_attachment_path: string | null;
+  page_count: number | null;
   normalized_html: string;
   plain_text: string;
 };

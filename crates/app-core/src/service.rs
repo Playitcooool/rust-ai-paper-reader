@@ -99,6 +99,11 @@ pub struct ResearchNote {
 pub struct ReaderView {
     pub item_id: i64,
     pub title: String,
+    pub reader_kind: String,
+    pub attachment_format: String,
+    pub primary_attachment_id: Option<i64>,
+    pub primary_attachment_path: Option<String>,
+    pub page_count: Option<i64>,
     pub normalized_html: String,
     pub plain_text: String,
 }
@@ -698,18 +703,35 @@ impl LibraryService {
         let conn = self.connect()?;
         conn.query_row(
             "
-            SELECT i.id, i.title, e.normalized_html, e.plain_text
+            SELECT i.id, i.title, a.id, a.path, e.normalized_html, e.plain_text
             FROM items i
+            LEFT JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
             JOIN extracted_content e ON e.item_id = i.id
             WHERE i.id = ?1
             ",
             [item_id],
             |row| {
+                let attachment_path: Option<String> = row.get(3)?;
+                let attachment_format = attachment_path
+                    .as_deref()
+                    .map(infer_attachment_format)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let reader_kind = if attachment_format == "pdf" {
+                    "pdf".to_string()
+                } else {
+                    "normalized".to_string()
+                };
                 Ok(ReaderView {
                     item_id: row.get(0)?,
                     title: row.get(1)?,
-                    normalized_html: row.get(2)?,
-                    plain_text: row.get(3)?,
+                    reader_kind,
+                    attachment_format,
+                    primary_attachment_id: row.get(2)?,
+                    primary_attachment_path: attachment_path,
+                    page_count: None,
+                    normalized_html: row.get(4)?,
+                    plain_text: row.get(5)?,
                 })
             },
         )
@@ -1284,6 +1306,19 @@ fn digest_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+fn infer_attachment_format(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".pdf") {
+        "pdf"
+    } else if lower.ends_with(".docx") {
+        "docx"
+    } else if lower.ends_with(".epub") {
+        "epub"
+    } else {
+        "unknown"
+    }
 }
 
 fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {

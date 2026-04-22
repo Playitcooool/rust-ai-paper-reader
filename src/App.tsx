@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { NormalizedReader } from "./components/readers/NormalizedReader";
+import { PdfReader } from "./components/readers/PdfReader";
 import { getApi } from "./lib/api";
 import type {
   AIArtifact,
@@ -609,6 +611,7 @@ export default function App() {
     () => sortItems(filterItemsByAttachment(items, attachmentFilter), itemSort),
     [attachmentFilter, itemSort, items],
   );
+  const isPdfReader = readerView?.reader_kind === "pdf";
   const readerPages = useMemo(() => readerPagesFromView(readerView), [readerView]);
   const readerOutline = useMemo(() => readerOutlineFromPages(readerPages), [readerPages]);
   const readerMatches = useMemo(() => {
@@ -644,6 +647,7 @@ export default function App() {
       ),
     [currentReaderPage?.html, readerSearchQuery, readerView?.normalized_html],
   );
+  const readerPageCount = isPdfReader ? Math.max(readerView?.page_count ?? 1, 1) : readerPages.length;
 
   useEffect(() => {
     if (readerOutline.length === 0) return;
@@ -1261,8 +1265,8 @@ export default function App() {
   }
 
   function clampReaderPage(page: number) {
-    if (readerPages.length === 0) return 0;
-    return Math.max(0, Math.min(page, readerPages.length - 1));
+    if (readerPageCount === 0) return 0;
+    return Math.max(0, Math.min(page, readerPageCount - 1));
   }
 
   function setReaderPage(page: number, options?: { recordHistory?: boolean }) {
@@ -1373,7 +1377,7 @@ export default function App() {
         readerSearchInputRef.current?.select();
         return;
       }
-      if (isTypingTarget || readerPages.length === 0) return;
+      if (isTypingTarget || readerPageCount === 0) return;
 
       if (event.key === "ArrowRight") {
         setReaderPage(activeReaderPage + 1);
@@ -1386,7 +1390,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleWindowKeydown);
     };
-  }, [activeReaderPage, readerPages.length]);
+  }, [activeReaderPage, readerPageCount]);
 
   function handleAnnotationJump(annotation: Annotation) {
     const page = pageFromAnchor(annotation.anchor);
@@ -1931,7 +1935,25 @@ export default function App() {
                   Document
                 </button>
               )}
-              {readerPages.length > 0 ? (
+              {isPdfReader ? (
+                <>
+                  <p className="eyebrow">Pages</p>
+                  {Array.from({ length: readerPageCount }, (_, index) => (
+                    <button
+                      key={`pdf-page-${index}`}
+                      aria-label={`Jump to reader page ${index + 1}`}
+                      aria-pressed={activeReaderPage === index}
+                      className={`outline-link ${
+                        activeReaderPage === index ? "outline-link-active" : ""
+                      }`}
+                      type="button"
+                      onClick={() => setReaderPage(index)}
+                    >
+                      Page {index + 1}
+                    </button>
+                  ))}
+                </>
+              ) : readerPages.length > 0 ? (
                 <>
                   <p className="eyebrow">Pages</p>
                   {readerPages.map((page, index) => (
@@ -1973,7 +1995,7 @@ export default function App() {
               <div className="reader-location-bar">
                 <span className="status-pill">{activeReaderSection}</span>
                 <span className="meta-count">
-                  Page {readerPages.length === 0 ? 0 : activeReaderPage + 1} of {readerPages.length}
+                  Page {readerPageCount === 0 ? 0 : activeReaderPage + 1} of {readerPageCount}
                 </span>
                 <span aria-label="Reader zoom level" className="meta-count">
                   {readerZoom}%
@@ -2004,7 +2026,7 @@ export default function App() {
                 </button>
                 <button
                   className="ghost-button"
-                  disabled={readerPages.length === 0 || activeReaderPage === 0}
+                  disabled={readerPageCount === 0 || activeReaderPage === 0}
                   type="button"
                   onClick={() => setReaderPage(activeReaderPage - 1)}
                 >
@@ -2023,7 +2045,7 @@ export default function App() {
                 />
                 <button
                   className="ghost-button"
-                  disabled={readerPages.length === 0 || activeReaderPage >= readerPages.length - 1}
+                  disabled={readerPageCount === 0 || activeReaderPage >= readerPageCount - 1}
                   type="button"
                   onClick={() => setReaderPage(activeReaderPage + 1)}
                 >
@@ -2243,13 +2265,11 @@ export default function App() {
                   <p className="secondary-copy">No annotations in the current scope.</p>
                 )}
               </div>
-              <div
-                className="reader-html"
-                style={{ fontSize: `${readerZoom}%` }}
-                dangerouslySetInnerHTML={{
-                  __html: readerHtml,
-                }}
-              />
+              {isPdfReader && readerView ? (
+                <PdfReader view={readerView} page={activeReaderPage} zoom={readerZoom} />
+              ) : (
+                <NormalizedReader pageHtml={readerHtml} zoom={readerZoom} />
+              )}
             </article>
           </div>
         </section>

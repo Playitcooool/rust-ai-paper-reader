@@ -1,6 +1,7 @@
 import type {
   AIArtifact,
   Annotation,
+  AttachmentFormat,
   AppApi,
   AITask,
   CitationFormat,
@@ -15,6 +16,9 @@ import type {
 type MockItemDetails = LibraryItem & {
   plainText: string;
   normalizedHtml: string;
+  attachmentFormat?: AttachmentFormat;
+  primaryAttachmentPath?: string | null;
+  pageCount?: number | null;
 };
 
 type MockState = {
@@ -50,6 +54,9 @@ const initialState = (): MockState => ({
         "Overview. Scaling behavior emerges when model size, data volume, and compute are balanced. Methods. This paper discusses predictable loss curves and practical planning heuristics.",
       normalizedHtml:
         "<article><h1>Transformer Scaling Laws</h1><p>Scaling behavior emerges when model size, data volume, and compute are balanced.</p><h2>Methods</h2><p>This paper discusses predictable loss curves and practical planning heuristics.</p></article>",
+      attachmentFormat: "docx",
+      primaryAttachmentPath: "/mock/transformer-scaling-laws.docx",
+      pageCount: 2,
     },
     {
       id: 2,
@@ -66,6 +73,9 @@ const initialState = (): MockState => ({
         "Graph representation learning unifies message passing, pooling, and graph-level reasoning into a broad survey of architectures and benchmarks.",
       normalizedHtml:
         "<article><h1>Graph Neural Survey</h1><p>Graph representation learning unifies message passing, pooling, and graph-level reasoning into a broad survey of architectures and benchmarks.</p></article>",
+      attachmentFormat: "docx",
+      primaryAttachmentPath: "/mock/graph-neural-survey.docx",
+      pageCount: 1,
     },
     {
       id: 3,
@@ -82,6 +92,9 @@ const initialState = (): MockState => ({
         "Consensus protocols coordinate replicas under partial failure. This note contrasts Paxos, Raft, and production trade-offs around operator ergonomics.",
       normalizedHtml:
         "<article><h1>Distributed Consensus Notes</h1><p>Consensus protocols coordinate replicas under partial failure.</p><p>This note contrasts Paxos, Raft, and production trade-offs around operator ergonomics.</p></article>",
+      attachmentFormat: "epub",
+      primaryAttachmentPath: "/mock/distributed-consensus-notes.epub",
+      pageCount: 2,
     },
   ],
   tags: [
@@ -534,9 +547,15 @@ export const mockApi: AppApi = {
     if (!item) {
       throw new Error(`No reader view for item ${itemId}`);
     }
+    const attachmentFormat = item.attachmentFormat ?? "unknown";
     return {
       item_id: item.id,
       title: item.title,
+      reader_kind: attachmentFormat === "pdf" ? "pdf" : "normalized",
+      attachment_format: attachmentFormat,
+      primary_attachment_id: item.primary_attachment_id,
+      primary_attachment_path: item.primaryAttachmentPath ?? null,
+      page_count: item.pageCount ?? null,
       normalized_html: item.normalizedHtml,
       plain_text: item.plainText,
     } satisfies ReaderView;

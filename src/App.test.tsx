@@ -15,6 +15,69 @@ afterEach(() => {
 });
 
 describe("App workspace", () => {
+  it("renders a dedicated pdf reader when the active item is a pdf", async () => {
+    replaceMockApiState({
+      items: [
+        {
+          id: 1,
+          title: "Native PDF Paper",
+          collection_id: 1,
+          primary_attachment_id: 101,
+          attachment_status: "ready",
+          authors: "Reader Team",
+          publication_year: 2026,
+          source: "Paper Reader",
+          doi: null,
+          tags: [],
+          plainText: "PDF text preview",
+          normalizedHtml: "<article><h1>PDF fallback</h1><p>Fallback content.</p></article>",
+          attachmentFormat: "pdf",
+          primaryAttachmentPath: "/mock/native-pdf-paper.pdf",
+        } as never,
+      ],
+      annotations: [],
+      tasks: [],
+      artifacts: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
+    expect(screen.getByText(/PDF mode/i)).toBeInTheDocument();
+  });
+
+  it("keeps the normalized reader for docx items", async () => {
+    replaceMockApiState({
+      items: [
+        {
+          id: 2,
+          title: "Graph Neural Survey",
+          collection_id: 1,
+          primary_attachment_id: 102,
+          attachment_status: "ready",
+          authors: "Wu et al.",
+          publication_year: 2021,
+          source: "IEEE TPAMI",
+          doi: "10.1000/gnn-survey",
+          tags: [],
+          plainText: "Graph representation learning...",
+          normalizedHtml:
+            "<article><h1>Graph Neural Survey</h1><p>Graph representation learning...</p></article>",
+          attachmentFormat: "docx",
+          primaryAttachmentPath: "/mock/graph-neural-survey.docx",
+        } as never,
+      ],
+      annotations: [],
+      tasks: [],
+      artifacts: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByTestId("normalized-reader")).toBeInTheDocument();
+    expect(screen.queryByTestId("pdf-reader")).not.toBeInTheDocument();
+  });
+
   it("renders the three-pane workspace and lets the user switch tabs", async () => {
     const user = userEvent.setup();
 
