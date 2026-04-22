@@ -1,17 +1,50 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { getDocumentMock, convertFileSrcMock } = vi.hoisted(() => ({
+  getDocumentMock: vi.fn(() => ({
+    promise: Promise.resolve({
+      numPages: 2,
+      getPage: vi.fn(async () => ({
+        getViewport: ({ scale }: { scale: number }) => ({
+          width: 800 * scale,
+          height: 1000 * scale,
+        }),
+        render: () => ({ promise: Promise.resolve() }),
+      })),
+    }),
+  })),
+  convertFileSrcMock: vi.fn((path: string) => `asset://${path}`),
+}));
+
+vi.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: getDocumentMock,
+}));
+
+vi.mock("@tauri-apps/api/core", async () => {
+  const actual = await vi.importActual<typeof import("@tauri-apps/api/core")>("@tauri-apps/api/core");
+  return {
+    ...actual,
+    convertFileSrc: convertFileSrcMock,
+  };
+});
 
 import App from "./App";
 import { replaceMockApiState, resetMockApi } from "./lib/mockApi";
 
 beforeEach(() => {
   resetMockApi();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+    () => ({}) as CanvasRenderingContext2D,
+  );
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("App workspace", () => {
