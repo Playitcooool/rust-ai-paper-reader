@@ -1,6 +1,7 @@
 use std::{fs, io::Write, path::{Path, PathBuf}};
 
 use app_core::service::{ImportMode, LibraryService};
+use flate2::{write::ZlibEncoder, Compression};
 use tempfile::tempdir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
@@ -9,45 +10,136 @@ fn fixture_path(root: &Path, name: &str) -> PathBuf {
 }
 
 fn write_pdf_fixture(path: &Path) {
-    let pdf = br#"%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>
-endobj
-4 0 obj
-<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>
-endobj
-5 0 obj
-<< /Length 72 >>
-stream
-BT
-/F1 12 Tf
-72 720 Td
-(Scaling laws improve planning for training runs.) Tj
-ET
-endstream
-endobj
-6 0 obj
-<< /Length 71 >>
-stream
-BT
-/F1 12 Tf
-72 720 Td
-(Compute and data must grow together for stable returns.) Tj
-ET
-endstream
-endobj
-7 0 obj
-<< /Title (Scaling Laws Field Guide) /Author (Reader Team) /CreationDate (D:20240101000000Z) >>
-endobj
-trailer
-<< /Root 1 0 R /Info 7 0 R >>
-%%EOF"#;
+    write_compressed_pdf_fixture(
+        path,
+        Some("Scaling Laws Field Guide"),
+        Some("Reader Team"),
+        Some(2024),
+        &[
+            Some("Scaling laws improve planning for training runs."),
+            Some("Compute and data must grow together for stable returns."),
+        ],
+    );
+}
+
+fn write_partial_pdf_fixture(path: &Path) {
+    write_compressed_pdf_fixture(
+        path,
+        Some("Partial Text Layer"),
+        Some("Reader Team"),
+        Some(2025),
+        &[Some("Only the first page has a reliable text layer."), None],
+    );
+}
+
+fn write_unavailable_pdf_fixture(path: &Path) {
+    write_compressed_pdf_fixture(
+        path,
+        Some("Scanned Paper"),
+        Some("Reader Team"),
+        Some(2025),
+        &[None, None],
+    );
+}
+
+fn compress_pdf_stream(stream: &str) -> Vec<u8> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(stream.as_bytes()).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn write_compressed_pdf_fixture(
+    path: &Path,
+    title: Option<&str>,
+    author: Option<&str>,
+    year: Option<i64>,
+    pages: &[Option<&str>],
+) {
+    let mut objects: Vec<Vec<u8>> = Vec::new();
+    objects.push(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_vec());
+
+    let page_ids: Vec<usize> = (0..pages.len()).map(|index| 3 + index).collect();
+    let contents_start = 3 + pages.len();
+    let font_id = contents_start + pages.len();
+    let info_id = font_id + 1;
+
+    let kids = page_ids
+        .iter()
+        .map(|id| format!("{id} 0 R"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    objects.push(format!(
+        "2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {} >>\nendobj\n",
+        pages.len()
+    ).into_bytes());
+
+    for (index, _) in pages.iter().enumerate() {
+        let page_id = page_ids[index];
+        let contents_id = contents_start + index;
+        objects.push(format!(
+            "{page_id} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {font_id} 0 R >> >> /Contents {contents_id} 0 R >>\nendobj\n"
+        ).into_bytes());
+    }
+
+    for (index, text) in pages.iter().enumerate() {
+        let contents_id = contents_start + index;
+        let stream = match text {
+            Some(text) => format!(
+                "BT\n/F1 12 Tf\n72 720 Td\n({}) Tj\nET\n",
+                text.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)")
+            ),
+            None => "q\nQ\n".to_string(),
+        };
+        let compressed = compress_pdf_stream(&stream);
+        let mut object = format!(
+            "{contents_id} 0 obj\n<< /Length {} /Filter /FlateDecode >>\nstream\n",
+            compressed.len()
+        )
+        .into_bytes();
+        object.extend_from_slice(&compressed);
+        object.extend_from_slice(b"\nendstream\nendobj\n");
+        objects.push(object);
+    }
+
+    objects.push(
+        format!(
+            "{font_id} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+        )
+        .into_bytes(),
+    );
+
+    let mut info_parts = Vec::new();
+    if let Some(title) = title {
+        info_parts.push(format!("/Title ({title})"));
+    }
+    if let Some(author) = author {
+        info_parts.push(format!("/Author ({author})"));
+    }
+    if let Some(year) = year {
+        info_parts.push(format!("/CreationDate (D:{year}0101000000Z)"));
+    }
+    objects.push(format!(
+        "{info_id} 0 obj\n<< {} >>\nendobj\n",
+        info_parts.join(" ")
+    ).into_bytes());
+
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for object in &objects {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(object);
+    }
+    let xref_offset = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(format!(
+        "trailer\n<< /Size {} /Root 1 0 R /Info {info_id} 0 R >>\nstartxref\n{xref_offset}\n%%EOF",
+        objects.len() + 1
+    ).as_bytes());
+
     fs::write(path, pdf).unwrap();
 }
 
@@ -122,6 +214,52 @@ fn imports_pdf_with_metadata_text_page_count_and_search_index() {
     assert!(reader.plain_text.contains("Scaling laws improve planning"));
 
     let search = service.search_items("stable returns").unwrap();
+    assert_eq!(search.len(), 1);
+}
+
+#[test]
+fn imports_pdf_without_reliable_text_as_unavailable_and_skips_search_index() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Scans", None).unwrap();
+    let pdf = fixture_path(root.path(), "scanned-paper.pdf");
+    write_unavailable_pdf_fixture(&pdf);
+
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+
+    let reader = service.get_reader_view(result.imported[0].id).unwrap();
+    assert_eq!(reader.reader_kind, "pdf");
+    assert_eq!(reader.content_status, "unavailable");
+    assert!(reader.plain_text.is_empty());
+    assert!(reader
+        .content_notice
+        .unwrap_or_default()
+        .contains("reliable text layer"));
+
+    let search = service.search_items("scanned").unwrap();
+    assert!(search.is_empty());
+}
+
+#[test]
+fn imports_pdf_with_partial_text_as_partial_and_indexes_reliable_excerpt() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Partials", None).unwrap();
+    let pdf = fixture_path(root.path(), "partial-text-layer.pdf");
+    write_partial_pdf_fixture(&pdf);
+
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+
+    let reader = service.get_reader_view(result.imported[0].id).unwrap();
+    assert_eq!(reader.content_status, "partial");
+    assert!(reader.plain_text.contains("Only the first page has a reliable text layer."));
+    assert!(reader.content_notice.unwrap_or_default().contains("partial"));
+
+    let search = service.search_items("reliable text layer").unwrap();
     assert_eq!(search.len(), 1);
 }
 

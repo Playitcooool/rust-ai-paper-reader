@@ -8,6 +8,8 @@ authors.workspace = true
 [dependencies]
 anyhow = "1.0"
 html-escape = "0.2"
+lopdf = "0.35"
+pdf-extract = "0.7"
 regex = "1.11"
 roxmltree = "0.20"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -17,4 +19,5 @@ sha2 = "0.10"
 zip = "2.2"
 
 [dev-dependencies]
+flate2 = "1.1"
 tempfile = "3.14"

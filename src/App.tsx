@@ -75,7 +75,11 @@ const defaultReaderSession = (): ReaderSessionState => ({
 });
 
 const excerptFromView = (view: ReaderView | null) =>
-  view?.plain_text.split(". ").slice(0, 2).join(". ") ?? "Open a paper to see its extracted text.";
+  !view
+    ? "Open a paper to see its extracted text."
+    : view.attachment_format === "pdf" && view.content_status !== "ready"
+      ? view.content_notice ?? "This PDF can be read by page, but no reliable text layer is available."
+      : view.plain_text.split(". ").slice(0, 2).join(". ");
 
 const annotationPreview = (text: string) => {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -401,6 +405,7 @@ export default function App({ api }: { api: AppApi }) {
   const [openPaperIds, setOpenPaperIds] = useState<number[]>([]);
   const [activePaperId, setActivePaperId] = useState<number | null>(null);
   const [aiPanelMode, setAiPanelMode] = useState<AiPanelMode>("paper");
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [readerView, setReaderView] = useState<ReaderView | null>(null);
   const [activeReaderPage, setActiveReaderPage] = useState(0);
@@ -736,8 +741,14 @@ export default function App({ api }: { api: AppApi }) {
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
   const readerState = readerStateCopy(activePaper, visibleItems.length);
   const readerContentState = readerContentStateCopy(readerView);
-  const paperActionsEnabled =
-    canRunReaderActions(activePaper) && readerView?.content_status !== "unavailable";
+  const textCapabilitiesEnabled =
+    canRunReaderActions(activePaper) && readerView?.content_status === "ready";
+  const showReaderTextLead = !isPdfReader || readerView?.content_status === "ready";
+  const batchActionsVisible = selectedItemIds.length > 0;
+  const importHasIssues = Boolean(
+    lastImportResult &&
+      (lastImportResult.duplicates.length > 0 || lastImportResult.failed.length > 0),
+  );
   const isCollectionDraftStale = Boolean(
     collectionArtifact &&
       collectionArtifact.collection_id === activeCollection?.id &&
@@ -945,7 +956,7 @@ export default function App({ api }: { api: AppApi }) {
   }
 
   async function handleItemTask(kind: string) {
-    if (!activePaper) return;
+    if (!activePaper || !textCapabilitiesEnabled) return;
     const api = await getApi();
     await api.runItemTask({ item_id: activePaper.id, kind });
     const [artifact, taskRuns] = await Promise.all([
@@ -986,7 +997,7 @@ export default function App({ api }: { api: AppApi }) {
   }
 
   async function handleCreateAnnotation() {
-    if (!activePaper) return;
+    if (!activePaper || !textCapabilitiesEnabled) return;
     const api = await getApi();
     const pageNumber = activeReaderPage + 1;
     const sourceText = currentReaderPage?.text ?? excerptFromView(readerView);
@@ -1415,6 +1426,7 @@ export default function App({ api }: { api: AppApi }) {
   }
 
   function handleReaderSearchChange(value: string) {
+    if (!textCapabilitiesEnabled) return;
     setReaderSearchQuery(value);
     setActiveReaderMatchIndex(0);
     updateReaderSession({ searchQuery: value, matchIndex: 0 });
@@ -1449,6 +1461,12 @@ export default function App({ api }: { api: AppApi }) {
         : `Bookmarked page ${activeReaderPage + 1} in ${activePaper.title}.`,
     );
   }
+
+  useEffect(() => {
+    if (!textCapabilitiesEnabled && readerSearchQuery.length > 0) {
+      clearReaderSearch();
+    }
+  }, [readerSearchQuery, textCapabilitiesEnabled]);
 
   useEffect(() => {
     if (readerMatches.length === 0) {
@@ -1606,77 +1624,7 @@ export default function App({ api }: { api: AppApi }) {
         <section className="section-block">
           <div className="section-title-row">
             <h2>Collections</h2>
-            <span className="status-pill">Synced</span>
-          </div>
-          <div className="collection-create-row">
-            <input
-              aria-label="New collection name"
-              className="search-input"
-              placeholder="Create a new collection..."
-              value={newCollectionName}
-              onChange={(event) => setNewCollectionName(event.target.value)}
-            />
-            <button className="ghost-button" type="button" onClick={() => void handleCreateCollection()}>
-              Add Collection
-            </button>
-            <button
-              className="ghost-button"
-              disabled={!activeCollection}
-              type="button"
-              onClick={() => void handleCreateCollection(selectedCollectionId)}
-            >
-              Add Nested Collection
-            </button>
-          </div>
-          <div className="collection-create-row">
-            <input
-              aria-label="Rename collection"
-              className="search-input"
-              disabled={!activeCollection}
-              placeholder="Rename selected collection..."
-              value={collectionNameDraft}
-              onChange={(event) => setCollectionNameDraft(event.target.value)}
-            />
-            <button
-              className="ghost-button"
-              disabled={!activeCollection}
-              type="button"
-              onClick={() => void handleRenameCollection()}
-            >
-              Rename Collection
-            </button>
-            <button
-              className="ghost-button"
-              disabled={!activeCollection}
-              type="button"
-              onClick={() => void handleRemoveCollection()}
-            >
-              Delete Collection
-            </button>
-          </div>
-          <div className="collection-create-row">
-            <select
-              aria-label="Move collection destination"
-              className="mode-select"
-              disabled={!activeCollection}
-              value={moveCollectionParentValue}
-              onChange={(event) => setMoveCollectionParentValue(event.target.value)}
-            >
-              <option value="root">Move to Root</option>
-              {moveDestinationOptions.map((entry) => (
-                <option key={entry.collection.id} value={entry.collection.id}>
-                  {entry.pathLabel}
-                </option>
-              ))}
-            </select>
-            <button
-              className="ghost-button"
-              disabled={!activeCollection}
-              type="button"
-              onClick={() => void handleMoveCollection()}
-            >
-              Move Collection
-            </button>
+            <span className="status-pill">{activeCollection ? "Active" : "Idle"}</span>
           </div>
           {collectionEntries.length === 0 ? (
             <div className="citation-card">
@@ -1706,29 +1654,87 @@ export default function App({ api }: { api: AppApi }) {
               })}
             </div>
           )}
+          <details className="management-panel">
+            <summary>Manage Library</summary>
+            <div className="management-panel-body">
+              <div className="collection-create-row">
+                <input
+                  aria-label="New collection name"
+                  className="search-input"
+                  placeholder="Create a new collection..."
+                  value={newCollectionName}
+                  onChange={(event) => setNewCollectionName(event.target.value)}
+                />
+                <button className="ghost-button" type="button" onClick={() => void handleCreateCollection()}>
+                  Add Collection
+                </button>
+                <button
+                  className="ghost-button"
+                  disabled={!activeCollection}
+                  type="button"
+                  onClick={() => void handleCreateCollection(selectedCollectionId)}
+                >
+                  Add Nested Collection
+                </button>
+              </div>
+              <div className="collection-create-row">
+                <input
+                  aria-label="Rename collection"
+                  className="search-input"
+                  disabled={!activeCollection}
+                  placeholder="Rename selected collection..."
+                  value={collectionNameDraft}
+                  onChange={(event) => setCollectionNameDraft(event.target.value)}
+                />
+                <button
+                  className="ghost-button"
+                  disabled={!activeCollection}
+                  type="button"
+                  onClick={() => void handleRenameCollection()}
+                >
+                  Rename Collection
+                </button>
+                <button
+                  className="ghost-button"
+                  disabled={!activeCollection}
+                  type="button"
+                  onClick={() => void handleRemoveCollection()}
+                >
+                  Delete Collection
+                </button>
+              </div>
+              <div className="collection-create-row">
+                <select
+                  aria-label="Move collection destination"
+                  className="mode-select"
+                  disabled={!activeCollection}
+                  value={moveCollectionParentValue}
+                  onChange={(event) => setMoveCollectionParentValue(event.target.value)}
+                >
+                  <option value="root">Move to Root</option>
+                  {moveDestinationOptions.map((entry) => (
+                    <option key={entry.collection.id} value={entry.collection.id}>
+                      {entry.pathLabel}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="ghost-button"
+                  disabled={!activeCollection}
+                  type="button"
+                  onClick={() => void handleMoveCollection()}
+                >
+                  Move Collection
+                </button>
+              </div>
+            </div>
+          </details>
         </section>
 
         <section className="section-block">
           <div className="section-title-row">
             <h2>Tags</h2>
             <span className="meta-count">{tags.length}</span>
-          </div>
-          <div className="collection-create-row">
-            <input
-              aria-label="New tag name"
-              className="search-input"
-              placeholder="Tag the current paper..."
-              value={newTagName}
-              onChange={(event) => setNewTagName(event.target.value)}
-            />
-            <button
-              className="ghost-button"
-              disabled={!activePaper}
-              type="button"
-              onClick={() => void handleCreateTag()}
-            >
-              Add Tag to Current Paper
-            </button>
           </div>
           <div className="tag-list">
             <button
@@ -1754,6 +1760,28 @@ export default function App({ api }: { api: AppApi }) {
               </button>
             ))}
           </div>
+          <details className="management-panel">
+            <summary>Tag Management</summary>
+            <div className="management-panel-body">
+              <div className="collection-create-row">
+                <input
+                  aria-label="New tag name"
+                  className="search-input"
+                  placeholder="Tag the current paper..."
+                  value={newTagName}
+                  onChange={(event) => setNewTagName(event.target.value)}
+                />
+                <button
+                  className="ghost-button"
+                  disabled={!activePaper}
+                  type="button"
+                  onClick={() => void handleCreateTag()}
+                >
+                  Add Tag to Current Paper
+                </button>
+              </div>
+            </div>
+          </details>
         </section>
 
         <section
@@ -1818,38 +1846,42 @@ export default function App({ api }: { api: AppApi }) {
               <option value="year_desc">Year (Newest)</option>
             </select>
           </div>
-          <div className="collection-create-row">
-            <input
-              aria-label="Batch tag papers"
-              className="search-input"
-              placeholder="Tag selected papers..."
-              value={batchTagName}
-              onChange={(event) => setBatchTagName(event.target.value)}
-            />
-            <button className="ghost-button" type="button" onClick={() => void handleBatchTag()}>
-              Tag Selected
-            </button>
-          </div>
-          <div className="collection-create-row">
-            <select
-              aria-label="Batch move papers"
-              className="mode-select"
-              value={batchMoveTargetId}
-              onChange={(event) => setBatchMoveTargetId(event.target.value)}
-            >
-              <option value="current">Current Collection</option>
-              {collections
-                .filter((collection) => collection.id !== selectedCollectionId)
-                .map((collection) => (
-                  <option key={collection.id} value={collection.id}>
-                    {collection.name}
-                  </option>
-                ))}
-            </select>
-            <button className="ghost-button" type="button" onClick={() => void handleBatchMove()}>
-              Move Selected
-            </button>
-          </div>
+          {batchActionsVisible ? (
+            <div className="selection-toolbar">
+              <div className="collection-create-row">
+                <input
+                  aria-label="Batch tag papers"
+                  className="search-input"
+                  placeholder="Tag selected papers..."
+                  value={batchTagName}
+                  onChange={(event) => setBatchTagName(event.target.value)}
+                />
+                <button className="ghost-button" type="button" onClick={() => void handleBatchTag()}>
+                  Tag Selected
+                </button>
+              </div>
+              <div className="collection-create-row">
+                <select
+                  aria-label="Batch move papers"
+                  className="mode-select"
+                  value={batchMoveTargetId}
+                  onChange={(event) => setBatchMoveTargetId(event.target.value)}
+                >
+                  <option value="current">Current Collection</option>
+                  {collections
+                    .filter((collection) => collection.id !== selectedCollectionId)
+                    .map((collection) => (
+                      <option key={collection.id} value={collection.id}>
+                        {collection.name}
+                      </option>
+                    ))}
+                </select>
+                <button className="ghost-button" type="button" onClick={() => void handleBatchMove()}>
+                  Move Selected
+                </button>
+              </div>
+            </div>
+          ) : null}
           {draggedFileCount > 0 ? (
             <p className="drop-helper">Drop {draggedFileCount} files into {activeCollection?.name ?? "this collection"}.</p>
           ) : null}
@@ -1909,22 +1941,31 @@ export default function App({ api }: { api: AppApi }) {
         </section>
 
         <section className="section-block footer-block">
-          <h2>Import Status</h2>
+          <div className="section-title-row">
+            <h2>Import Status</h2>
+            <span className="meta-count">
+              {lastImportResult ? `${lastImportResult.imported.length}/${lastImportResult.results.length}` : "Idle"}
+            </span>
+          </div>
           <p>{statusMessage}</p>
-          {lastImportResult ? (
-            <div className="citation-card">
-              <p className="eyebrow">Recent import results</p>
-              {lastImportResult.results.map((result) => (
-                <div key={`${result.path}-${result.status}`} className="export-row">
-                  <span>{result.status}</span>
-                  <span>
-                    {result.item?.title ?? result.path}
-                    {" · "}
-                    {result.message}
-                  </span>
-                </div>
-              ))}
-            </div>
+          {importHasIssues && lastImportResult ? (
+            <details className="management-panel" open>
+              <summary>Show Import Issues</summary>
+              <div className="management-panel-body">
+                {lastImportResult.results
+                  .filter((result) => result.status !== "imported")
+                  .map((result) => (
+                    <div key={`${result.path}-${result.status}`} className="export-row">
+                      <span>{result.status}</span>
+                      <span>
+                        {result.item?.title ?? result.path}
+                        {" · "}
+                        {result.message}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </details>
           ) : null}
         </section>
       </aside>
@@ -1971,6 +2012,14 @@ export default function App({ api }: { api: AppApi }) {
             </div>
             <div className="reader-actions">
               <button
+                aria-expanded={isAiPanelOpen}
+                className="primary-button"
+                type="button"
+                onClick={() => setIsAiPanelOpen(true)}
+              >
+                Open AI Workspace
+              </button>
+              <button
                 className="ghost-button"
                 type="button"
                 disabled={!activePaper}
@@ -1983,40 +2032,45 @@ export default function App({ api }: { api: AppApi }) {
                   Relink Source
                 </button>
               ) : null}
-              <button className="ghost-button" type="button" disabled={!paperActionsEnabled} onClick={handleCreateAnnotation}>
+              <button className="ghost-button" type="button" disabled={!textCapabilitiesEnabled} onClick={handleCreateAnnotation}>
                 Highlight
               </button>
-              <select
-                aria-label="Move paper destination"
-                className="mode-select"
-                disabled={!activePaper}
-                value={moveItemTargetId}
-                onChange={(event) => setMoveItemTargetId(event.target.value)}
-              >
-                <option value="current">Current Collection</option>
-                {collections
-                  .filter((collection) => collection.id !== activePaper?.collection_id)
-                  .map((collection) => (
-                    <option key={collection.id} value={collection.id}>
-                      {collection.name}
-                    </option>
-                  ))}
-              </select>
-              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleMoveItem()}>
-                Move Paper
-              </button>
-              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleRemoveItem()}>
-                Remove from Library
-              </button>
-              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation()}>
-                Copy Citation
-              </button>
-              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation("bibtex")}>
-                Export BibTeX
-              </button>
-              <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation("ris")}>
-                Export RIS
-              </button>
+              <details className="action-menu">
+                <summary>More</summary>
+                <div className="action-menu-body">
+                  <select
+                    aria-label="Move paper destination"
+                    className="mode-select"
+                    disabled={!activePaper}
+                    value={moveItemTargetId}
+                    onChange={(event) => setMoveItemTargetId(event.target.value)}
+                  >
+                    <option value="current">Current Collection</option>
+                    {collections
+                      .filter((collection) => collection.id !== activePaper?.collection_id)
+                      .map((collection) => (
+                        <option key={collection.id} value={collection.id}>
+                          {collection.name}
+                        </option>
+                      ))}
+                  </select>
+                  <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleMoveItem()}>
+                    Move Paper
+                  </button>
+                  <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleRemoveItem()}>
+                    Remove from Library
+                  </button>
+                  <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation()}>
+                    Copy Citation
+                  </button>
+                  <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation("bibtex")}>
+                    Export BibTeX
+                  </button>
+                  <button className="ghost-button" type="button" disabled={!activePaper} onClick={() => void handleExportCitation("ris")}>
+                    Export RIS
+                  </button>
+                </div>
+              </details>
             </div>
           </div>
 
@@ -2174,6 +2228,7 @@ export default function App({ api }: { api: AppApi }) {
                 <input
                   aria-label="Find in document"
                   className="reader-search-input"
+                  disabled={!textCapabilitiesEnabled}
                   placeholder="Find in document..."
                   ref={readerSearchInputRef}
                   value={readerSearchQuery}
@@ -2313,9 +2368,11 @@ export default function App({ api }: { api: AppApi }) {
                   <p>{readerContentState.body}</p>
                 </div>
               ) : null}
-              <p className="document-lead">
-                {currentReaderPage?.text ?? excerptFromView(readerView)}
-              </p>
+              {showReaderTextLead ? (
+                <p className="document-lead">
+                  {currentReaderPage?.text ?? excerptFromView(readerView)}
+                </p>
+              ) : null}
               <div className="annotation-panel">
                 <div className="section-title-row">
                   <h3>Annotations</h3>
@@ -2408,10 +2465,22 @@ export default function App({ api }: { api: AppApi }) {
         </section>
       </main>
 
-      <aside className="ai-shell">
-        <div className="panel-header">
-          <p className="eyebrow">AI Workspace</p>
-          <h2>Research Copilot</h2>
+      {isAiPanelOpen ? (
+        <>
+      <div
+        aria-hidden="true"
+        className="drawer-backdrop drawer-backdrop-visible"
+        onClick={() => setIsAiPanelOpen(false)}
+      />
+      <aside className="ai-shell ai-shell-open">
+        <div className="panel-header panel-header-row">
+          <div>
+            <p className="eyebrow">AI Workspace</p>
+            <h2>Research Copilot</h2>
+          </div>
+          <button className="ghost-button" type="button" onClick={() => setIsAiPanelOpen(false)}>
+            Close
+          </button>
         </div>
 
         <div className="ai-tabs" role="tablist" aria-label="AI context tabs">
@@ -2441,7 +2510,7 @@ export default function App({ api }: { api: AppApi }) {
               <p className="eyebrow">Focused Context</p>
               <h3>{activePaper?.title ?? "No active paper"}</h3>
               <p>{excerptFromView(readerView)}</p>
-              {!paperActionsEnabled ? (
+              {!textCapabilitiesEnabled ? (
                 <p>
                   {activePaper
                     ? "This item needs a readable source file before paper-level AI tasks can run."
@@ -2463,7 +2532,7 @@ export default function App({ api }: { api: AppApi }) {
                 <button
                   key={action.kind}
                   className="action-card"
-                  disabled={!paperActionsEnabled}
+                  disabled={!textCapabilitiesEnabled}
                   type="button"
                   onClick={() => void handleItemTask(action.kind)}
                 >
@@ -2501,7 +2570,7 @@ export default function App({ api }: { api: AppApi }) {
                       <button
                         aria-label={`Run Again ${task.kind}`}
                         className="ghost-button"
-                        disabled={!paperActionsEnabled}
+                        disabled={!textCapabilitiesEnabled}
                         type="button"
                         onClick={() => void handleItemTask(task.kind)}
                       >
@@ -2681,6 +2750,8 @@ export default function App({ api }: { api: AppApi }) {
           </section>
         )}
       </aside>
+        </>
+      ) : null}
     </div>
   );
 }

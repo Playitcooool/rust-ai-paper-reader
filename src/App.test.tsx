@@ -58,6 +58,13 @@ const readerPageCountMatcher =
 const findReaderPageCount = (page: number, total: number) =>
   screen.findByText(readerPageCountMatcher(page, total));
 
+const openAiWorkspace = async (user: ReturnType<typeof userEvent.setup>) => {
+  const trigger = screen.queryByRole("button", { name: "Open AI Workspace" });
+  if (trigger) {
+    await user.click(trigger);
+  }
+};
+
 beforeEach(() => {
   resetFakeApi();
 });
@@ -99,6 +106,20 @@ describe("App workspace", () => {
     expect(screen.getByText(/PDF mode/i)).toBeInTheDocument();
   });
 
+  it("keeps the AI workspace collapsed until the user opens it", async () => {
+    const user = userEvent.setup();
+
+    render(<App api={fakeApi} />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Research Copilot" })).not.toBeInTheDocument();
+
+    await openAiWorkspace(user);
+
+    expect(screen.getByRole("heading", { name: "Research Copilot" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Current Paper" })).toBeInTheDocument();
+  });
+
   it("keeps the normalized reader for docx items", async () => {
     replaceFakeApiState({
       items: [
@@ -131,7 +152,7 @@ describe("App workspace", () => {
     expect(screen.queryByTestId("pdf-reader")).not.toBeInTheDocument();
   });
 
-  it("renders the three-pane workspace and lets the user switch tabs", async () => {
+  it("shows batch actions only after papers are selected", async () => {
     const user = userEvent.setup();
 
     render(<App api={fakeApi} />);
@@ -139,25 +160,23 @@ describe("App workspace", () => {
     expect(
       screen.getByRole("heading", { name: "Collections", level: 1 }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Current Paper" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Current Collection" })).toBeInTheDocument();
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    expect(screen.queryByRole("button", { name: "Tag Selected" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Move Selected" })).not.toBeInTheDocument();
+
     const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
     await user.click(
-      await within(collectionPanel).findByRole("button", { name: /Graph Neural Survey/i }),
+      await within(collectionPanel).findByRole("checkbox", {
+        name: /Select paper Transformer Scaling Laws/i,
+      }),
     );
-    expect(
-      screen.getByRole("heading", { name: "Graph Neural Survey", level: 2 }),
-    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
-    expect(screen.getByText("Generate Review Draft")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Machine Learning", level: 3 }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tag Selected" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Move Selected" })).toBeInTheDocument();
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
   });
 
   it("loads data from the api layer and updates research output when an AI action runs", async () => {
@@ -166,6 +185,7 @@ describe("App workspace", () => {
     render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+    await openAiWorkspace(user);
 
     await user.click(screen.getByRole("button", { name: "Summarize document" }));
     expect((await screen.findAllByText(/item\.summarize/i)).length).toBeGreaterThanOrEqual(2);
@@ -275,6 +295,51 @@ describe("App workspace", () => {
     expect(await screen.findByText(/Moved Transformer Scaling Laws to Systems/i)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Transformer Scaling Laws", level: 2 })).toBeInTheDocument();
     expect(screen.getByText(/Systems · ready · PDF/i)).toBeInTheDocument();
+  });
+
+  it("keeps PDF page rendering visible while disabling text features when reliable text is unavailable", async () => {
+    const user = userEvent.setup();
+
+    replaceFakeApiState({
+      items: [
+        {
+          id: 1,
+          title: "Scanned PDF Paper",
+          collection_id: 1,
+          primary_attachment_id: 101,
+          attachment_status: "ready",
+          authors: "Reader Team",
+          publication_year: 2026,
+          source: "Paper Reader",
+          doi: null,
+          tags: [],
+          plainText: "Unreadable extraction preview",
+          normalizedHtml: "<article><h1>Scanned PDF Paper</h1><p>Unreadable extraction preview</p></article>",
+          attachmentFormat: "pdf",
+          primaryAttachmentPath: "/mock/scanned-paper.pdf",
+          pageCount: 2,
+          contentStatus: "unavailable",
+          contentNotice: "This PDF can be read by page, but no reliable text layer is available.",
+        } as never,
+      ],
+      annotations: [],
+      tasks: [],
+      artifacts: [],
+    });
+
+    render(<App api={fakeApi} />);
+
+    expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
+    expect(
+      screen.getByText("This PDF can be read by page, but no reliable text layer is available."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Unreadable extraction preview")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Find in document" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Highlight" })).toBeDisabled();
+
+    await openAiWorkspace(user);
+
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
   });
 
   it("lets the reader jump between outline sections", async () => {
@@ -399,6 +464,7 @@ describe("App workspace", () => {
 
     await user.click(screen.getByRole("button", { name: /Systems/i }));
     await user.selectOptions(screen.getByLabelText("Attachment filter"), "missing");
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
 
     expect(
@@ -577,6 +643,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     const sourceButton = screen.getByRole("button", { name: /Source: section-1/i });
     await user.click(sourceButton);
 
@@ -593,6 +660,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("button", { name: "Translate selection" }));
     expect(await screen.findByText(/Completed item\.translate for Transformer Scaling Laws\./i)).toBeInTheDocument();
 
@@ -614,6 +682,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("button", { name: "Translate selection" }));
     expect(await screen.findByText(/# Translation: Transformer Scaling Laws/i)).toBeInTheDocument();
     expect(screen.getByText(/## Translated Passage/i)).toBeInTheDocument();
@@ -632,6 +701,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     await user.click(screen.getByRole("button", { name: "Generate Review Draft" }));
     await user.click(screen.getByRole("button", { name: "Save as Research Note" }));
@@ -654,6 +724,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     await user.click(screen.getByRole("button", { name: "Generate Review Draft" }));
     await user.click(screen.getByRole("button", { name: "Save as Research Note" }));
@@ -679,6 +750,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
 
     expect(screen.getByText(/Review Scope/i)).toBeInTheDocument();
@@ -702,6 +774,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     await user.click(screen.getByRole("button", { name: "Theme Map" }));
 
@@ -719,6 +792,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     await user.click(screen.getByRole("button", { name: "Theme Map" }));
 
@@ -742,6 +816,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     await user.click(screen.getByRole("button", { name: "Theme Map" }));
     await user.click(await screen.findByRole("button", { name: /Run Again collection\.theme_map/i }));
@@ -759,6 +834,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     await user.click(screen.getByRole("button", { name: "Generate Review Draft" }));
     await user.click(screen.getByRole("button", { name: "Filter tag Scaling" }));
@@ -778,6 +854,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     await user.click(screen.getByRole("button", { name: "Theme Map" }));
     await user.click(screen.getByRole("button", { name: "Filter tag Scaling" }));
@@ -939,6 +1016,7 @@ describe("App workspace", () => {
 
     expect(await screen.findByText(/Moved 2 papers to Systems/i)).toBeInTheDocument();
     expect(screen.getByText(/Systems · ready · PDF/i)).toBeInTheDocument();
+    await openAiWorkspace(user);
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
     expect(screen.getByText(/3 papers included/i)).toBeInTheDocument();
   });
@@ -1070,6 +1148,7 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
+    await user.click(screen.getByText("More"));
     await user.click(screen.getByRole("button", { name: "Export BibTeX" }));
     expect(await screen.findByText(/@article\{/i)).toBeInTheDocument();
     expect(screen.getByText(/Saved BIBTEX to \/exports\/Transformer Scaling Laws\.bib/i)).toBeInTheDocument();
@@ -1112,6 +1191,7 @@ describe("App workspace", () => {
     expect(screen.getByText(/Source file missing/i)).toBeInTheDocument();
     expect(screen.getByText(/Relink this attachment to restore reading and AI actions/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Relink Source" })).toBeInTheDocument();
+    await openAiWorkspace(user);
     expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
   });
 
@@ -1131,6 +1211,7 @@ describe("App workspace", () => {
     expect(screen.getByText(/Metadata-only entry/i)).toBeInTheDocument();
     expect(screen.getByText(/Import a PDF, DOCX, or EPUB later to enable full reading and AI extraction/i)).toBeInTheDocument();
     expect(screen.getByText(/Citation metadata is available for export and organization right now/i)).toBeInTheDocument();
+    await openAiWorkspace(user);
     expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
   });
 
@@ -1188,13 +1269,15 @@ describe("App workspace", () => {
     expect(
       screen.getByText(/This PDF loaded successfully, but text extraction only found partial content/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Summarize document" })).toBeEnabled();
+    await openAiWorkspace(user);
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "Summarize document" }));
-    expect((await screen.findAllByText(/item\.summarize/i)).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("button", { name: "Highlight" })).toBeDisabled();
   });
 
   it("shows an unavailable extraction state and disables paper actions", async () => {
+    const user = userEvent.setup();
+
     replaceFakeApiState({
       items: [
         {
@@ -1226,6 +1309,7 @@ describe("App workspace", () => {
 
     expect(await screen.findByText(/Reader content unavailable/i)).toBeInTheDocument();
     expect(screen.getByText(/No readable text could be extracted from this document yet/i)).toBeInTheDocument();
+    await openAiWorkspace(user);
     expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Highlight" })).toBeDisabled();
   });
@@ -1302,7 +1386,7 @@ describe("App workspace", () => {
     expect(
       screen.getByText(/Imported 1 files \(duplicates 1, failed 1\) into Machine Learning from picker\./i),
     ).toBeInTheDocument();
-    const importResults = screen.getByText(/Recent import results/i).closest(".citation-card");
+    const importResults = screen.getByText(/Show Import Issues/i).closest(".management-panel");
     expect(importResults).not.toBeNull();
     expect(within(importResults as HTMLElement).getByText(/^duplicate$/i)).toBeInTheDocument();
     expect(within(importResults as HTMLElement).getByText(/^failed$/i)).toBeInTheDocument();
@@ -1343,12 +1427,14 @@ describe("App workspace", () => {
     ).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("New collection name"), "Inbox");
+    await user.click(screen.getByText("Manage Library"));
     await user.click(screen.getByRole("button", { name: "Add Collection" }));
 
     expect(screen.getByRole("heading", { name: "No paper selected", level: 2 })).toBeInTheDocument();
-    expect(await screen.findAllByText("Open a paper to see its extracted text.")).toHaveLength(2);
+    expect(await screen.findByText("Open a paper to see its extracted text.")).toBeInTheDocument();
     expect(screen.getByText(/No papers in this collection yet/i)).toBeInTheDocument();
     expect(screen.getByText(/Import PDF, DOCX, EPUB, or citation files to start this workspace/i)).toBeInTheDocument();
+    await openAiWorkspace(user);
     expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
   });
 });

@@ -36,14 +36,14 @@ textarea {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 340px;
+  grid-template-columns: 300px minmax(0, 1fr);
   min-height: 100vh;
   color: #f4efe6;
+  position: relative;
 }
 
 .sidebar,
-.reader-shell,
-.ai-shell {
+.reader-shell {
   min-height: 100vh;
 }
 
@@ -56,8 +56,17 @@ textarea {
 }
 
 .ai-shell {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(380px, 100vw);
+  min-height: 100vh;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   border-right: none;
+  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.34);
+  overflow-y: auto;
+  z-index: 20;
 }
 
 .reader-shell {
@@ -68,6 +77,13 @@ textarea {
 
 .panel-header {
   margin-bottom: 20px;
+}
+
+.panel-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .eyebrow {
@@ -205,6 +221,40 @@ p {
   border-color: rgba(226, 139, 83, 0.58);
   background: rgba(226, 139, 83, 0.12);
   box-shadow: inset 0 0 0 1px rgba(226, 139, 83, 0.18);
+}
+
+.management-panel,
+.action-menu {
+  margin-top: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.management-panel summary,
+.action-menu summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 12px 14px;
+  color: #f7c9a1;
+  font-weight: 600;
+}
+
+.management-panel summary::-webkit-details-marker,
+.action-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.management-panel-body,
+.action-menu-body,
+.selection-toolbar {
+  display: grid;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.action-menu {
+  min-width: 180px;
 }
 
 .drop-helper {
@@ -529,14 +579,17 @@ p {
   justify-content: flex-end;
 }
 
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 9, 12, 0.48);
+  backdrop-filter: blur(6px);
+  z-index: 18;
+}
+
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 280px 1fr;
-  }
-
-  .ai-shell {
-    grid-column: 1 / -1;
-    min-height: auto;
   }
 }
 
@@ -546,12 +599,15 @@ p {
   }
 
   .sidebar,
-  .reader-shell,
-  .ai-shell {
+  .reader-shell {
     min-height: auto;
   }
 
   .reader-surface {
     grid-template-columns: 1fr;
+  }
+
+  .ai-shell {
+    width: 100vw;
   }
 }

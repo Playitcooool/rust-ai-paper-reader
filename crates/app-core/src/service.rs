@@ -2,10 +2,12 @@ use std::{
     fs,
     io::{Cursor, Read, Seek},
     path::{Path, PathBuf},
+    panic,
 };
 
 use anyhow::{anyhow, Context, Result};
 use html_escape::encode_safe;
+use lopdf::{Dictionary, Document as PdfDocument, Object};
 use regex::Regex;
 use roxmltree::Document;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -155,6 +157,12 @@ struct ExtractedDocument {
     content_status: String,
     content_notice: Option<String>,
     metadata: InferredMetadata,
+}
+
+impl ExtractedDocument {
+    fn should_index(&self) -> bool {
+        !self.plain_text.trim().is_empty() && self.content_status != "unavailable"
+    }
 }
 
 impl LibraryService {
@@ -518,10 +526,12 @@ impl LibraryService {
                     extracted.content_notice
                 ],
             )?;
-            tx.execute(
-                "INSERT INTO search_index(item_id, title, plain_text) VALUES (?1, ?2, ?3)",
-                params![item_id, title, extracted.plain_text],
-            )?;
+            if extracted.should_index() {
+                tx.execute(
+                    "INSERT INTO search_index(item_id, title, plain_text) VALUES (?1, ?2, ?3)",
+                    params![item_id, title, extracted.plain_text],
+                )?;
+            }
             tx.commit()?;
 
             let item = ImportedItem {
@@ -774,11 +784,11 @@ impl LibraryService {
             SELECT DISTINCT i.id, i.title, i.collection_id, a.id, a.path, a.status, i.authors, i.publication_year, i.source, i.doi
             FROM items i
             JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
-            LEFT JOIN extracted_content e ON e.item_id = i.id
+            LEFT JOIN search_index s ON s.item_id = i.id
             LEFT JOIN item_tags it ON it.item_id = i.id
             LEFT JOIN tags t ON t.id = it.tag_id
-            WHERE lower(i.title) LIKE ?1
-               OR lower(e.plain_text) LIKE ?1
+            WHERE lower(COALESCE(s.title, '')) LIKE ?1
+               OR lower(COALESCE(s.plain_text, '')) LIKE ?1
                OR lower(i.authors) LIKE ?1
                OR lower(i.source) LIKE ?1
                OR lower(COALESCE(i.doi, '')) LIKE ?1
@@ -1565,40 +1575,26 @@ fn extract_pdf(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
         .and_then(|value| value.to_str())
         .map(title_from_slug)
         .unwrap_or_else(|| "Untitled".into());
-    let raw = String::from_utf8_lossy(bytes);
-    // Best-effort page count from PDF object markers.
-    // Avoid counting the "/Type /Pages" node by subtracting those matches.
-    let page_count = (raw.matches("/Type /Page").count() as i64)
-        - (raw.matches("/Type /Pages").count() as i64);
-    let title = capture_pdf_metadata(&raw, "Title").unwrap_or(fallback_title.clone());
-    let authors = capture_pdf_metadata(&raw, "Author").unwrap_or_else(|| "Imported Author".into());
-    let publication_year = capture_pdf_year(&raw);
-    let strings = extract_pdf_text_fragments(&raw);
-    let plain_text = if strings.is_empty() {
-        "PDF imported, but no text layer was extracted.".into()
-    } else {
-        strings.join("\n\n")
-    };
-    let content_status = if strings.is_empty() { "partial" } else { "ready" }.to_string();
-    let content_notice = if strings.is_empty() {
-        Some("This PDF loaded successfully, but text extraction only found partial content.".into())
-    } else {
-        None
-    };
+    let pdf = PdfDocument::load_mem(bytes)?;
+    let page_count = Some(pdf.get_pages().len() as i64).filter(|count| *count > 0);
+    let metadata = read_pdf_metadata(&pdf, &fallback_title);
+    let page_fragments = panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(bytes))
+        .ok()
+        .and_then(Result::ok)
+        .map(|pages| pdf_page_fragments(&pages))
+        .unwrap_or_default();
+    let plain_text = join_plain_text(&page_fragments);
+    let (content_status, content_notice) =
+        classify_pdf_content(&page_fragments, page_count.unwrap_or(0) as usize);
+    let normalized_html = article_from_paragraphs(&metadata.title.clone().unwrap_or(fallback_title.clone()), &page_fragments);
 
     Ok(ExtractedDocument {
-        normalized_html: article_from_paragraphs(&title, &strings),
+        normalized_html,
         plain_text,
-        page_count: if page_count > 0 { Some(page_count) } else { None },
+        page_count,
         content_status,
         content_notice,
-        metadata: InferredMetadata {
-            title: Some(title),
-            authors,
-            publication_year,
-            source: "Imported PDF".into(),
-            doi: None,
-        },
+        metadata,
     })
 }
 
@@ -1791,34 +1787,80 @@ fn extract_xhtml_sections(xml: &str) -> Result<Vec<String>> {
     Ok(sections)
 }
 
-fn capture_pdf_metadata(raw: &str, field: &str) -> Option<String> {
-    let pattern = format!(r"/{}\s*\(([^)]*)\)", field);
-    Regex::new(&pattern)
-        .ok()?
-        .captures(raw)
-        .and_then(|captures| captures.get(1))
-        .map(|value| normalize_whitespace(value.as_str()))
-        .filter(|value| !value.is_empty())
-}
-
-fn capture_pdf_year(raw: &str) -> Option<i64> {
-    Regex::new(r"/CreationDate\s*\(D:(\d{4})")
-        .ok()?
-        .captures(raw)
-        .and_then(|captures| captures.get(1))
-        .and_then(|value| value.as_str().parse::<i64>().ok())
-}
-
-fn extract_pdf_text_fragments(raw: &str) -> Vec<String> {
-    let Some(regex) = Regex::new(r"\(([^()]*)\)\s*Tj").ok() else {
-        return Vec::new();
-    };
-    regex
-        .captures_iter(raw)
-        .filter_map(|captures| captures.get(1))
-        .map(|value| normalize_whitespace(value.as_str()))
+fn pdf_page_fragments(page_text: &[String]) -> Vec<String> {
+    page_text
+        .iter()
+        .map(|value| normalize_whitespace(value))
         .filter(|value| value.len() > 2)
         .collect()
+}
+
+fn classify_pdf_content(
+    page_fragments: &[String],
+    page_count: usize,
+) -> (String, Option<String>) {
+    if page_fragments.is_empty() {
+        return (
+            "unavailable".into(),
+            Some("This PDF can be read by page, but no reliable text layer is available.".into()),
+        );
+    }
+
+    if page_count > 1 && page_fragments.len() < page_count {
+        return (
+            "partial".into(),
+            Some("This PDF has partial extracted text. Page reading remains available, but text features are limited.".into()),
+        );
+    }
+
+    ("ready".into(), None)
+}
+
+fn read_pdf_metadata(pdf: &PdfDocument, fallback_title: &str) -> InferredMetadata {
+    let info = pdf
+        .trailer
+        .get(b"Info")
+        .ok()
+        .and_then(|object| match object {
+            Object::Reference(id) => pdf.get_dictionary(*id).ok().cloned(),
+            Object::Dictionary(dict) => Some(dict.clone()),
+            _ => None,
+        });
+    let title = info
+        .as_ref()
+        .and_then(|dict| pdf_info_string(dict, b"Title"))
+        .unwrap_or_else(|| fallback_title.to_string());
+    let authors = info
+        .as_ref()
+        .and_then(|dict| pdf_info_string(dict, b"Author"))
+        .unwrap_or_else(|| "Imported Author".into());
+    let publication_year = info
+        .as_ref()
+        .and_then(|dict| pdf_info_string(dict, b"CreationDate"))
+        .and_then(|value| {
+            Regex::new(r"D:(\d{4})")
+                .ok()?
+                .captures(&value)
+                .and_then(|captures| captures.get(1))
+                .and_then(|year| year.as_str().parse::<i64>().ok())
+        });
+
+    InferredMetadata {
+        title: Some(title),
+        authors,
+        publication_year,
+        source: "Imported PDF".into(),
+        doi: None,
+    }
+}
+
+fn pdf_info_string(dict: &Dictionary, key: &[u8]) -> Option<String> {
+    let object = dict.get(key).ok()?;
+    match object {
+        Object::String(value, _) => Some(normalize_whitespace(&String::from_utf8_lossy(value))),
+        Object::Name(value) => Some(normalize_whitespace(&String::from_utf8_lossy(value))),
+        _ => None,
+    }
 }
 
 fn article_from_paragraphs(title: &str, paragraphs: &[String]) -> String {
@@ -1855,7 +1897,7 @@ fn normalize_whitespace(value: &str) -> String {
 
 fn join_plain_text(parts: &[String]) -> String {
     if parts.is_empty() {
-        "No textual content extracted.".into()
+        String::new()
     } else {
         parts.join("\n\n")
     }
