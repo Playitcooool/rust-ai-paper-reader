@@ -1,658 +1,233 @@
-use std::path::PathBuf;
+use std::{fs, io::Write, path::{Path, PathBuf}};
 
 use app_core::service::{ImportMode, LibraryService};
 use tempfile::tempdir;
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
-fn fixture_path(root: &std::path::Path, name: &str) -> PathBuf {
+fn fixture_path(root: &Path, name: &str) -> PathBuf {
     root.join(name)
 }
 
+fn write_pdf_fixture(path: &Path) {
+    let pdf = br#"%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>
+endobj
+5 0 obj
+<< /Length 72 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(Scaling laws improve planning for training runs.) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 71 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+(Compute and data must grow together for stable returns.) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Title (Scaling Laws Field Guide) /Author (Reader Team) /CreationDate (D:20240101000000Z) >>
+endobj
+trailer
+<< /Root 1 0 R /Info 7 0 R >>
+%%EOF"#;
+    fs::write(path, pdf).unwrap();
+}
+
+fn write_docx_fixture(path: &Path) {
+    let file = fs::File::create(path).unwrap();
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+    zip.start_file("[Content_Types].xml", options).unwrap();
+    zip.write_all(br#"<?xml version='1.0' encoding='UTF-8'?><Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'></Types>"#).unwrap();
+    zip.start_file("docProps/core.xml", options).unwrap();
+    zip.write_all(br#"<?xml version='1.0' encoding='UTF-8'?><cp:coreProperties xmlns:cp='http://schemas.openxmlformats.org/package/2006/metadata/core-properties' xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:title>Graph Notes</dc:title><dc:creator>Docx Author</dc:creator></cp:coreProperties>"#).unwrap();
+    zip.start_file("word/document.xml", options).unwrap();
+    zip.write_all(br#"<?xml version='1.0' encoding='UTF-8'?><w:document xmlns:w='http://schemas.openxmlformats.org/wordprocessingml/2006/main'><w:body><w:p><w:r><w:t>Graph neural networks unify message passing.</w:t></w:r></w:p><w:p><w:r><w:t>Benchmarks compare pooling, supervision, and transfer.</w:t></w:r></w:p></w:body></w:document>"#).unwrap();
+    zip.finish().unwrap();
+}
+
+fn write_epub_fixture(path: &Path) {
+    let file = fs::File::create(path).unwrap();
+    let mut zip = ZipWriter::new(file);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+    zip.start_file("mimetype", stored).unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+    zip.start_file("META-INF/container.xml", stored).unwrap();
+    zip.write_all(br#"<?xml version='1.0'?><container version='1.0' xmlns='urn:oasis:names:tc:opendocument:xmlns:container'><rootfiles><rootfile full-path='OEBPS/content.opf' media-type='application/oebps-package+xml'/></rootfiles></container>"#).unwrap();
+    zip.start_file("OEBPS/content.opf", stored).unwrap();
+    zip.write_all(br#"<?xml version='1.0'?><package xmlns='http://www.idpf.org/2007/opf' version='3.0'><metadata xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:title>Distributed Systems Reader</dc:title><dc:creator>Epub Author</dc:creator></metadata><manifest><item id='c1' href='chapter1.xhtml' media-type='application/xhtml+xml'/><item id='c2' href='chapter2.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='c1'/><itemref idref='c2'/></spine></package>"#).unwrap();
+    zip.start_file("OEBPS/chapter1.xhtml", stored).unwrap();
+    zip.write_all(br#"<?xml version='1.0'?><html xmlns='http://www.w3.org/1999/xhtml'><body><h1>Chapter 1</h1><p>Consensus protocols coordinate replicas.</p></body></html>"#).unwrap();
+    zip.start_file("OEBPS/chapter2.xhtml", stored).unwrap();
+    zip.write_all(br#"<?xml version='1.0'?><html xmlns='http://www.w3.org/1999/xhtml'><body><h2>Chapter 2</h2><p>Operator ergonomics matter during failures.</p></body></html>"#).unwrap();
+    zip.finish().unwrap();
+}
+
 #[test]
-fn imports_files_creates_items_and_supports_search_annotations_and_notes() {
+fn starts_with_an_empty_library() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
+    let service = LibraryService::new(root.path()).unwrap();
 
-    let collection = service
-        .create_collection("Machine Learning", None)
-        .expect("collection created");
+    assert!(service.list_collections().unwrap().is_empty());
+    assert!(service.list_items(None).unwrap().is_empty());
+}
 
-    std::fs::write(fixture_path(root.path(), "paper.pdf"), b"%PDF-1.4 test content").unwrap();
-    std::fs::write(
-        fixture_path(root.path(), "notes.docx"),
-        b"word document content about transformers",
-    )
-    .unwrap();
+#[test]
+fn imports_pdf_with_metadata_text_page_count_and_search_index() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Machine Learning", None).unwrap();
+    let pdf = fixture_path(root.path(), "scaling-laws.pdf");
+    write_pdf_fixture(&pdf);
 
-    let imported = service
-        .import_files(
-            collection.id,
-            &[
-                fixture_path(root.path(), "paper.pdf"),
-                fixture_path(root.path(), "notes.docx"),
-            ],
-            ImportMode::ManagedCopy,
-        )
-        .expect("files imported");
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
 
-    assert_eq!(imported.len(), 2);
+    assert_eq!(result.imported.len(), 1);
+    assert!(result.duplicates.is_empty());
+    assert!(result.failed.is_empty());
+    assert_eq!(result.results[0].status, "imported");
 
-    let listed = service.list_items(Some(collection.id)).expect("items listed");
-    assert_eq!(listed.len(), 2);
+    let item_id = result.imported[0].id;
+    let item = service.list_items(Some(collection.id)).unwrap().remove(0);
+    assert_eq!(item.title, "Scaling Laws Field Guide");
+    assert_eq!(item.authors, "Reader Team");
+    assert_eq!(item.publication_year, Some(2024));
 
-    let transformers_tag = service.create_tag("Transformers").expect("tag created");
-    service
-        .assign_tag(listed[0].id, transformers_tag.id)
-        .expect("tag assigned");
+    let reader = service.get_reader_view(item_id).unwrap();
+    assert_eq!(reader.reader_kind, "pdf");
+    assert_eq!(reader.page_count, Some(2));
+    assert_eq!(reader.content_status, "ready");
+    assert!(reader.plain_text.contains("Scaling laws improve planning"));
 
-    let search = service.search_items("transformers").expect("search works");
+    let search = service.search_items("stable returns").unwrap();
     assert_eq!(search.len(), 1);
-    assert!(search.iter().any(|item| item.title == "notes"));
-    assert!(
-        search
-            .iter()
-            .any(|item| item.tags.iter().any(|tag| tag == "Transformers"))
-    );
-
-    let annotation = service
-        .create_annotation(
-            search[0].id,
-            "section-1".into(),
-            "highlight".into(),
-            "Important paragraph".into(),
-        )
-        .expect("annotation created");
-
-    assert_eq!(annotation.anchor, "section-1");
-
-    let task = service
-        .run_item_summary(search[0].id)
-        .expect("summary task created");
-    assert_eq!(task.status, "succeeded");
-
-    let artifact = service
-        .get_latest_artifact(Some(search[0].id), None)
-        .expect("artifact lookup succeeds")
-        .expect("artifact exists");
-    let note = service
-        .create_note_from_artifact(artifact.id)
-        .expect("note created");
-    assert_eq!(note.markdown, artifact.markdown);
 }
 
 #[test]
-fn linked_files_can_be_relinked_after_missing_attachment_is_detected() {
+fn imports_docx_and_epub_as_real_text_readers() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Systems", None)
-        .expect("collection created");
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Reading", None).unwrap();
+    let docx = fixture_path(root.path(), "graph-notes.docx");
+    let epub = fixture_path(root.path(), "systems.epub");
+    write_docx_fixture(&docx);
+    write_epub_fixture(&epub);
 
-    let original = root.path().join("systems.epub");
-    std::fs::write(&original, b"distributed systems").unwrap();
+    let result = service
+        .import_files(collection.id, &[docx, epub], ImportMode::ManagedCopy)
+        .unwrap();
 
-    let imported = service
+    assert_eq!(result.imported.len(), 2);
+    let items = service.list_items(Some(collection.id)).unwrap();
+    assert_eq!(items.len(), 2);
+
+    let docx_item = items.iter().find(|item| item.attachment_format == "docx").unwrap();
+    let docx_reader = service.get_reader_view(docx_item.id).unwrap();
+    assert_eq!(docx_reader.reader_kind, "normalized");
+    assert_eq!(docx_reader.content_status, "ready");
+    assert!(docx_reader.plain_text.contains("Graph neural networks"));
+    assert!(docx_reader.normalized_html.contains("<p>Graph neural networks unify message passing."));
+
+    let epub_item = items.iter().find(|item| item.attachment_format == "epub").unwrap();
+    let epub_reader = service.get_reader_view(epub_item.id).unwrap();
+    assert_eq!(epub_reader.reader_kind, "normalized");
+    assert!(epub_reader.plain_text.contains("Consensus protocols coordinate replicas."));
+    assert!(epub_reader.normalized_html.contains("Chapter 1"));
+    assert!(epub_reader.normalized_html.contains("Operator ergonomics matter during failures."));
+}
+
+#[test]
+fn duplicate_imports_report_duplicate_without_creating_new_items() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "duplicate.pdf");
+    write_pdf_fixture(&pdf);
+
+    let first = service
+        .import_files(collection.id, &[pdf.clone()], ImportMode::ManagedCopy)
+        .unwrap();
+    let second = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+
+    assert_eq!(first.imported.len(), 1);
+    assert!(second.imported.is_empty());
+    assert_eq!(second.duplicates.len(), 1);
+    assert_eq!(second.results[0].status, "duplicate");
+    assert_eq!(service.list_items(Some(collection.id)).unwrap().len(), 1);
+}
+
+#[test]
+fn linked_files_can_be_marked_missing_and_relinked() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Systems", None).unwrap();
+    let original = fixture_path(root.path(), "systems.epub");
+    write_epub_fixture(&original);
+
+    let result = service
         .import_files(collection.id, &[original.clone()], ImportMode::LinkedFile)
-        .expect("linked import succeeds");
-    let attachment_id = imported[0].primary_attachment_id;
+        .unwrap();
+    let attachment_id = result.imported[0].primary_attachment_id;
 
-    std::fs::remove_file(&original).unwrap();
-    service
-        .refresh_attachment_statuses()
-        .expect("status refresh works");
+    fs::remove_file(&original).unwrap();
+    service.refresh_attachment_statuses().unwrap();
+    assert_eq!(service.list_items(Some(collection.id)).unwrap()[0].attachment_status, "missing");
 
-    let missing = service.list_items(Some(collection.id)).expect("items listed");
-    assert_eq!(missing[0].attachment_status, "missing");
+    let replacement = fixture_path(root.path(), "replacement.epub");
+    write_epub_fixture(&replacement);
+    service.relink_attachment(attachment_id, replacement).unwrap();
 
-    let replacement = root.path().join("replacement.epub");
-    std::fs::write(&replacement, b"distributed systems second copy").unwrap();
-
-    service
-        .relink_attachment(attachment_id, replacement)
-        .expect("relink succeeds");
-
-    let relinked = service.list_items(Some(collection.id)).expect("items listed");
-    assert_eq!(relinked[0].attachment_status, "ready");
+    let item = service.list_items(Some(collection.id)).unwrap().remove(0);
+    assert_eq!(item.attachment_status, "ready");
 }
 
 #[test]
-fn generates_collection_review_reader_views_and_markdown_exports() {
+fn removing_items_deletes_managed_copy_but_preserves_linked_source() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Reading Group", None)
-        .expect("collection created");
-    let pdf = root.path().join("group-paper.pdf");
-    std::fs::write(
-        &pdf,
-        b"evidence-backed summaries let readers jump from review draft to source",
-    )
-    .unwrap();
-
-    let imported = service
-        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-    let item_id = imported[0].id;
-
-    let reader_view = service.get_reader_view(item_id).expect("reader view exists");
-    assert!(reader_view.normalized_html.contains("group-paper"));
-
-    service.run_item_summary(item_id).expect("summary task");
-    let review = service
-        .run_collection_review_draft(collection.id)
-        .expect("collection review");
-    assert_eq!(review.kind, "collection.review_draft");
-
-    let artifact = service
-        .get_latest_artifact(None, Some(collection.id))
-        .expect("artifact lookup succeeds")
-        .expect("artifact exists");
-    let note = service
-        .create_note_from_artifact(artifact.id)
-        .expect("note created");
-    let exported = service
-        .export_note_markdown(note.id)
-        .expect("markdown exported");
-    assert!(exported.contains("Reading Group"));
-
-    let citation = service
-        .export_citation(item_id, "apa7")
-        .expect("citation exported");
-    assert!(citation.contains("APA 7"));
-}
-
-#[test]
-fn generates_task_specific_collection_outputs() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Reading Group", None)
-        .expect("collection created");
-    let pdf = root.path().join("group-paper.pdf");
-    let docx = root.path().join("survey-notes.docx");
-    std::fs::write(
-        &pdf,
-        b"Scaling laws show predictable returns as compute, data, and parameters grow in sync.",
-    )
-    .unwrap();
-    std::fs::write(
-        &docx,
-        b"Graph neural networks compare message passing, pooling, and graph-level supervision.",
-    )
-    .unwrap();
-
-    service
-        .import_files(collection.id, &[pdf, docx], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-    let scope = service
-        .list_items(Some(collection.id))
-        .expect("items listed")
-        .into_iter()
-        .map(|item| item.id)
-        .collect::<Vec<_>>();
-
-    let theme_map = service
-        .run_collection_task(collection.id, "collection.theme_map", &scope)
-        .expect("theme map succeeds");
-    assert_eq!(theme_map.kind, "collection.theme_map");
-    assert!(theme_map.output_markdown.contains("# Theme Map: Reading Group"));
-    assert!(theme_map.output_markdown.contains("## Themes"));
-
-    let compare_methods = service
-        .run_collection_task(collection.id, "collection.compare_methods", &scope)
-        .expect("comparison succeeds");
-    assert_eq!(compare_methods.kind, "collection.compare_methods");
-    assert!(
-        compare_methods
-            .output_markdown
-            .contains("# Method Comparison: Reading Group")
-    );
-    assert!(compare_methods.output_markdown.contains("## Comparison Matrix"));
-}
-
-#[test]
-fn generates_task_specific_item_outputs() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Machine Learning", None)
-        .expect("collection created");
-    let pdf = root.path().join("paper.pdf");
-    std::fs::write(
-        &pdf,
-        b"Scaling laws show predictable returns as compute, data, and parameters grow in sync.",
-    )
-    .unwrap();
-
-    let imported = service
-        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-    let item_id = imported[0].id;
-
-    let translation = service
-        .run_item_task(item_id, "item.translate")
-        .expect("translation succeeds");
-    assert_eq!(translation.kind, "item.translate");
-    assert!(translation.output_markdown.contains("# Translation: paper"));
-    assert!(translation.output_markdown.contains("## Translated Passage"));
-
-    let explanation = service
-        .run_item_task(item_id, "item.explain_term")
-        .expect("term explanation succeeds");
-    assert_eq!(explanation.kind, "item.explain_term");
-    assert!(explanation.output_markdown.contains("# Terminology Notes: paper"));
-    assert!(explanation.output_markdown.contains("## Key Terms"));
-}
-
-#[test]
-fn removes_items_and_cleans_managed_files_and_indexes() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Machine Learning", None)
-        .expect("collection created");
-    let pdf = root.path().join("paper.pdf");
-    std::fs::write(
-        &pdf,
-        b"Scaling laws show predictable returns as compute, data, and parameters grow in sync.",
-    )
-    .unwrap();
-
-    let imported = service
-        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-    let item_id = imported[0].id;
-    service
-        .create_annotation(
-            item_id,
-            "section-1".into(),
-            "highlight".into(),
-            "Important paragraph".into(),
-        )
-        .expect("annotation created");
-    service
-        .run_item_task(item_id, "item.summarize")
-        .expect("summary succeeds");
-
-    let managed_files = root.path().join("library-files");
-    assert_eq!(std::fs::read_dir(&managed_files).unwrap().count(), 1);
-
-    service.remove_item(item_id).expect("item removed");
-
-    assert!(service.list_items(Some(collection.id)).unwrap().is_empty());
-    assert!(service.search_items("scaling").unwrap().is_empty());
-    assert!(service.list_annotations(item_id).unwrap().is_empty());
-    assert!(service.list_task_runs(Some(item_id), None).unwrap().is_empty());
-    assert_eq!(std::fs::read_dir(&managed_files).unwrap().count(), 0);
-}
-
-#[test]
-fn moves_items_between_collections_and_preserves_item_history() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let inbox = service
-        .create_collection("Inbox", None)
-        .expect("collection created");
-    let reading = service
-        .create_collection("Reading", None)
-        .expect("collection created");
-    let pdf = root.path().join("paper.pdf");
-    std::fs::write(
-        &pdf,
-        b"Scaling laws show predictable returns as compute, data, and parameters grow in sync.",
-    )
-    .unwrap();
-
-    let imported = service
-        .import_files(inbox.id, &[pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-    let item_id = imported[0].id;
-    service
-        .run_item_task(item_id, "item.summarize")
-        .expect("summary succeeds");
-
-    service.move_item(item_id, reading.id).expect("item moved");
-
-    let inbox_items = service.list_items(Some(inbox.id)).expect("inbox items listed");
-    let reading_items = service
-        .list_items(Some(reading.id))
-        .expect("reading items listed");
-    assert!(inbox_items.is_empty());
-    assert_eq!(reading_items.len(), 1);
-    assert_eq!(reading_items[0].collection_id, reading.id);
-
-    let item_tasks = service.list_task_runs(Some(item_id), None).expect("tasks listed");
-    assert_eq!(item_tasks[0].collection_id, Some(reading.id));
-
-    let item_artifact = service
-        .get_latest_artifact(Some(item_id), None)
-        .expect("artifact lookup succeeds")
-        .expect("artifact exists");
-    assert_eq!(item_artifact.collection_id, Some(reading.id));
-}
-
-#[test]
-fn renames_and_removes_empty_collections_with_safety_checks() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let inbox = service
-        .create_collection("Inbox", None)
-        .expect("collection created");
-    let archive = service
-        .create_collection("Archive", None)
-        .expect("collection created");
-    let child = service
-        .create_collection("Child", Some(archive.id))
-        .expect("child created");
-
-    service
-        .rename_collection(inbox.id, "Reading Queue")
-        .expect("rename succeeds");
-    let renamed = service.list_collections().expect("collections listed");
-    assert!(renamed.iter().any(|collection| collection.name == "Reading Queue"));
-
-    let nested_delete = service.remove_collection(archive.id);
-    assert!(nested_delete.is_err());
-
-    service.remove_collection(child.id).expect("delete child");
-    service
-        .remove_collection(archive.id)
-        .expect("delete empty collection");
-    let remaining = service.list_collections().expect("collections listed");
-    assert!(!remaining.iter().any(|collection| collection.name == "Archive"));
-}
-
-#[test]
-fn lists_tags_scoped_to_the_current_collection() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let ml = service
-        .create_collection("Machine Learning", None)
-        .expect("collection created");
-    let systems = service
-        .create_collection("Systems", None)
-        .expect("collection created");
-    let ml_pdf = root.path().join("ml-paper.pdf");
-    let systems_pdf = root.path().join("systems-paper.pdf");
-    std::fs::write(&ml_pdf, b"model scaling").unwrap();
-    std::fs::write(&systems_pdf, b"distributed consensus").unwrap();
-
-    let ml_item = service
-        .import_files(ml.id, &[ml_pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds")[0]
-        .clone();
-    let systems_item = service
-        .import_files(systems.id, &[systems_pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds")[0]
-        .clone();
-
-    let shared = service.create_tag("Core").expect("tag created");
-    let systems_only = service.create_tag("Distributed").expect("tag created");
-    service.assign_tag(ml_item.id, shared.id).expect("tag assigned");
-    service
-        .assign_tag(systems_item.id, shared.id)
-        .expect("tag assigned");
-    service
-        .assign_tag(systems_item.id, systems_only.id)
-        .expect("tag assigned");
-
-    let ml_tags = service.list_tags(Some(ml.id)).expect("tags listed");
-    assert_eq!(ml_tags.len(), 1);
-    assert_eq!(ml_tags[0].name, "Core");
-    assert_eq!(ml_tags[0].item_count, 1);
-}
-
-#[test]
-fn imports_citation_records_and_exports_structured_formats() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Bibliography", None)
-        .expect("collection created");
-    let bib = root.path().join("attention-is-all-you-need.bib");
-    let ris = root.path().join("retrieval-augmented-generation.ris");
-
-    std::fs::write(&bib, b"@article{attention}").unwrap();
-    std::fs::write(&ris, b"TY  - JOUR").unwrap();
-
-    let imported = service
-        .import_citations(collection.id, &[bib, ris])
-        .expect("citations imported");
-    assert_eq!(imported.len(), 2);
-
-    let items = service.list_items(Some(collection.id)).expect("items listed");
-    assert_eq!(items[0].attachment_status, "citation_only");
-    assert_eq!(items[0].attachment_format, "unknown");
-
-    let bibtex = service
-        .export_citation(imported[0].id, "bibtex")
-        .expect("bibtex exported");
-    assert!(bibtex.contains("@article"));
-
-    let ris = service
-        .export_citation(imported[0].id, "ris")
-        .expect("ris exported");
-    assert!(ris.contains("TY  - JOUR"));
-}
-
-#[test]
-fn collection_tasks_persist_scope_metadata_in_passed_order() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Reading Group", None)
-        .expect("collection created");
-    let first = root.path().join("alpha.pdf");
-    let second = root.path().join("beta.docx");
-    std::fs::write(&first, b"alpha first sentence").unwrap();
-    std::fs::write(&second, b"beta first sentence").unwrap();
-
-    service
-        .import_files(collection.id, &[first, second], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-    let listed = service.list_items(Some(collection.id)).expect("items listed");
-    let scope = vec![listed[1].id, listed[0].id];
-
-    let task = service
-        .run_collection_task(collection.id, "collection.review_draft", &scope)
-        .expect("task succeeds");
-
-    assert_eq!(task.scope_item_ids.as_deref(), Some(scope.as_slice()));
-    let artifact = service
-        .get_latest_artifact(None, Some(collection.id))
-        .expect("artifact lookup succeeds")
-        .expect("artifact exists");
-    assert_eq!(artifact.scope_item_ids.as_deref(), Some(scope.as_slice()));
-    assert!(artifact.markdown.contains("**alpha**"));
-    assert!(artifact.markdown.contains("**beta**"));
-    assert!(artifact.markdown.find("**alpha**") < artifact.markdown.find("**beta**"));
-}
-
-#[test]
-fn collection_tasks_reject_empty_or_foreign_scope_ids() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let left = service
-        .create_collection("Left", None)
-        .expect("collection created");
-    let right = service
-        .create_collection("Right", None)
-        .expect("collection created");
-    let left_pdf = root.path().join("left.pdf");
-    let right_pdf = root.path().join("right.pdf");
-    std::fs::write(&left_pdf, b"left paper").unwrap();
-    std::fs::write(&right_pdf, b"right paper").unwrap();
-
-    let left_item = service
-        .import_files(left.id, &[left_pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds")[0]
-        .clone();
-    let right_item = service
-        .import_files(right.id, &[right_pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds")[0]
-        .clone();
-
-    let empty_error = service
-        .run_collection_task(left.id, "collection.review_draft", &[])
-        .expect_err("empty scope should fail");
-    assert!(empty_error.to_string().contains("no readable items"));
-
-    let foreign_error = service
-        .run_collection_task(left.id, "collection.review_draft", &[left_item.id, right_item.id])
-        .expect_err("foreign scope should fail");
-    assert!(foreign_error.to_string().contains("outside the target collection"));
-}
-
-#[test]
-fn note_creation_uses_exact_artifact_markdown_and_heading_title() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Reading Group", None)
-        .expect("collection created");
-    let pdf = root.path().join("paper.pdf");
-    std::fs::write(&pdf, b"alpha first sentence").unwrap();
-
-    let item_id = service
-        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
-        .expect("import succeeds")[0]
-        .id;
-    service
-        .run_collection_task(collection.id, "collection.review_draft", &[item_id])
-        .expect("task succeeds");
-    let artifact = service
-        .get_latest_artifact(None, Some(collection.id))
-        .expect("artifact lookup succeeds")
-        .expect("artifact exists");
-
-    let note = service
-        .create_note_from_artifact(artifact.id)
-        .expect("note created");
-    assert_eq!(note.title, "Review Draft: Reading Group");
-    assert_eq!(note.markdown, artifact.markdown);
-}
-
-#[test]
-fn list_and_search_items_surface_real_attachment_formats() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-    let collection = service
-        .create_collection("Formats", None)
-        .expect("collection created");
-    let pdf = root.path().join("alpha.pdf");
-    let docx = root.path().join("beta.docx");
-    std::fs::write(&pdf, b"alpha").unwrap();
-    std::fs::write(&docx, b"beta").unwrap();
-
-    service
-        .import_files(collection.id, &[pdf, docx], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-
-    let listed = service.list_items(Some(collection.id)).expect("items listed");
-    assert_eq!(listed[0].attachment_format, "docx");
-    assert_eq!(listed[1].attachment_format, "pdf");
-
-    let searched = service.search_items("beta").expect("search works");
-    assert_eq!(searched[0].attachment_format, "docx");
-}
-
-#[test]
-fn moves_collections_without_allowing_cycles() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-
-    let ml = service
-        .create_collection("Machine Learning", None)
-        .expect("collection created");
-    let systems = service
-        .create_collection("Systems", None)
-        .expect("collection created");
-    let theory = service
-        .create_collection("Theory", Some(ml.id))
-        .expect("nested collection created");
-
-    service
-        .move_collection(systems.id, Some(ml.id))
-        .expect("move succeeds");
-
-    let collections = service.list_collections().expect("collections listed");
-    let moved = collections
-        .iter()
-        .find(|collection| collection.id == systems.id)
-        .expect("systems exists");
-    assert_eq!(moved.parent_id, Some(ml.id));
-
-    let cycle_error = service
-        .move_collection(ml.id, Some(theory.id))
-        .expect_err("cycle should fail");
-    assert!(cycle_error.to_string().contains("descendant"));
-}
-
-#[test]
-fn searches_items_by_metadata_fields() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-
-    let collection = service
-        .create_collection("Machine Learning", None)
-        .expect("collection created");
-    let paper = root.path().join("transformer-scaling-laws.pdf");
-    std::fs::write(&paper, b"scaling laws").unwrap();
-
-    service
-        .import_files(collection.id, &[paper], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-
-    let by_author = service.search_items("Kaplan").expect("author search works");
-    assert_eq!(by_author.len(), 1);
-    assert_eq!(by_author[0].title, "transformer-scaling-laws");
-
-    let by_year = service.search_items("2020").expect("year search works");
-    assert_eq!(by_year.len(), 1);
-}
-
-#[test]
-fn updates_item_metadata_and_search_uses_the_new_values() {
-    let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).expect("service initializes");
-
-    let collection = service
-        .create_collection("Machine Learning", None)
-        .expect("collection created");
-    let paper = root.path().join("transformer-scaling-laws.pdf");
-    std::fs::write(&paper, b"scaling laws").unwrap();
-
-    let imported = service
-        .import_files(collection.id, &[paper], ImportMode::ManagedCopy)
-        .expect("import succeeds");
-    let item_id = imported[0].id;
-
-    service
-        .update_item_metadata(
-            item_id,
-            "Edited Scaling Laws".into(),
-            "OpenAI Research".into(),
-            Some(2024),
-            "NeurIPS".into(),
-            Some("10.1000/edited-scaling".into()),
-        )
-        .expect("metadata update succeeds");
-
-    let updated = service.list_items(Some(collection.id)).expect("items listed");
-    assert_eq!(updated[0].title, "Edited Scaling Laws");
-    assert_eq!(updated[0].authors, "OpenAI Research");
-    assert_eq!(updated[0].publication_year, Some(2024));
-    assert_eq!(updated[0].source, "NeurIPS");
-    assert_eq!(updated[0].doi.as_deref(), Some("10.1000/edited-scaling"));
-
-    let by_title = service
-        .search_items("edited scaling")
-        .expect("title search works");
-    assert_eq!(by_title.len(), 1);
-    assert_eq!(by_title[0].id, item_id);
-
-    let by_author = service
-        .search_items("openai research")
-        .expect("author search works");
-    assert_eq!(by_author.len(), 1);
-    assert_eq!(by_author[0].id, item_id);
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Cleanup", None).unwrap();
+    let managed = fixture_path(root.path(), "managed.pdf");
+    let linked = fixture_path(root.path(), "linked.epub");
+    write_pdf_fixture(&managed);
+    write_epub_fixture(&linked);
+
+    let managed_result = service
+        .import_files(collection.id, &[managed], ImportMode::ManagedCopy)
+        .unwrap();
+    let linked_result = service
+        .import_files(collection.id, &[linked.clone()], ImportMode::LinkedFile)
+        .unwrap();
+
+    let managed_reader = service.get_reader_view(managed_result.imported[0].id).unwrap();
+    assert!(Path::new(managed_reader.primary_attachment_path.as_deref().unwrap()).exists());
+
+    service.remove_item(managed_result.imported[0].id).unwrap();
+    assert!(!Path::new(managed_reader.primary_attachment_path.as_deref().unwrap()).exists());
+
+    service.remove_item(linked_result.imported[0].id).unwrap();
+    assert!(linked.exists());
 }

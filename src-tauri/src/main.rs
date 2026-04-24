@@ -1,7 +1,8 @@
 use std::{fs, path::PathBuf};
 
 use app_core::service::{
-    Annotation, Collection, ImportMode, LibraryItem, LibraryService, ReaderView, ResearchNote, Tag,
+    Annotation, Collection, ImportBatchResult, ImportMode, LibraryItem, LibraryService, ReaderView,
+    ResearchNote, Tag,
 };
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, State};
@@ -229,7 +230,7 @@ fn search_items(
 fn import_files(
     state: State<'_, AppState>,
     input: ImportFilesInput,
-) -> Result<Vec<app_core::service::ImportedItem>, String> {
+) -> Result<ImportBatchResult, String> {
     let mode = match input.mode.as_str() {
         "managed_copy" => ImportMode::ManagedCopy,
         "linked_file" => ImportMode::LinkedFile,
@@ -245,7 +246,7 @@ fn import_files(
 fn import_citations(
     state: State<'_, AppState>,
     input: ImportCitationsInput,
-) -> Result<Vec<app_core::service::ImportedItem>, String> {
+) -> Result<ImportBatchResult, String> {
     let paths = input.paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
     service(&state)?
         .import_citations(input.collection_id, &paths)
