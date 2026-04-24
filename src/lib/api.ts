@@ -6,7 +6,7 @@ const isTauriRuntime = () =>
 
 async function createTauriApi(): Promise<AppApi> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open, save } = await import("@tauri-apps/plugin-dialog");
 
   return {
     listCollections: () => invoke("list_collections"),
@@ -52,6 +52,7 @@ async function createTauriApi(): Promise<AppApi> {
     },
     importFiles: (input) => invoke("import_files", { input }),
     importCitations: (input) => invoke("import_citations", { input }),
+    refreshAttachmentStatuses: () => invoke("refresh_attachment_statuses"),
     relinkAttachment: (input) => invoke("relink_attachment", { input }),
     updateItemMetadata: (input) => invoke("update_item_metadata", { input }),
     removeItem: (input) => invoke("remove_item", { input }),
@@ -75,11 +76,20 @@ async function createTauriApi(): Promise<AppApi> {
         collectionId: input.collection_id,
       }),
     listNotes: (collectionId) => invoke("list_notes", { collectionId }),
-    createNoteFromArtifact: (collectionId) =>
-      invoke("create_note_from_artifact", { collectionId }),
+    createNoteFromArtifact: (input) =>
+      invoke("create_note_from_artifact", { artifactId: input.artifact_id }),
     updateNote: (input) => invoke("update_note", { input }),
     exportNoteMarkdown: (noteId) => invoke("export_note_markdown", { noteId }),
     exportCitation: (itemId, format) => invoke("export_citation", { itemId, format }),
+    pickSavePath: async (input) => {
+      const selection = await save({
+        defaultPath: input.defaultPath,
+        filters: input.filters,
+      });
+      if (!selection || Array.isArray(selection)) return null;
+      return selection;
+    },
+    writeExportFile: (input) => invoke("write_export_file", { input }),
   };
 }
 

@@ -33,6 +33,8 @@ type MockState = {
   nextId: number;
 };
 
+const exportWrites: Array<{ path: string; contents: string }> = [];
+
 const initialState = (): MockState => ({
   collections: [
     { id: 1, name: "Machine Learning", parent_id: null },
@@ -44,6 +46,7 @@ const initialState = (): MockState => ({
       title: "Transformer Scaling Laws",
       collection_id: 1,
       primary_attachment_id: 101,
+      attachment_format: "pdf",
       attachment_status: "ready",
       authors: "Kaplan et al.",
       publication_year: 2020,
@@ -54,8 +57,8 @@ const initialState = (): MockState => ({
         "Overview. Scaling behavior emerges when model size, data volume, and compute are balanced. Methods. This paper discusses predictable loss curves and practical planning heuristics.",
       normalizedHtml:
         "<article><h1>Transformer Scaling Laws</h1><p>Scaling behavior emerges when model size, data volume, and compute are balanced.</p><h2>Methods</h2><p>This paper discusses predictable loss curves and practical planning heuristics.</p></article>",
-      attachmentFormat: "docx",
-      primaryAttachmentPath: "/mock/transformer-scaling-laws.docx",
+      attachmentFormat: "pdf",
+      primaryAttachmentPath: "/mock/transformer-scaling-laws.pdf",
       pageCount: 2,
     },
     {
@@ -63,6 +66,7 @@ const initialState = (): MockState => ({
       title: "Graph Neural Survey",
       collection_id: 1,
       primary_attachment_id: 102,
+      attachment_format: "docx",
       attachment_status: "ready",
       authors: "Wu et al.",
       publication_year: 2021,
@@ -82,6 +86,7 @@ const initialState = (): MockState => ({
       title: "Distributed Consensus Notes",
       collection_id: 2,
       primary_attachment_id: 103,
+      attachment_format: "epub",
       attachment_status: "missing",
       authors: "Ongaro & Ousterhout",
       publication_year: 2014,
@@ -121,6 +126,7 @@ const initialState = (): MockState => ({
       id: 700,
       item_id: 1,
       collection_id: 1,
+      scope_item_ids: null,
       kind: "item.summarize",
       status: "succeeded",
       output_markdown:
@@ -133,6 +139,7 @@ const initialState = (): MockState => ({
       task_id: 700,
       item_id: 1,
       collection_id: 1,
+      scope_item_ids: null,
       kind: "item.summarize",
       markdown:
         "# Summary: Transformer Scaling Laws\n\nCollection: Machine Learning\n\nScaling behavior emerges when model size, data volume, and compute are balanced.",
@@ -243,6 +250,7 @@ const buildLibraryItem = (item: MockItemDetails): LibraryItem => ({
   title: item.title,
   collection_id: item.collection_id,
   primary_attachment_id: item.primary_attachment_id,
+  attachment_format: item.attachmentFormat ?? item.attachment_format ?? "unknown",
   attachment_status: item.attachment_status,
   authors: item.authors,
   publication_year: item.publication_year,
@@ -251,8 +259,21 @@ const buildLibraryItem = (item: MockItemDetails): LibraryItem => ({
   tags: tagsForItem(item.id),
 });
 
-const collectionTaskOutput = (collectionId: number, kind: string) => {
-  const items = state.items.filter((item) => item.collection_id === collectionId);
+const extractHeading = (markdown: string) =>
+  markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("#"))
+    ?.replace(/^#+\s*/, "")
+    .trim();
+
+const noteTitleFromArtifact = (collectionId: number, markdown: string) =>
+  extractHeading(markdown) || `${collectionName(collectionId)} Note`;
+
+const collectionTaskOutput = (collectionId: number, kind: string, scopeItemIds: number[]) => {
+  const items = scopeItemIds
+    .map((itemId) => state.items.find((item) => item.id === itemId && item.collection_id === collectionId))
+    .filter((item): item is MockItemDetails => Boolean(item));
   const evidenceMap = items
     .map((item) => `- **${item.title}**: ${item.plainText.split(".").shift()?.trim() ?? item.title}`)
     .join("\n");
@@ -289,6 +310,7 @@ const itemTaskOutput = (item: MockItemDetails, kind: string) => {
 
 export function resetMockApi() {
   state = initialState();
+  exportWrites.length = 0;
 }
 
 export function replaceMockApiState(nextState: Partial<MockState>) {
@@ -296,6 +318,7 @@ export function replaceMockApiState(nextState: Partial<MockState>) {
     ...initialState(),
     ...nextState,
   };
+  exportWrites.length = 0;
 }
 
 export const mockApi: AppApi = {
@@ -406,8 +429,25 @@ export const mockApi: AppApi = {
     return [...citationSeedPaths];
   },
 
+  async pickSavePath(input) {
+    return `/exports/${input.defaultPath}`;
+  },
+
   async pickRelinkPath() {
     return "/relinked/distributed-consensus-notes.epub";
+  },
+
+  async refreshAttachmentStatuses() {
+    state.items = state.items.map((item) => {
+      if (
+        item.attachment_status === "missing" &&
+        item.primaryAttachmentPath &&
+        item.primaryAttachmentPath.startsWith("/relinked/")
+      ) {
+        return { ...item, attachment_status: "ready" };
+      }
+      return item;
+    });
   },
 
   async importFiles(input) {
@@ -421,6 +461,11 @@ export const mockApi: AppApi = {
         title,
         collection_id: input.collection_id,
         primary_attachment_id: attachmentId,
+        attachment_format: path.toLowerCase().endsWith(".docx")
+          ? "docx"
+          : path.toLowerCase().endsWith(".epub")
+            ? "epub"
+            : "pdf",
         attachment_status: "ready",
         authors: metadata.authors,
         publication_year: metadata.publication_year,
@@ -429,6 +474,12 @@ export const mockApi: AppApi = {
         tags: [],
         plainText: `${title} was imported into ${collectionName(input.collection_id)} and normalized for AI-assisted reading.`,
         normalizedHtml: normalizedHtmlFromTitle(title, input.mode),
+        attachmentFormat: path.toLowerCase().endsWith(".docx")
+          ? "docx"
+          : path.toLowerCase().endsWith(".epub")
+            ? "epub"
+            : "pdf",
+        primaryAttachmentPath: path,
       });
       return {
         id: itemId,
@@ -449,6 +500,7 @@ export const mockApi: AppApi = {
         title,
         collection_id: input.collection_id,
         primary_attachment_id: attachmentId,
+        attachment_format: "unknown",
         attachment_status: "citation_only",
         authors: metadata.authors,
         publication_year: metadata.publication_year,
@@ -457,6 +509,8 @@ export const mockApi: AppApi = {
         tags: [],
         plainText: `${title} was imported from a citation record and is ready for metadata-first triage.`,
         normalizedHtml: `<article><h1>${title}</h1><p>Citation-only import.</p><p>Add a source file later or use this entry for bibliography management.</p></article>`,
+        attachmentFormat: "unknown",
+        primaryAttachmentPath: null,
       });
       return {
         id: itemId,
@@ -472,6 +526,15 @@ export const mockApi: AppApi = {
       throw new Error(`Unknown attachment ${input.attachment_id}`);
     }
     item.attachment_status = "ready";
+    item.primaryAttachmentPath = input.replacement_path;
+    item.attachmentFormat = input.replacement_path.toLowerCase().endsWith(".epub")
+      ? "epub"
+      : input.replacement_path.toLowerCase().endsWith(".docx")
+        ? "docx"
+        : input.replacement_path.toLowerCase().endsWith(".pdf")
+          ? "pdf"
+          : "unknown";
+    item.attachment_format = item.attachmentFormat;
   },
 
   async updateItemMetadata(input) {
@@ -591,6 +654,7 @@ export const mockApi: AppApi = {
       id: state.nextId++,
       item_id: item.id,
       collection_id: item.collection_id,
+      scope_item_ids: null,
       kind: input.kind,
       status: "succeeded",
       output_markdown: output,
@@ -601,6 +665,7 @@ export const mockApi: AppApi = {
       task_id: task.id,
       item_id: item.id,
       collection_id: item.collection_id,
+      scope_item_ids: null,
       kind: input.kind,
       markdown: output,
     });
@@ -608,11 +673,21 @@ export const mockApi: AppApi = {
   },
 
   async runCollectionTask(input) {
-    const output = collectionTaskOutput(input.collection_id, input.kind);
+    if (input.scope_item_ids.length === 0) {
+      throw new Error("collection has no readable items");
+    }
+    const scopeItems = input.scope_item_ids.map((itemId) =>
+      state.items.find((entry) => entry.id === itemId && entry.collection_id === input.collection_id),
+    );
+    if (scopeItems.some((item) => !item)) {
+      throw new Error("scope contains items outside the target collection");
+    }
+    const output = collectionTaskOutput(input.collection_id, input.kind, input.scope_item_ids);
     const task = {
       id: state.nextId++,
       item_id: null,
       collection_id: input.collection_id,
+      scope_item_ids: [...input.scope_item_ids],
       kind: input.kind,
       status: "succeeded",
       output_markdown: output,
@@ -623,13 +698,8 @@ export const mockApi: AppApi = {
       task_id: task.id,
       item_id: null,
       collection_id: input.collection_id,
+      scope_item_ids: [...input.scope_item_ids],
       kind: input.kind,
-      markdown: output,
-    });
-    state.notes.unshift({
-      id: state.nextId++,
-      collection_id: input.collection_id,
-      title: noteTitle(input.collection_id),
       markdown: output,
     });
     return task;
@@ -641,7 +711,7 @@ export const mockApi: AppApi = {
         return task.item_id === input.item_id;
       }
       if (input.collection_id !== undefined) {
-        return task.collection_id === input.collection_id;
+        return task.collection_id === input.collection_id && task.item_id === null;
       }
       return true;
     });
@@ -654,7 +724,7 @@ export const mockApi: AppApi = {
           return artifact.item_id === input.item_id;
         }
         if (input.collection_id !== undefined) {
-          return artifact.collection_id === input.collection_id;
+          return artifact.collection_id === input.collection_id && artifact.item_id === null;
         }
         return false;
       }) ?? null
@@ -667,16 +737,15 @@ export const mockApi: AppApi = {
     );
   },
 
-  async createNoteFromArtifact(collectionId) {
-    const artifact =
-      state.artifacts.find((entry) => entry.collection_id === collectionId) ??
-      ({
-        markdown: `# ${noteTitle(collectionId)}\n\nNo artifact yet.`,
-      } as AIArtifact);
+  async createNoteFromArtifact(input) {
+    const artifact = state.artifacts.find((entry) => entry.id === input.artifact_id);
+    if (!artifact || artifact.collection_id === null) {
+      throw new Error(`Unknown artifact ${input.artifact_id}`);
+    }
     const note = {
       id: state.nextId++,
-      collection_id: collectionId,
-      title: noteTitle(collectionId),
+      collection_id: artifact.collection_id,
+      title: noteTitleFromArtifact(artifact.collection_id, artifact.markdown),
       markdown: artifact.markdown,
     };
     state.notes.unshift(note);
@@ -711,5 +780,9 @@ export const mockApi: AppApi = {
       return `TY  - JOUR\nTI  - ${item.title}\nAU  - ${item.authors}\nJO  - ${item.source}\nPY  - ${item.publication_year ?? 2026}\nDO  - ${item.doi ?? ""}\nER  -`;
     }
     return `APA 7 · ${item.authors}. (${item.publication_year ?? item.id}). ${item.title}. ${item.source}.`;
+  },
+
+  async writeExportFile(input) {
+    exportWrites.push(input);
   },
 };

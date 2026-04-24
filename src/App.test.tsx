@@ -156,7 +156,7 @@ describe("App workspace", () => {
     expect(
       await screen.findByText(/# Review Draft: Machine Learning/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Export Markdown" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save as Research Note" })).toBeInTheDocument();
   });
 
   it("imports files into the current collection from the import action", async () => {
@@ -644,7 +644,7 @@ describe("App workspace", () => {
     expect(await screen.findByDisplayValue(/# Review Draft: Machine Learning/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Export Markdown" }));
-    expect(await screen.findByText(/Exported Markdown for # Review Draft: Machine Learning/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Saved Markdown to \/exports\/Review Draft Machine Learning\.md/i)).toBeInTheDocument();
   });
 
   it("shows collection review scope and included papers in the AI workspace", async () => {
@@ -725,6 +725,43 @@ describe("App workspace", () => {
 
     expect(await screen.findByText(/Completed collection\.theme_map for Machine Learning/i)).toBeInTheDocument();
     expect(screen.getAllByText(/collection\.theme_map/i).length).toBeGreaterThan(1);
+  });
+
+  it("marks the latest collection draft stale when the visible scope changes", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.click(screen.getByRole("button", { name: "Generate Review Draft" }));
+    await user.click(screen.getByRole("button", { name: "Filter tag Scaling" }));
+
+    expect(await screen.findByText(/Stale Draft/i)).toBeInTheDocument();
+    expect(screen.getByText(/generated from 2 papers, but the current view shows 1/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save as Research Note" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Run Again collection\.review_draft/i })).toBeEnabled();
+  });
+
+  it("reruns collection history against the current visible scope", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.click(screen.getByRole("button", { name: "Theme Map" }));
+    await user.click(screen.getByRole("button", { name: "Filter tag Scaling" }));
+    await user.click(await screen.findByRole("button", { name: /Run Again collection\.theme_map/i }));
+
+    expect(await screen.findByText(/Completed collection\.theme_map for Machine Learning/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Theme clusters across 1 visible papers\./i).length).toBeGreaterThan(0);
   });
 
   it("creates a new collection from the sidebar", async () => {
@@ -896,6 +933,7 @@ describe("App workspace", () => {
 
     expect(await screen.findByText(/Latest Citation/i)).toBeInTheDocument();
     expect(screen.getByText(/APA 7 · Kaplan et al\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Saved APA 7 citation to \/exports\/Transformer Scaling Laws-apa7\.txt/i)).toBeInTheDocument();
   });
 
   it("shows author and year metadata in the reader panel and supports author search", async () => {
@@ -938,6 +976,39 @@ describe("App workspace", () => {
     expect(screen.getByText(/^ready · PDF$/i)).toBeInTheDocument();
   });
 
+  it("renders the real attachment format instead of inferring it from the title", async () => {
+    replaceMockApiState({
+      items: [
+        {
+          id: 11,
+          title: "Untitled Import",
+          collection_id: 1,
+          primary_attachment_id: 301,
+          attachment_format: "docx",
+          attachment_status: "ready",
+          authors: "Reader Team",
+          publication_year: 2026,
+          source: "Paper Reader",
+          doi: null,
+          tags: [],
+          plainText: "Docx content",
+          normalizedHtml: "<article><h1>Untitled Import</h1><p>Docx content</p></article>",
+          attachmentFormat: "docx",
+          primaryAttachmentPath: "/mock/untitled-import.docx",
+        } as never,
+      ],
+      annotations: [],
+      tasks: [],
+      artifacts: [],
+      notes: [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText(/^DOCX$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^ready · DOCX$/i)).toBeInTheDocument();
+  });
+
   it("edits metadata for the active paper from the reader panel", async () => {
     const user = userEvent.setup();
 
@@ -978,9 +1049,11 @@ describe("App workspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Export BibTeX" }));
     expect(await screen.findByText(/@article\{/i)).toBeInTheDocument();
+    expect(screen.getByText(/Saved BIBTEX to \/exports\/Transformer Scaling Laws\.bib/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Export RIS" }));
     expect(await screen.findByText(/TY\s*-\s*JOUR/i)).toBeInTheDocument();
+    expect(screen.getByText(/Saved RIS to \/exports\/Transformer Scaling Laws\.ris/i)).toBeInTheDocument();
   });
 
   it("imports citation records into the current collection", async () => {

@@ -6,6 +6,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,6 +51,7 @@ pub struct LibraryItem {
     pub title: String,
     pub collection_id: i64,
     pub primary_attachment_id: i64,
+    pub attachment_format: String,
     pub attachment_status: String,
     pub authors: String,
     pub publication_year: Option<i64>,
@@ -72,6 +74,7 @@ pub struct AITask {
     pub id: i64,
     pub item_id: Option<i64>,
     pub collection_id: Option<i64>,
+    pub scope_item_ids: Option<Vec<i64>>,
     pub kind: String,
     pub status: String,
     pub output_markdown: String,
@@ -83,6 +86,7 @@ pub struct AIArtifact {
     pub task_id: i64,
     pub item_id: Option<i64>,
     pub collection_id: Option<i64>,
+    pub scope_item_ids: Option<Vec<i64>>,
     pub kind: String,
     pub markdown: String,
 }
@@ -509,7 +513,7 @@ impl LibraryService {
     pub fn list_items(&self, collection_id: Option<i64>) -> Result<Vec<LibraryItem>> {
         let conn = self.connect()?;
         let mut query = "
-            SELECT i.id, i.title, i.collection_id, a.id, a.status, i.authors, i.publication_year, i.source, i.doi
+            SELECT i.id, i.title, i.collection_id, a.id, a.path, a.status, i.authors, i.publication_year, i.source, i.doi
             FROM items i
             JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
         "
@@ -632,7 +636,7 @@ impl LibraryService {
         let like_query = format!("%{}%", query.to_lowercase());
         let mut statement = conn.prepare(
             "
-            SELECT DISTINCT i.id, i.title, i.collection_id, a.id, a.status, i.authors, i.publication_year, i.source, i.doi
+            SELECT DISTINCT i.id, i.title, i.collection_id, a.id, a.path, a.status, i.authors, i.publication_year, i.source, i.doi
             FROM items i
             JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
             LEFT JOIN extracted_content e ON e.item_id = i.id
@@ -796,6 +800,7 @@ impl LibraryService {
             id: task_id,
             item_id: Some(item_id),
             collection_id: Some(collection_id),
+            scope_item_ids: None,
             kind: kind.into(),
             status: "succeeded".into(),
             output_markdown: output,
@@ -806,57 +811,42 @@ impl LibraryService {
         self.run_item_task(item_id, "item.summarize")
     }
 
-    pub fn create_note_from_latest_collection_artifact(
-        &self,
-        collection_id: i64,
-    ) -> Result<ResearchNote> {
+    pub fn create_note_from_artifact(&self, artifact_id: i64) -> Result<ResearchNote> {
         let conn = self.connect()?;
-        let collection_name: String = conn.query_row(
-            "SELECT name FROM collections WHERE id = ?1",
-            [collection_id],
-            |row| row.get(0),
-        )?;
-
-        let mut statement = conn.prepare(
+        let (collection_id, collection_name, markdown): (i64, String, String) = conn.query_row(
             "
-            SELECT i.title, a.markdown
+            SELECT a.collection_id, c.name, a.markdown
             FROM ai_artifacts a
-            JOIN items i ON i.id = a.item_id
-            WHERE a.collection_id = ?1 AND a.kind = 'item.summarize'
-            ORDER BY a.id DESC
+            JOIN collections c ON c.id = a.collection_id
+            WHERE a.id = ?1
             ",
+            [artifact_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        let artifact_rows = statement.query_map([collection_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-
-        let mut sections = Vec::new();
-        for artifact in artifact_rows {
-            let (title, markdown) = artifact?;
-            sections.push(format!("## {title}\n\n{markdown}"));
-        }
-        if sections.is_empty() {
-            return Err(anyhow!("no collection artifacts available"));
-        }
-
-        let markdown = format!(
-            "# Research Note: {collection_name}\n\n{}",
-            sections.join("\n\n")
-        );
+        let title = extract_markdown_heading(&markdown)
+            .unwrap_or_else(|| format!("{collection_name} Note"));
         conn.execute(
             "INSERT INTO research_notes(collection_id, title, markdown) VALUES (?1, ?2, ?3)",
-            params![collection_id, format!("{collection_name} Review"), markdown],
+            params![collection_id, title, markdown],
         )?;
 
         Ok(ResearchNote {
             id: conn.last_insert_rowid(),
             collection_id,
-            title: format!("{collection_name} Review"),
+            title,
             markdown,
         })
     }
 
-    pub fn run_collection_task(&self, collection_id: i64, kind: &str) -> Result<AITask> {
+    pub fn run_collection_task(
+        &self,
+        collection_id: i64,
+        kind: &str,
+        scope_item_ids: &[i64],
+    ) -> Result<AITask> {
+        if scope_item_ids.is_empty() {
+            return Err(anyhow!("collection has no readable items"));
+        }
         let mut conn = self.connect()?;
         let collection_name: String = conn.query_row(
             "SELECT name FROM collections WHERE id = ?1",
@@ -864,30 +854,30 @@ impl LibraryService {
             |row| row.get(0),
         )?;
         let sections = {
-            let mut statement = conn.prepare(
-                "
-                SELECT i.title, e.plain_text
-                FROM items i
-                JOIN extracted_content e ON e.item_id = i.id
-                WHERE i.collection_id = ?1
-                ORDER BY i.id ASC
-                ",
-            )?;
-            let rows = statement.query_map([collection_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
-
             let mut sections = Vec::new();
-            for row in rows {
-                let (title, plain_text) = row?;
+            for item_id in scope_item_ids {
+                let row = conn
+                    .query_row(
+                        "
+                        SELECT i.title, e.plain_text
+                        FROM items i
+                        JOIN extracted_content e ON e.item_id = i.id
+                        WHERE i.id = ?1 AND i.collection_id = ?2
+                        ",
+                        params![item_id, collection_id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()?;
+                let Some((title, plain_text)) = row else {
+                    return Err(anyhow!(
+                        "scope contains items outside the target collection"
+                    ));
+                };
                 let key_sentence = plain_text.lines().next().unwrap_or("No content extracted.");
                 sections.push(format!("- **{title}**: {key_sentence}"));
             }
             sections
         };
-        if sections.is_empty() {
-            return Err(anyhow!("collection has no readable items"));
-        }
 
         let evidence_map = sections.join("\n");
         let markdown = match kind {
@@ -910,16 +900,17 @@ impl LibraryService {
         };
 
         let tx = conn.transaction()?;
+        let scope_json = serde_json::to_string(scope_item_ids)?;
         tx.execute(
-            "INSERT INTO ai_tasks(collection_id, kind, status, output_markdown)
-             VALUES (?1, ?2, 'succeeded', ?3)",
-            params![collection_id, kind, markdown],
+            "INSERT INTO ai_tasks(collection_id, kind, status, output_markdown, scope_item_ids)
+             VALUES (?1, ?2, 'succeeded', ?3, ?4)",
+            params![collection_id, kind, markdown, scope_json],
         )?;
         let task_id = tx.last_insert_rowid();
         tx.execute(
-            "INSERT INTO ai_artifacts(task_id, collection_id, kind, markdown)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![task_id, collection_id, kind, markdown],
+            "INSERT INTO ai_artifacts(task_id, collection_id, kind, markdown, scope_item_ids)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![task_id, collection_id, kind, markdown, scope_json],
         )?;
         tx.commit()?;
 
@@ -927,6 +918,7 @@ impl LibraryService {
             id: task_id,
             item_id: None,
             collection_id: Some(collection_id),
+            scope_item_ids: Some(scope_item_ids.to_vec()),
             kind: kind.into(),
             status: "succeeded".into(),
             output_markdown: markdown,
@@ -934,7 +926,12 @@ impl LibraryService {
     }
 
     pub fn run_collection_review_draft(&self, collection_id: i64) -> Result<AITask> {
-        self.run_collection_task(collection_id, "collection.review_draft")
+        let item_ids = self
+            .list_items(Some(collection_id))?
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        self.run_collection_task(collection_id, "collection.review_draft", &item_ids)
     }
 
     pub fn list_notes(&self, collection_id: Option<i64>) -> Result<Vec<ResearchNote>> {
@@ -1017,12 +1014,13 @@ impl LibraryService {
         collection_id: Option<i64>,
     ) -> Result<Vec<AITask>> {
         let conn = self.connect()?;
-        let mut query = "SELECT id, item_id, collection_id, kind, status, output_markdown FROM ai_tasks"
-            .to_string();
+        let mut query =
+            "SELECT id, item_id, collection_id, scope_item_ids, kind, status, output_markdown FROM ai_tasks"
+                .to_string();
         match (item_id, collection_id) {
             (Some(_), Some(_)) => query.push_str(" WHERE item_id = ?1 AND collection_id = ?2"),
             (Some(_), None) => query.push_str(" WHERE item_id = ?1"),
-            (None, Some(_)) => query.push_str(" WHERE collection_id = ?1"),
+            (None, Some(_)) => query.push_str(" WHERE collection_id = ?1 AND item_id IS NULL"),
             (None, None) => {}
         }
         query.push_str(" ORDER BY id DESC");
@@ -1050,19 +1048,19 @@ impl LibraryService {
         let conn = self.connect()?;
         let query = match (item_id, collection_id) {
             (Some(_), Some(_)) => {
-                "SELECT id, task_id, item_id, collection_id, kind, markdown
+                "SELECT id, task_id, item_id, collection_id, scope_item_ids, kind, markdown
                  FROM ai_artifacts WHERE item_id = ?1 AND collection_id = ?2 ORDER BY id DESC LIMIT 1"
             }
             (Some(_), None) => {
-                "SELECT id, task_id, item_id, collection_id, kind, markdown
+                "SELECT id, task_id, item_id, collection_id, scope_item_ids, kind, markdown
                  FROM ai_artifacts WHERE item_id = ?1 ORDER BY id DESC LIMIT 1"
             }
             (None, Some(_)) => {
-                "SELECT id, task_id, item_id, collection_id, kind, markdown
-                 FROM ai_artifacts WHERE collection_id = ?1 ORDER BY id DESC LIMIT 1"
+                "SELECT id, task_id, item_id, collection_id, scope_item_ids, kind, markdown
+                 FROM ai_artifacts WHERE collection_id = ?1 AND item_id IS NULL ORDER BY id DESC LIMIT 1"
             }
             (None, None) => {
-                "SELECT id, task_id, item_id, collection_id, kind, markdown
+                "SELECT id, task_id, item_id, collection_id, scope_item_ids, kind, markdown
                  FROM ai_artifacts ORDER BY id DESC LIMIT 1"
             }
         };
@@ -1205,7 +1203,8 @@ impl LibraryService {
                 collection_id INTEGER NULL REFERENCES collections(id),
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
-                output_markdown TEXT NOT NULL
+                output_markdown TEXT NOT NULL,
+                scope_item_ids TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS ai_artifacts(
@@ -1214,7 +1213,8 @@ impl LibraryService {
                 item_id INTEGER NULL REFERENCES items(id),
                 collection_id INTEGER NULL REFERENCES collections(id),
                 kind TEXT NOT NULL,
-                markdown TEXT NOT NULL
+                markdown TEXT NOT NULL,
+                scope_item_ids TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS research_notes(
@@ -1235,21 +1235,25 @@ impl LibraryService {
         ensure_column(&conn, "items", "publication_year", "INTEGER NULL")?;
         ensure_column(&conn, "items", "source", "TEXT NOT NULL DEFAULT ''")?;
         ensure_column(&conn, "items", "doi", "TEXT NULL")?;
+        ensure_column(&conn, "ai_tasks", "scope_item_ids", "TEXT NULL")?;
+        ensure_column(&conn, "ai_artifacts", "scope_item_ids", "TEXT NULL")?;
         Ok(())
     }
 }
 
 fn map_library_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
+    let attachment_path: String = row.get(4)?;
     Ok(LibraryItem {
         id: row.get(0)?,
         title: row.get(1)?,
         collection_id: row.get(2)?,
         primary_attachment_id: row.get(3)?,
-        attachment_status: row.get(4)?,
-        authors: row.get(5)?,
-        publication_year: row.get(6)?,
-        source: row.get(7)?,
-        doi: row.get(8)?,
+        attachment_format: infer_attachment_format(&attachment_path).to_string(),
+        attachment_status: row.get(5)?,
+        authors: row.get(6)?,
+        publication_year: row.get(7)?,
+        source: row.get(8)?,
+        doi: row.get(9)?,
         tags: Vec::new(),
     })
 }
@@ -1281,25 +1285,47 @@ fn map_research_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResearchNote> 
 }
 
 fn map_ai_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AITask> {
+    let raw_scope: Option<String> = row.get(3)?;
+    let scope_item_ids = parse_scope_item_ids(raw_scope).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })?;
     Ok(AITask {
         id: row.get(0)?,
         item_id: row.get(1)?,
         collection_id: row.get(2)?,
-        kind: row.get(3)?,
-        status: row.get(4)?,
-        output_markdown: row.get(5)?,
+        scope_item_ids,
+        kind: row.get(4)?,
+        status: row.get(5)?,
+        output_markdown: row.get(6)?,
     })
 }
 
 fn map_ai_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<AIArtifact> {
+    let raw_scope: Option<String> = row.get(4)?;
+    let scope_item_ids = parse_scope_item_ids(raw_scope).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })?;
     Ok(AIArtifact {
         id: row.get(0)?,
         task_id: row.get(1)?,
         item_id: row.get(2)?,
         collection_id: row.get(3)?,
-        kind: row.get(4)?,
-        markdown: row.get(5)?,
+        scope_item_ids,
+        kind: row.get(5)?,
+        markdown: row.get(6)?,
     })
+}
+
+fn parse_scope_item_ids(value: Option<String>) -> Result<Option<Vec<i64>>, serde_json::Error> {
+    value.map(|raw| serde_json::from_str(&raw)).transpose()
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {
@@ -1332,6 +1358,15 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn extract_markdown_heading(markdown: &str) -> Option<String> {
+    markdown
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('#'))
+        .map(|line| line.trim_start_matches('#').trim().to_string())
+        .filter(|line| !line.is_empty())
 }
 
 fn infer_metadata(title: &str) -> InferredMetadata {

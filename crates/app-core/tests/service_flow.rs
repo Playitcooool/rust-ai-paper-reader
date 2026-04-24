@@ -69,10 +69,14 @@ fn imports_files_creates_items_and_supports_search_annotations_and_notes() {
         .expect("summary task created");
     assert_eq!(task.status, "succeeded");
 
+    let artifact = service
+        .get_latest_artifact(Some(search[0].id), None)
+        .expect("artifact lookup succeeds")
+        .expect("artifact exists");
     let note = service
-        .create_note_from_latest_collection_artifact(collection.id)
+        .create_note_from_artifact(artifact.id)
         .expect("note created");
-    assert!(note.markdown.contains("Machine Learning"));
+    assert_eq!(note.markdown, artifact.markdown);
 }
 
 #[test]
@@ -138,8 +142,12 @@ fn generates_collection_review_reader_views_and_markdown_exports() {
         .expect("collection review");
     assert_eq!(review.kind, "collection.review_draft");
 
+    let artifact = service
+        .get_latest_artifact(None, Some(collection.id))
+        .expect("artifact lookup succeeds")
+        .expect("artifact exists");
     let note = service
-        .create_note_from_latest_collection_artifact(collection.id)
+        .create_note_from_artifact(artifact.id)
         .expect("note created");
     let exported = service
         .export_note_markdown(note.id)
@@ -175,16 +183,22 @@ fn generates_task_specific_collection_outputs() {
     service
         .import_files(collection.id, &[pdf, docx], ImportMode::ManagedCopy)
         .expect("import succeeds");
+    let scope = service
+        .list_items(Some(collection.id))
+        .expect("items listed")
+        .into_iter()
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
 
     let theme_map = service
-        .run_collection_task(collection.id, "collection.theme_map")
+        .run_collection_task(collection.id, "collection.theme_map", &scope)
         .expect("theme map succeeds");
     assert_eq!(theme_map.kind, "collection.theme_map");
     assert!(theme_map.output_markdown.contains("# Theme Map: Reading Group"));
     assert!(theme_map.output_markdown.contains("## Themes"));
 
     let compare_methods = service
-        .run_collection_task(collection.id, "collection.compare_methods")
+        .run_collection_task(collection.id, "collection.compare_methods", &scope)
         .expect("comparison succeeds");
     assert_eq!(compare_methods.kind, "collection.compare_methods");
     assert!(
@@ -407,6 +421,7 @@ fn imports_citation_records_and_exports_structured_formats() {
 
     let items = service.list_items(Some(collection.id)).expect("items listed");
     assert_eq!(items[0].attachment_status, "citation_only");
+    assert_eq!(items[0].attachment_format, "unknown");
 
     let bibtex = service
         .export_citation(imported[0].id, "bibtex")
@@ -417,6 +432,127 @@ fn imports_citation_records_and_exports_structured_formats() {
         .export_citation(imported[0].id, "ris")
         .expect("ris exported");
     assert!(ris.contains("TY  - JOUR"));
+}
+
+#[test]
+fn collection_tasks_persist_scope_metadata_in_passed_order() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let collection = service
+        .create_collection("Reading Group", None)
+        .expect("collection created");
+    let first = root.path().join("alpha.pdf");
+    let second = root.path().join("beta.docx");
+    std::fs::write(&first, b"alpha first sentence").unwrap();
+    std::fs::write(&second, b"beta first sentence").unwrap();
+
+    service
+        .import_files(collection.id, &[first, second], ImportMode::ManagedCopy)
+        .expect("import succeeds");
+    let listed = service.list_items(Some(collection.id)).expect("items listed");
+    let scope = vec![listed[1].id, listed[0].id];
+
+    let task = service
+        .run_collection_task(collection.id, "collection.review_draft", &scope)
+        .expect("task succeeds");
+
+    assert_eq!(task.scope_item_ids.as_deref(), Some(scope.as_slice()));
+    let artifact = service
+        .get_latest_artifact(None, Some(collection.id))
+        .expect("artifact lookup succeeds")
+        .expect("artifact exists");
+    assert_eq!(artifact.scope_item_ids.as_deref(), Some(scope.as_slice()));
+    assert!(artifact.markdown.contains("**alpha**"));
+    assert!(artifact.markdown.contains("**beta**"));
+    assert!(artifact.markdown.find("**alpha**") < artifact.markdown.find("**beta**"));
+}
+
+#[test]
+fn collection_tasks_reject_empty_or_foreign_scope_ids() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let left = service
+        .create_collection("Left", None)
+        .expect("collection created");
+    let right = service
+        .create_collection("Right", None)
+        .expect("collection created");
+    let left_pdf = root.path().join("left.pdf");
+    let right_pdf = root.path().join("right.pdf");
+    std::fs::write(&left_pdf, b"left paper").unwrap();
+    std::fs::write(&right_pdf, b"right paper").unwrap();
+
+    let left_item = service
+        .import_files(left.id, &[left_pdf], ImportMode::ManagedCopy)
+        .expect("import succeeds")[0]
+        .clone();
+    let right_item = service
+        .import_files(right.id, &[right_pdf], ImportMode::ManagedCopy)
+        .expect("import succeeds")[0]
+        .clone();
+
+    let empty_error = service
+        .run_collection_task(left.id, "collection.review_draft", &[])
+        .expect_err("empty scope should fail");
+    assert!(empty_error.to_string().contains("no readable items"));
+
+    let foreign_error = service
+        .run_collection_task(left.id, "collection.review_draft", &[left_item.id, right_item.id])
+        .expect_err("foreign scope should fail");
+    assert!(foreign_error.to_string().contains("outside the target collection"));
+}
+
+#[test]
+fn note_creation_uses_exact_artifact_markdown_and_heading_title() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let collection = service
+        .create_collection("Reading Group", None)
+        .expect("collection created");
+    let pdf = root.path().join("paper.pdf");
+    std::fs::write(&pdf, b"alpha first sentence").unwrap();
+
+    let item_id = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .expect("import succeeds")[0]
+        .id;
+    service
+        .run_collection_task(collection.id, "collection.review_draft", &[item_id])
+        .expect("task succeeds");
+    let artifact = service
+        .get_latest_artifact(None, Some(collection.id))
+        .expect("artifact lookup succeeds")
+        .expect("artifact exists");
+
+    let note = service
+        .create_note_from_artifact(artifact.id)
+        .expect("note created");
+    assert_eq!(note.title, "Review Draft: Reading Group");
+    assert_eq!(note.markdown, artifact.markdown);
+}
+
+#[test]
+fn list_and_search_items_surface_real_attachment_formats() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).expect("service initializes");
+    let collection = service
+        .create_collection("Formats", None)
+        .expect("collection created");
+    let pdf = root.path().join("alpha.pdf");
+    let docx = root.path().join("beta.docx");
+    std::fs::write(&pdf, b"alpha").unwrap();
+    std::fs::write(&docx, b"beta").unwrap();
+
+    service
+        .import_files(collection.id, &[pdf, docx], ImportMode::ManagedCopy)
+        .expect("import succeeds");
+
+    let listed = service.list_items(Some(collection.id)).expect("items listed");
+    assert_eq!(listed[0].attachment_format, "docx");
+    assert_eq!(listed[1].attachment_format, "pdf");
+
+    let searched = service.search_items("beta").expect("search works");
+    assert_eq!(searched[0].attachment_format, "docx");
 }
 
 #[test]

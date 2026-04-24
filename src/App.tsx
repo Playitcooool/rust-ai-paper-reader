@@ -8,6 +8,7 @@ import type {
   AITask,
   Annotation,
   AnnotationFilter,
+  AttachmentFormat,
   CitationFormat,
   Collection,
   ImportMode,
@@ -102,11 +103,23 @@ const noteHeading = (note: ResearchNote) =>
     .find((line) => line.startsWith("#"))
     ?.replace(/^#+\s*/, "") ?? note.title;
 
-const formatHint = (title: string) => {
-  if (title.toLowerCase().endsWith("notes")) return "EPUB";
-  if (title.toLowerCase().includes("survey")) return "DOCX";
-  return "PDF";
+const attachmentFormatLabel = (format: AttachmentFormat) => format.toUpperCase();
+
+const sanitizeFilename = (value: string) =>
+  value
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const filenameStem = (value: string, fallback: string) => {
+  const sanitized = sanitizeFilename(value);
+  return sanitized.length > 0 ? sanitized : fallback;
 };
+
+const scopeMatches = (left: number[] | null, right: number[]) =>
+  left !== null &&
+  left.length === right.length &&
+  left.every((itemId, index) => itemId === right[index]);
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -453,6 +466,7 @@ export default function App() {
 
     async function loadItems() {
       const api = await getApi();
+      await api.refreshAttachmentStatuses();
       const loadedItems =
         search.trim().length > 0
           ? await api.searchItems(search.trim())
@@ -548,6 +562,7 @@ export default function App() {
 
     async function loadReaderContext() {
       const api = await getApi();
+      await api.refreshAttachmentStatuses();
       const [view, itemAnnotations, artifact, taskRuns] = await Promise.all([
         api.getReaderView(itemId),
         api.listAnnotations(itemId),
@@ -612,6 +627,7 @@ export default function App() {
     () => sortItems(filterItemsByAttachment(items, attachmentFilter), itemSort),
     [attachmentFilter, itemSort, items],
   );
+  const visibleScopeItemIds = useMemo(() => visibleItems.map((item) => item.id), [visibleItems]);
   const isPdfReader = readerView?.reader_kind === "pdf";
   const readerPages = useMemo(() => readerPagesFromView(readerView), [readerView]);
   const readerOutline = useMemo(() => readerOutlineFromPages(readerPages), [readerPages]);
@@ -699,6 +715,18 @@ export default function App() {
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
   const readerState = readerStateCopy(activePaper, visibleItems.length);
   const paperActionsEnabled = canRunReaderActions(activePaper);
+  const isCollectionDraftStale = Boolean(
+    collectionArtifact &&
+      collectionArtifact.collection_id === activeCollection?.id &&
+      !scopeMatches(collectionArtifact.scope_item_ids, visibleScopeItemIds),
+  );
+  const staleScopeCounts =
+    collectionArtifact?.scope_item_ids && isCollectionDraftStale
+      ? {
+          previous: collectionArtifact.scope_item_ids.length,
+          current: visibleScopeItemIds.length,
+        }
+      : null;
   useEffect(() => {
     setIsEditingMetadata(false);
     setLatestCitation("");
@@ -778,6 +806,7 @@ export default function App() {
 
   async function refreshItemsForCollection(collectionId: number, nextActiveId?: number) {
     const api = await getApi();
+    await api.refreshAttachmentStatuses();
     const loadedItems =
       search.trim().length > 0
         ? await api.searchItems(search.trim())
@@ -905,17 +934,30 @@ export default function App() {
 
   async function handleCollectionTask(kind: string) {
     if (!activeCollection) return;
+    if (visibleScopeItemIds.length === 0) {
+      setStatusMessage("No visible papers are available for this collection task.");
+      return;
+    }
     const api = await getApi();
-    await api.runCollectionTask({ collection_id: activeCollection.id, kind });
-    const [artifact, collectionNotes, taskRuns] = await Promise.all([
-      api.getArtifact({ collection_id: activeCollection.id }),
-      api.listNotes(activeCollection.id),
-      api.listTaskRuns({ collection_id: activeCollection.id }),
-    ]);
-    setCollectionArtifact(artifact);
-    setCollectionTaskRuns(taskRuns);
-    setNotes(collectionNotes);
-    setStatusMessage(`Completed ${kind} for ${activeCollection.name}.`);
+    try {
+      await api.runCollectionTask({
+        collection_id: activeCollection.id,
+        kind,
+        scope_item_ids: visibleScopeItemIds,
+      });
+      const [artifact, collectionNotes, taskRuns] = await Promise.all([
+        api.getArtifact({ collection_id: activeCollection.id }),
+        api.listNotes(activeCollection.id),
+        api.listTaskRuns({ collection_id: activeCollection.id }),
+      ]);
+      setCollectionArtifact(artifact);
+      setCollectionTaskRuns(taskRuns);
+      setNotes(collectionNotes);
+      setStatusMessage(`Completed ${kind} for ${activeCollection.name}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Collection task failed.";
+      setStatusMessage(message);
+    }
   }
 
   async function handleCreateAnnotation() {
@@ -1062,7 +1104,17 @@ export default function App() {
     if (!note) return;
     const api = await getApi();
     const markdown = await api.exportNoteMarkdown(note.id);
-    setStatusMessage(`Exported Markdown for # ${noteHeading(note)} (${markdown.length} chars).`);
+    const heading = noteHeading(note);
+    const path = await api.pickSavePath({
+      defaultPath: `${filenameStem(heading, "research-note")}.md`,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (!path) {
+      setStatusMessage("Markdown export cancelled.");
+      return;
+    }
+    await api.writeExportFile({ path, contents: markdown });
+    setStatusMessage(`Saved Markdown to ${path}.`);
   }
 
   async function handleExportCitation(format: CitationFormat = "apa7") {
@@ -1070,14 +1122,32 @@ export default function App() {
     const api = await getApi();
     const citation = await api.exportCitation(activePaper.id, format);
     setLatestCitation(citation);
-    const label = format === "apa7" ? "citation" : format.toUpperCase();
-    setStatusMessage(`Exported ${label} for ${activePaper.title}.`);
+    const defaultPath =
+      format === "bibtex"
+        ? `${filenameStem(activePaper.title, "citation")}.bib`
+        : format === "ris"
+          ? `${filenameStem(activePaper.title, "citation")}.ris`
+          : `${filenameStem(activePaper.title, "citation")}-apa7.txt`;
+    const filters =
+      format === "bibtex"
+        ? [{ name: "BibTeX", extensions: ["bib"] }]
+        : format === "ris"
+          ? [{ name: "RIS", extensions: ["ris"] }]
+          : [{ name: "Text", extensions: ["txt"] }];
+    const path = await api.pickSavePath({ defaultPath, filters });
+    if (!path) {
+      setStatusMessage("Citation export cancelled.");
+      return;
+    }
+    await api.writeExportFile({ path, contents: citation });
+    const label = format === "apa7" ? "APA 7 citation" : format.toUpperCase();
+    setStatusMessage(`Saved ${label} to ${path}.`);
   }
 
   async function handleCreateResearchNote() {
-    if (!activeCollection) return;
+    if (!activeCollection || !collectionArtifact) return;
     const api = await getApi();
-    const note = await api.createNoteFromArtifact(activeCollection.id);
+    const note = await api.createNoteFromArtifact({ artifact_id: collectionArtifact.id });
     const collectionNotes = await api.listNotes(activeCollection.id);
     setNotes(collectionNotes);
     setActiveNoteId(note.id);
@@ -1806,7 +1876,7 @@ export default function App() {
                   {paper.tags.length > 0 ? (
                     <span className="paper-tag-row">{paper.tags.join(" · ")}</span>
                   ) : null}
-                  <small>{formatHint(paper.title)}</small>
+                  <small>{attachmentFormatLabel(paper.attachment_format)}</small>
                 </button>
               ))}
             </div>
@@ -1856,7 +1926,7 @@ export default function App() {
               <h2>{activePaper?.title ?? "No paper selected"}</h2>
               <p className="secondary-copy">{activePaper ? formatItemMetadata(activePaper) : "No metadata"}</p>
               <p className="secondary-copy">
-                {activeCollection?.name ?? "No collection"} · {activePaper?.attachment_status ?? "idle"} · {activePaper ? formatHint(activePaper.title) : "Document"}
+                {activeCollection?.name ?? "No collection"} · {activePaper?.attachment_status ?? "idle"} · {activePaper ? attachmentFormatLabel(activePaper.attachment_format) : "Document"}
               </p>
             </div>
             <div className="reader-actions">
@@ -2180,7 +2250,7 @@ export default function App() {
                   </div>
                   <div className="export-row">
                     <span>Attachment</span>
-                    <span>{activePaper.attachment_status} · {formatHint(activePaper.title)}</span>
+                    <span>{activePaper.attachment_status} · {attachmentFormatLabel(activePaper.attachment_format)}</span>
                   </div>
                   <div className="export-row">
                     <span>Tags</span>
@@ -2410,6 +2480,7 @@ export default function App() {
               </p>
               {selectedTagName ? <p>Filtered by tag: {selectedTagName}</p> : null}
               {attachmentFilter !== "all" ? <p>Filtered by attachment: {attachmentFilter}</p> : null}
+              <p>AI tasks use the current visible papers only, in the order shown here.</p>
             </div>
             <div className="context-card">
               <p className="eyebrow">Review Scope</p>
@@ -2455,17 +2526,28 @@ export default function App() {
                   </span>
                 </div>
               ) : null}
+              {staleScopeCounts ? (
+                <div className="citation-card">
+                  <p className="eyebrow">Stale Draft</p>
+                  <p>
+                    This draft was generated from {staleScopeCounts.previous} papers, but the current view shows {staleScopeCounts.current}.
+                  </p>
+                </div>
+              ) : null}
               <p>{collectionArtifact?.markdown ?? "No collection draft yet."}</p>
               {collectionArtifact ? (
                 <div className="export-row">
                   <button
                     className="ghost-button"
                     type="button"
+                    disabled={isCollectionDraftStale}
                     onClick={() => void handleCreateResearchNote()}
                   >
                     Save as Research Note
                   </button>
-                  <span className="meta-count">Snapshot current draft</span>
+                  <span className="meta-count">
+                    {isCollectionDraftStale ? "Rerun to refresh scope" : "Snapshot current draft"}
+                  </span>
                 </div>
               ) : null}
               {activeNoteId ? (

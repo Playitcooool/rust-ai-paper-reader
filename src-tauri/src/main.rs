@@ -112,12 +112,19 @@ struct RunItemTaskInput {
 struct RunCollectionTaskInput {
     collection_id: i64,
     kind: String,
+    scope_item_ids: Vec<i64>,
 }
 
 #[derive(Deserialize)]
 struct UpdateNoteInput {
     note_id: i64,
     markdown: String,
+}
+
+#[derive(Deserialize)]
+struct WriteExportFileInput {
+    path: String,
+    contents: String,
 }
 
 fn service(state: &AppState) -> Result<LibraryService, String> {
@@ -246,6 +253,13 @@ fn import_citations(
 }
 
 #[tauri::command]
+fn refresh_attachment_statuses(state: State<'_, AppState>) -> Result<(), String> {
+    service(&state)?
+        .refresh_attachment_statuses()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn relink_attachment(
     state: State<'_, AppState>,
     input: RelinkAttachmentInput,
@@ -343,7 +357,7 @@ fn run_collection_task(
         | "collection.bulk_summarize"
         | "collection.theme_map"
         | "collection.compare_methods" => service(&state)?
-            .run_collection_task(input.collection_id, &input.kind)
+            .run_collection_task(input.collection_id, &input.kind, &input.scope_item_ids)
             .map_err(|error| error.to_string()),
         _ => Err("unsupported collection task".into()),
     }
@@ -384,10 +398,10 @@ fn list_notes(
 #[tauri::command]
 fn create_note_from_artifact(
     state: State<'_, AppState>,
-    collection_id: i64,
+    artifact_id: i64,
 ) -> Result<ResearchNote, String> {
     service(&state)?
-        .create_note_from_latest_collection_artifact(collection_id)
+        .create_note_from_artifact(artifact_id)
         .map_err(|error| error.to_string())
 }
 
@@ -416,6 +430,15 @@ fn export_citation(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn write_export_file(input: WriteExportFileInput) -> Result<(), String> {
+    let path = PathBuf::from(input.path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(path, input.contents).map_err(|error| error.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -438,6 +461,7 @@ fn main() {
             search_items,
             import_files,
             import_citations,
+            refresh_attachment_statuses,
             relink_attachment,
             update_item_metadata,
             remove_item,
@@ -454,7 +478,8 @@ fn main() {
             create_note_from_artifact,
             update_note,
             export_note_markdown,
-            export_citation
+            export_citation,
+            write_export_file
         ])
         .run(tauri::generate_context!())
         .expect("failed to run paper-reader desktop app");

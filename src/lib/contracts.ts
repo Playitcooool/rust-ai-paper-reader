@@ -26,6 +26,7 @@ export type LibraryItem = {
   title: string;
   collection_id: number;
   primary_attachment_id: number;
+  attachment_format: AttachmentFormat;
   attachment_status: string;
   authors: string;
   publication_year: number | null;
@@ -60,6 +61,7 @@ export type AITask = {
   id: number;
   item_id: number | null;
   collection_id: number | null;
+  scope_item_ids: number[] | null;
   kind: string;
   status: string;
   output_markdown: string;
@@ -70,6 +72,7 @@ export type AIArtifact = {
   task_id: number;
   item_id: number | null;
   collection_id: number | null;
+  scope_item_ids: number[] | null;
   kind: string;
   markdown: string;
 };
@@ -99,6 +102,7 @@ export type AppApi = {
     mode: ImportMode;
   }) => Promise<ImportedItem[]>;
   importCitations: (input: { collection_id: number; paths: string[] }) => Promise<ImportedItem[]>;
+  refreshAttachmentStatuses: () => Promise<void>;
   relinkAttachment: (input: { attachment_id: number; replacement_path: string }) => Promise<void>;
   updateItemMetadata: (input: {
     item_id: number;
@@ -122,15 +126,24 @@ export type AppApi = {
   }) => Promise<Annotation>;
   removeAnnotation: (input: { annotation_id: number }) => Promise<void>;
   runItemTask: (input: { item_id: number; kind: string }) => Promise<AITask>;
-  runCollectionTask: (input: { collection_id: number; kind: string }) => Promise<AITask>;
+  runCollectionTask: (input: {
+    collection_id: number;
+    kind: string;
+    scope_item_ids: number[];
+  }) => Promise<AITask>;
   listTaskRuns: (input: { item_id?: number; collection_id?: number }) => Promise<AITask[]>;
   getArtifact: (input: {
     item_id?: number;
     collection_id?: number;
   }) => Promise<AIArtifact | null>;
   listNotes: (collectionId?: number) => Promise<ResearchNote[]>;
-  createNoteFromArtifact: (collectionId: number) => Promise<ResearchNote>;
+  createNoteFromArtifact: (input: { artifact_id: number }) => Promise<ResearchNote>;
   updateNote: (input: { note_id: number; markdown: string }) => Promise<void>;
   exportNoteMarkdown: (noteId: number) => Promise<string>;
   exportCitation: (itemId: number, format?: CitationFormat) => Promise<string>;
+  pickSavePath: (input: {
+    defaultPath: string;
+    filters?: Array<{ name: string; extensions: string[] }>;
+  }) => Promise<string | null>;
+  writeExportFile: (input: { path: string; contents: string }) => Promise<void>;
 };
