@@ -2,13 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { NormalizedReader } from "./components/readers/NormalizedReader";
 import { PdfReader } from "./components/readers/PdfReader";
-import { getApi } from "./lib/api";
 import type {
   AIArtifact,
   AITask,
   Annotation,
   AnnotationFilter,
   AttachmentFormat,
+  AppApi,
   CitationFormat,
   Collection,
   ImportMode,
@@ -365,7 +365,8 @@ const descendantIdsForCollection = (collections: Collection[], collectionId: num
   return descendants;
 };
 
-export default function App() {
+export default function App({ api }: { api: AppApi }) {
+  const getApi = () => Promise.resolve(api);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
@@ -846,14 +847,14 @@ export default function App() {
     const api = await getApi();
     setIsImporting(true);
     try {
-      const importedItems = await api.importFiles({
+      const result = await api.importFiles({
         collection_id: selectedCollectionId,
         paths: acceptedPaths,
         mode: importMode,
       });
-      const importMessage = `Imported ${importedItems.length} files into ${activeCollection.name} from ${sourceLabel}.`;
+      const importMessage = `Imported ${result.imported.length} files (duplicates ${result.duplicates.length}, failed ${result.failed.length}) into ${activeCollection.name} from ${sourceLabel}.`;
       setPendingCollectionStatus(importMessage);
-      await refreshItemsForCollection(selectedCollectionId, importedItems[0]?.id);
+      await refreshItemsForCollection(selectedCollectionId, result.imported[0]?.id);
       setStatusMessage(importMessage);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Import failed.";
@@ -905,13 +906,13 @@ export default function App() {
         setStatusMessage("Citation import cancelled.");
         return;
       }
-      const importedItems = await api.importCitations({
+      const result = await api.importCitations({
         collection_id: selectedCollectionId,
         paths,
       });
-      const message = `Imported ${importedItems.length} citation records into ${activeCollection.name}.`;
+      const message = `Imported ${result.imported.length} citation records (duplicates ${result.duplicates.length}, failed ${result.failed.length}) into ${activeCollection.name}.`;
       setPendingCollectionStatus(message);
-      await refreshItemsForCollection(selectedCollectionId, importedItems[0]?.id);
+      await refreshItemsForCollection(selectedCollectionId, result.imported[0]?.id);
       setStatusMessage(message);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Citation import failed.";

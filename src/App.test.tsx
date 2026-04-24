@@ -46,7 +46,7 @@ vi.mock("./components/readers/PdfReader", () => {
 });
 
 import App from "./App";
-import { replaceMockApiState, resetMockApi } from "./lib/mockApi";
+import { fakeApi, replaceFakeApiState, resetFakeApi } from "./test/fakeApi";
 
 const readerPageCountMatcher =
   (page: number, total: number) => (_content: string, element: Element | null) =>
@@ -59,7 +59,7 @@ const findReaderPageCount = (page: number, total: number) =>
   screen.findByText(readerPageCountMatcher(page, total));
 
 beforeEach(() => {
-  resetMockApi();
+  resetFakeApi();
 });
 
 afterEach(() => {
@@ -69,7 +69,7 @@ afterEach(() => {
 
 describe("App workspace", () => {
   it("renders a dedicated pdf reader when the active item is a pdf", async () => {
-    replaceMockApiState({
+    replaceFakeApiState({
       items: [
         {
           id: 1,
@@ -93,14 +93,14 @@ describe("App workspace", () => {
       artifacts: [],
     });
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
     expect(screen.getByText(/PDF mode/i)).toBeInTheDocument();
   });
 
   it("keeps the normalized reader for docx items", async () => {
-    replaceMockApiState({
+    replaceFakeApiState({
       items: [
         {
           id: 2,
@@ -125,7 +125,7 @@ describe("App workspace", () => {
       artifacts: [],
     });
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByTestId("normalized-reader")).toBeInTheDocument();
     expect(screen.queryByTestId("pdf-reader")).not.toBeInTheDocument();
@@ -134,7 +134,7 @@ describe("App workspace", () => {
   it("renders the three-pane workspace and lets the user switch tabs", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       screen.getByRole("heading", { name: "Collections", level: 1 }),
@@ -163,7 +163,7 @@ describe("App workspace", () => {
   it("loads data from the api layer and updates research output when an AI action runs", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -182,7 +182,7 @@ describe("App workspace", () => {
   it("imports files into the current collection from the import action", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -191,11 +191,13 @@ describe("App workspace", () => {
     expect(
       await screen.findByRole("tab", { name: "Fresh Import Paper" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Imported 2 files \(duplicates 0, failed 0\) into Machine Learning from picker\./i),
+    ).toBeInTheDocument();
   });
 
   it("shows a true empty-library workspace when no collections exist", async () => {
-    replaceMockApiState({
+    replaceFakeApiState({
       collections: [],
       items: [],
       tags: [],
@@ -206,7 +208,7 @@ describe("App workspace", () => {
       notes: [],
     });
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByText(/Start with a collection/i)).toBeInTheDocument();
     expect(screen.getByText(/Create a root collection on the left/i)).toBeInTheDocument();
@@ -217,7 +219,7 @@ describe("App workspace", () => {
   });
 
   it("imports dropped files into the active collection", async () => {
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -237,13 +239,15 @@ describe("App workspace", () => {
     fireEvent.drop(dropZone, { dataTransfer });
 
     expect(await screen.findByRole("tab", { name: "Dragged Paper" })).toBeInTheDocument();
-    expect(screen.getByText(/Imported 2 files into Machine Learning/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Imported 2 files \(duplicates 0, failed 0\) into Machine Learning from drag & drop\./i),
+    ).toBeInTheDocument();
   });
 
   it("removes the active paper from the library and closes its reader tab", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -259,7 +263,7 @@ describe("App workspace", () => {
   it("moves the active paper into another collection", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -276,7 +280,7 @@ describe("App workspace", () => {
   it("lets the reader jump between outline sections", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -292,7 +296,7 @@ describe("App workspace", () => {
   it("navigates reader pages and updates zoom controls", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -317,7 +321,7 @@ describe("App workspace", () => {
   it("jumps between reader pages from the sidebar and keyboard", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -333,7 +337,7 @@ describe("App workspace", () => {
   it("bookmarks reader pages and jumps back from the bookmark list", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -355,7 +359,7 @@ describe("App workspace", () => {
   it("finds matches inside the active document and jumps to the matching page", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -370,7 +374,7 @@ describe("App workspace", () => {
   it("sorts the visible papers by newest year in the current collection", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -389,7 +393,7 @@ describe("App workspace", () => {
   it("filters the visible papers by attachment state", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Systems/i })).toBeInTheDocument();
 
@@ -407,7 +411,7 @@ describe("App workspace", () => {
   it("jumps back to an annotation anchor from the reader chips", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -425,7 +429,7 @@ describe("App workspace", () => {
   it("creates a page-linked annotation from the active reader page", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -451,7 +455,7 @@ describe("App workspace", () => {
   it("filters annotations for the current page and search matches", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -481,7 +485,7 @@ describe("App workspace", () => {
   it("deletes annotations from the annotation panel", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -500,7 +504,7 @@ describe("App workspace", () => {
   it("preserves reader state per open paper tab", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -528,7 +532,7 @@ describe("App workspace", () => {
   it("supports keyboard shortcuts for focusing and clearing document search", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -548,7 +552,7 @@ describe("App workspace", () => {
   it("tracks reader navigation history across page jumps", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -567,7 +571,7 @@ describe("App workspace", () => {
   it("jumps from AI source references back into the reader anchor", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -583,7 +587,7 @@ describe("App workspace", () => {
   it("shows paper task history and reruns a paper task from history", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -604,7 +608,7 @@ describe("App workspace", () => {
   it("renders task-specific paper outputs", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -622,7 +626,7 @@ describe("App workspace", () => {
   it("creates and updates a research note from the collection workspace", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -644,7 +648,7 @@ describe("App workspace", () => {
   it("lists research notes, switches the active note, and exports the selected note", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -669,7 +673,7 @@ describe("App workspace", () => {
   it("shows collection review scope and included papers in the AI workspace", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -692,7 +696,7 @@ describe("App workspace", () => {
   it("shows the latest collection task kind in the workspace after running it", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -709,7 +713,7 @@ describe("App workspace", () => {
   it("renders task-specific collection outputs and history previews", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -732,7 +736,7 @@ describe("App workspace", () => {
   it("reruns a collection task from task history", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -749,7 +753,7 @@ describe("App workspace", () => {
   it("marks the latest collection draft stale when the visible scope changes", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -768,7 +772,7 @@ describe("App workspace", () => {
   it("reruns collection history against the current visible scope", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -786,7 +790,7 @@ describe("App workspace", () => {
   it("creates a new collection from the sidebar", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -800,7 +804,7 @@ describe("App workspace", () => {
   it("creates a nested collection under the current collection", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -816,7 +820,7 @@ describe("App workspace", () => {
   it("moves the selected collection under a new parent", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -833,7 +837,7 @@ describe("App workspace", () => {
   it("renames the selected collection from the sidebar", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -848,7 +852,7 @@ describe("App workspace", () => {
   it("deletes an empty collection from the sidebar", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -864,7 +868,7 @@ describe("App workspace", () => {
   it("filters the current collection by tag from the sidebar", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -890,7 +894,7 @@ describe("App workspace", () => {
   it("creates a tag and assigns it to the current paper", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -906,7 +910,7 @@ describe("App workspace", () => {
   it("batch-tags the selected visible papers", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -923,7 +927,7 @@ describe("App workspace", () => {
   it("batch-moves the selected visible papers into another collection", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -942,7 +946,7 @@ describe("App workspace", () => {
   it("shows the latest formatted citation in the reader panel", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -958,7 +962,7 @@ describe("App workspace", () => {
   it("shows author and year metadata in the reader panel and supports author search", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -980,7 +984,7 @@ describe("App workspace", () => {
   });
 
   it("shows an expanded metadata panel for the active paper", async () => {
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -996,7 +1000,7 @@ describe("App workspace", () => {
   });
 
   it("renders the real attachment format instead of inferring it from the title", async () => {
-    replaceMockApiState({
+    replaceFakeApiState({
       items: [
         {
           id: 11,
@@ -1022,7 +1026,7 @@ describe("App workspace", () => {
       notes: [],
     });
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByText(/^DOCX$/i)).toBeInTheDocument();
     expect(screen.getByText(/^ready · DOCX$/i)).toBeInTheDocument();
@@ -1031,7 +1035,7 @@ describe("App workspace", () => {
   it("edits metadata for the active paper from the reader panel", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -1060,7 +1064,7 @@ describe("App workspace", () => {
   it("exports BibTeX and RIS citations for the active paper", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -1078,20 +1082,24 @@ describe("App workspace", () => {
   it("imports citation records into the current collection", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Import Citations" }));
 
     expect(await screen.findByRole("tab", { name: "Attention Is All You Need" })).toBeInTheDocument();
-    expect(screen.getByText(/Imported 2 citation records into Machine Learning/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Imported 2 citation records \(duplicates 0, failed 0\) into Machine Learning\./i,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows a relink guidance state for missing attachments", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     await user.click(await screen.findByRole("button", { name: /Systems/i }));
     const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
@@ -1110,7 +1118,7 @@ describe("App workspace", () => {
   it("shows a metadata-only state for citation imports", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
 
@@ -1129,7 +1137,7 @@ describe("App workspace", () => {
   it("relinks a missing linked attachment from the reader actions", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     await user.click(await screen.findByRole("button", { name: /Systems/i }));
     const collectionPanel = screen.getByRole("region", { name: "Collection drop zone" });
@@ -1147,7 +1155,7 @@ describe("App workspace", () => {
   it("closes reader tabs and keeps the workspace stable", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
@@ -1170,7 +1178,7 @@ describe("App workspace", () => {
   it("clears stale reader context when switching to an empty collection", async () => {
     const user = userEvent.setup();
 
-    render(<App />);
+    render(<App api={fakeApi} />);
 
     expect(
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),

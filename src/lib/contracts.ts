@@ -21,6 +21,20 @@ export type ImportedItem = {
   primary_attachment_id: number;
 };
 
+export type ImportPathResult = {
+  path: string;
+  status: "imported" | "duplicate" | "failed";
+  message: string;
+  item: ImportedItem | null;
+};
+
+export type ImportBatchResult = {
+  imported: ImportedItem[];
+  duplicates: ImportPathResult[];
+  failed: ImportPathResult[];
+  results: ImportPathResult[];
+};
+
 export type LibraryItem = {
   id: number;
   title: string;
@@ -43,6 +57,8 @@ export type ReaderView = {
   primary_attachment_id: number | null;
   primary_attachment_path: string | null;
   page_count: number | null;
+  content_status: "ready" | "partial" | "unavailable";
+  content_notice: string | null;
   normalized_html: string;
   plain_text: string;
 };
@@ -100,8 +116,8 @@ export type AppApi = {
     collection_id: number;
     paths: string[];
     mode: ImportMode;
-  }) => Promise<ImportedItem[]>;
-  importCitations: (input: { collection_id: number; paths: string[] }) => Promise<ImportedItem[]>;
+  }) => Promise<ImportBatchResult>;
+  importCitations: (input: { collection_id: number; paths: string[] }) => Promise<ImportBatchResult>;
   refreshAttachmentStatuses: () => Promise<void>;
   relinkAttachment: (input: { attachment_id: number; replacement_path: string }) => Promise<void>;
   updateItemMetadata: (input: {
