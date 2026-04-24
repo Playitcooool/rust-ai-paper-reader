@@ -6,10 +6,17 @@ type PdfReaderProps = {
   view: ReaderView;
   page: number;
   zoom: number;
+  loadPrimaryAttachmentBytes: (primaryAttachmentId: number) => Promise<Uint8Array>;
   onPageCountChange?: (pageCount: number) => void;
 };
 
-export function PdfReader({ view, page, zoom, onPageCountChange }: PdfReaderProps) {
+export function PdfReader({
+  view,
+  page,
+  zoom,
+  loadPrimaryAttachmentBytes,
+  onPageCountChange,
+}: PdfReaderProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [pageCount, setPageCount] = useState(view.page_count);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -19,9 +26,9 @@ export function PdfReader({ view, page, zoom, onPageCountChange }: PdfReaderProp
     let cancelled = false;
 
     async function renderPage() {
-      if (!view.primary_attachment_path) {
+      if (!view.primary_attachment_id) {
         setStatus("error");
-        setErrorMessage("Unable to load this PDF because the attachment path is missing.");
+        setErrorMessage("Unable to load this PDF because the primary attachment id is missing.");
         return;
       }
 
@@ -37,15 +44,14 @@ export function PdfReader({ view, page, zoom, onPageCountChange }: PdfReaderProp
       setErrorMessage("");
 
       try {
-        const [{ convertFileSrc }, pdfjsModule, workerModule] = await Promise.all([
-          import("@tauri-apps/api/core"),
+        const [pdfjsModule, workerModule] = await Promise.all([
           import("pdfjs-dist"),
           import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
         ]);
         pdfjsModule.GlobalWorkerOptions.workerSrc = workerModule.default;
 
-        const assetUrl = convertFileSrc(view.primary_attachment_path);
-        const pdfDocument = await pdfjsModule.getDocument(assetUrl).promise;
+        const bytes = await loadPrimaryAttachmentBytes(view.primary_attachment_id);
+        const pdfDocument = await pdfjsModule.getDocument({ data: bytes }).promise;
         if (cancelled) return;
 
         const nextPageCount = pdfDocument.numPages ?? view.page_count ?? 1;
@@ -81,7 +87,7 @@ export function PdfReader({ view, page, zoom, onPageCountChange }: PdfReaderProp
     return () => {
       cancelled = true;
     };
-  }, [onPageCountChange, page, view.page_count, view.primary_attachment_path, zoom]);
+  }, [loadPrimaryAttachmentBytes, onPageCountChange, page, view.page_count, view.primary_attachment_id, zoom]);
 
   return (
     <section className="pdf-reader" data-testid="pdf-reader">

@@ -729,6 +729,24 @@ export const fakeApi: AppApi = {
     } satisfies ReaderView;
   },
 
+  async readPrimaryAttachmentBytes(primaryAttachmentId) {
+    const item = state.items.find((entry) => entry.primary_attachment_id === primaryAttachmentId);
+    if (!item) {
+      throw new Error("Primary attachment was not found.");
+    }
+    const attachmentFormat = item.attachmentFormat ?? item.attachment_format ?? "unknown";
+    if (!item.primaryAttachmentPath) {
+      throw new Error("Primary attachment file is missing.");
+    }
+    if (attachmentFormat !== "pdf") {
+      throw new Error("Primary attachment is not a PDF.");
+    }
+    if (item.attachment_status === "missing") {
+      throw new Error("Primary attachment file is missing.");
+    }
+    return new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
+  },
+
   async listAnnotations(itemId) {
     return state.annotations.filter((annotation) => annotation.item_id === itemId);
   },

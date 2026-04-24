@@ -133,6 +133,7 @@ export type AppApi = {
   listItems: (collectionId?: number) => Promise<LibraryItem[]>;
   searchItems: (query: string) => Promise<LibraryItem[]>;
   getReaderView: (itemId: number) => Promise<ReaderView>;
+  readPrimaryAttachmentBytes: (primaryAttachmentId: number) => Promise<Uint8Array>;
   listAnnotations: (itemId: number) => Promise<Annotation[]>;
   createAnnotation: (input: {
     item_id: number;

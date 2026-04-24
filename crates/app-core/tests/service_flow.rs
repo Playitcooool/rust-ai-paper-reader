@@ -344,6 +344,73 @@ fn linked_files_can_be_marked_missing_and_relinked() {
 }
 
 #[test]
+fn reads_primary_pdf_attachment_bytes_for_managed_and_linked_files() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("PDFs", None).unwrap();
+    let managed = fixture_path(root.path(), "managed-read.pdf");
+    let linked = fixture_path(root.path(), "linked-read.pdf");
+    write_pdf_fixture(&managed);
+    write_partial_pdf_fixture(&linked);
+
+    let managed_result = service
+        .import_files(collection.id, &[managed], ImportMode::ManagedCopy)
+        .unwrap();
+    let linked_result = service
+        .import_files(collection.id, &[linked.clone()], ImportMode::LinkedFile)
+        .unwrap();
+
+    let managed_bytes = service
+        .read_primary_attachment_bytes(managed_result.imported[0].primary_attachment_id)
+        .unwrap();
+    let linked_bytes = service
+        .read_primary_attachment_bytes(linked_result.imported[0].primary_attachment_id)
+        .unwrap();
+
+    assert!(!managed_bytes.is_empty());
+    assert!(!linked_bytes.is_empty());
+    assert_eq!(&managed_bytes[..4], b"%PDF");
+    assert_eq!(&linked_bytes[..4], b"%PDF");
+}
+
+#[test]
+fn read_primary_attachment_bytes_rejects_missing_non_pdf_and_unknown_attachments() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Failures", None).unwrap();
+
+    let missing_pdf = fixture_path(root.path(), "missing.pdf");
+    write_pdf_fixture(&missing_pdf);
+    let missing_result = service
+        .import_files(collection.id, &[missing_pdf.clone()], ImportMode::LinkedFile)
+        .unwrap();
+    fs::remove_file(&missing_pdf).unwrap();
+
+    let docx = fixture_path(root.path(), "not-pdf.docx");
+    write_docx_fixture(&docx);
+    let docx_result = service
+        .import_files(collection.id, &[docx], ImportMode::ManagedCopy)
+        .unwrap();
+
+    let missing_error = service
+        .read_primary_attachment_bytes(missing_result.imported[0].primary_attachment_id)
+        .unwrap_err()
+        .to_string();
+    let non_pdf_error = service
+        .read_primary_attachment_bytes(docx_result.imported[0].primary_attachment_id)
+        .unwrap_err()
+        .to_string();
+    let unknown_error = service
+        .read_primary_attachment_bytes(9_999_999)
+        .unwrap_err()
+        .to_string();
+
+    assert!(missing_error.contains("file is missing"));
+    assert!(non_pdf_error.contains("not a PDF"));
+    assert!(unknown_error.contains("not found"));
+}
+
+#[test]
 fn removing_items_deletes_managed_copy_but_preserves_linked_source() {
     let root = tempdir().unwrap();
     let service = LibraryService::new(root.path()).unwrap();

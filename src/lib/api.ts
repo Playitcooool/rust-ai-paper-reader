@@ -1,4 +1,4 @@
-import type { AppApi , ImportBatchResult} from "./contracts";
+import type { AppApi } from "./contracts";
 
 export const isTauriRuntime = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -6,6 +6,20 @@ export const isTauriRuntime = () =>
 export async function createTauriApi(): Promise<AppApi> {
   const { invoke } = await import("@tauri-apps/api/core");
   const { open, save } = await import("@tauri-apps/plugin-dialog");
+  const toUint8Array = (value: unknown): Uint8Array => {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (Array.isArray(value)) return Uint8Array.from(value);
+    if (
+      value &&
+      typeof value === "object" &&
+      "data" in value &&
+      Array.isArray((value as { data: unknown }).data)
+    ) {
+      return Uint8Array.from((value as { data: number[] }).data);
+    }
+    throw new Error("Unexpected attachment byte response.");
+  };
 
   return {
     listCollections: () => invoke("list_collections"),
@@ -59,6 +73,12 @@ export async function createTauriApi(): Promise<AppApi> {
     listItems: (collectionId) => invoke("list_items", { collectionId }),
     searchItems: (query) => invoke("search_items", { input: { query } }),
     getReaderView: (itemId) => invoke("get_reader_view", { itemId }),
+    readPrimaryAttachmentBytes: async (primaryAttachmentId) =>
+      toUint8Array(
+        await invoke("read_primary_attachment_bytes", {
+          primaryAttachmentId,
+        }),
+      ),
     listAnnotations: (itemId) => invoke("list_annotations", { itemId }),
     createAnnotation: (input) => invoke("create_annotation", { input }),
     removeAnnotation: (input) => invoke("remove_annotation", { input }),

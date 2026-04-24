@@ -4,14 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PdfReader } from "./PdfReader";
 import type { ReaderView } from "../../lib/contracts";
 
-const {
-  getDocumentMock,
-  convertFileSrcMock,
-  getPageMock,
-  renderMock,
-} = vi.hoisted(() => ({
+const { getDocumentMock, getPageMock, renderMock } = vi.hoisted(() => ({
   getDocumentMock: vi.fn(),
-  convertFileSrcMock: vi.fn((path: string) => `asset://${path}`),
   getPageMock: vi.fn(),
   renderMock: vi.fn(),
 }));
@@ -19,10 +13,6 @@ const {
 vi.mock("pdfjs-dist", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
   getDocument: getDocumentMock,
-}));
-
-vi.mock("@tauri-apps/api/core", () => ({
-  convertFileSrc: convertFileSrcMock,
 }));
 
 const pdfView: ReaderView = {
@@ -44,14 +34,16 @@ describe("PdfReader", () => {
     getDocumentMock.mockReset();
     getPageMock.mockReset();
     renderMock.mockReset();
-    convertFileSrcMock.mockClear();
 
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
       () => ({}) as CanvasRenderingContext2D,
     );
   });
 
-  it("loads the local pdf through tauri asset conversion and renders a canvas", async () => {
+  it("loads bytes through the injected attachment loader and passes them to pdf.js", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+
     renderMock.mockReturnValue({ promise: Promise.resolve() });
     getPageMock.mockResolvedValue({
       getViewport: ({ scale }: { scale: number }) => ({
@@ -67,26 +59,56 @@ describe("PdfReader", () => {
       }),
     });
 
-    render(<PdfReader view={pdfView} page={0} zoom={100} />);
+    render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
 
     await waitFor(() => {
-      expect(convertFileSrcMock).toHaveBeenCalledWith("/mock/native-pdf-paper.pdf");
-      expect(getDocumentMock).toHaveBeenCalled();
+      expect(loadPrimaryAttachmentBytes).toHaveBeenCalledWith(101);
+      expect(getDocumentMock).toHaveBeenCalledWith({ data: bytes });
       expect(getPageMock).toHaveBeenCalledWith(1);
       expect(renderMock).toHaveBeenCalled();
     });
 
     expect(screen.getByLabelText("PDF page canvas")).toBeInTheDocument();
-    expect(screen.getByText(/Page 1 of 4/i)).toBeInTheDocument();
+    expect(screen.getByText(/native-pdf-paper\.pdf/i)).toBeInTheDocument();
   });
 
-  it("shows a reader error when pdf loading fails", async () => {
-    getDocumentMock.mockReturnValue({
-      promise: Promise.reject(new Error("load failed")),
-    });
+  it("shows a specific error when the attachment id is missing", async () => {
+    render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={vi.fn()}
+        page={0}
+        view={{ ...pdfView, primary_attachment_id: null }}
+        zoom={100}
+      />,
+    );
 
-    render(<PdfReader view={pdfView} page={0} zoom={100} />);
+    expect(
+      await screen.findByText(/primary attachment id is missing/i),
+    ).toBeInTheDocument();
+  });
 
-    expect(await screen.findByText(/Unable to load this PDF/i)).toBeInTheDocument();
+  it.each([
+    "Primary attachment was not found.",
+    "Primary attachment file is missing.",
+    "Primary attachment is not a PDF.",
+    "Failed to read primary attachment bytes.",
+  ])("surfaces byte-loading errors: %s", async (message) => {
+    render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={vi.fn().mockRejectedValue(new Error(message))}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    expect(await screen.findByText(new RegExp(message, "i"))).toBeInTheDocument();
   });
 });

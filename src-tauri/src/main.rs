@@ -309,6 +309,17 @@ fn get_reader_view(state: State<'_, AppState>, item_id: i64) -> Result<ReaderVie
 }
 
 #[tauri::command]
+fn read_primary_attachment_bytes(
+    state: State<'_, AppState>,
+    primary_attachment_id: i64,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = service(&state)?
+        .read_primary_attachment_bytes(primary_attachment_id)
+        .map_err(|error| error.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
 fn create_annotation(
     state: State<'_, AppState>,
     input: CreateAnnotationInput,
@@ -468,6 +479,7 @@ fn main() {
             remove_item,
             move_item,
             get_reader_view,
+            read_primary_attachment_bytes,
             create_annotation,
             list_annotations,
             remove_annotation,

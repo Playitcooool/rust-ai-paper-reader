@@ -889,6 +889,40 @@ impl LibraryService {
         .map_err(Into::into)
     }
 
+    pub fn read_primary_attachment_bytes(&self, primary_attachment_id: i64) -> Result<Vec<u8>> {
+        let conn = self.connect()?;
+        let attachment = conn
+            .query_row(
+                "
+                SELECT path, is_primary
+                FROM attachments
+                WHERE id = ?1
+                ",
+                [primary_attachment_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+
+        let Some((path, is_primary)) = attachment else {
+            return Err(anyhow!("primary attachment was not found"));
+        };
+
+        if is_primary != 1 {
+            return Err(anyhow!("requested attachment is not the primary attachment"));
+        }
+
+        if infer_attachment_format(&path) != "pdf" {
+            return Err(anyhow!("primary attachment is not a PDF"));
+        }
+
+        let attachment_path = PathBuf::from(&path);
+        if !attachment_path.exists() {
+            return Err(anyhow!("primary attachment file is missing"));
+        }
+
+        fs::read(&attachment_path).map_err(|_| anyhow!("failed to read primary attachment bytes"))
+    }
+
     pub fn run_item_task(&self, item_id: i64, kind: &str) -> Result<AITask> {
         let mut conn = self.connect()?;
         let (collection_id, title, excerpt) = conn.query_row(
