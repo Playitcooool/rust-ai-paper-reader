@@ -20,6 +20,8 @@ type MockItemDetails = LibraryItem & {
   attachmentFormat?: AttachmentFormat;
   primaryAttachmentPath?: string | null;
   pageCount?: number | null;
+  contentStatus?: ReaderView["content_status"];
+  contentNotice?: string | null;
 };
 
 type MockState = {
@@ -32,6 +34,8 @@ type MockState = {
   artifacts: AIArtifact[];
   notes: ResearchNote[];
   nextId: number;
+  importFileResults?: ImportBatchResult | null;
+  importCitationResults?: ImportBatchResult | null;
 };
 
 const exportWrites: Array<{ path: string; contents: string }> = [];
@@ -156,6 +160,8 @@ const initialState = (): MockState => ({
     },
   ],
   nextId: 1000,
+  importFileResults: null,
+  importCitationResults: null,
 });
 
 let state = initialState();
@@ -452,6 +458,46 @@ export const fakeApi: AppApi = {
   },
 
   async importFiles(input) {
+    if (state.importFileResults) {
+      for (const importedItem of state.importFileResults.imported) {
+        const path =
+          state.importFileResults.results.find((result) => result.item?.id === importedItem.id)?.path ??
+          `${importedItem.title}.pdf`;
+        const title = importedItem.title;
+        const metadata = metadataFromTitle(title);
+        state.items = state.items.filter((item) => item.id !== importedItem.id);
+        state.items.unshift({
+          id: importedItem.id,
+          title,
+          collection_id: input.collection_id,
+          primary_attachment_id: importedItem.primary_attachment_id,
+          attachment_format: path.toLowerCase().endsWith(".docx")
+            ? "docx"
+            : path.toLowerCase().endsWith(".epub")
+              ? "epub"
+              : "pdf",
+          attachment_status: "ready",
+          authors: metadata.authors,
+          publication_year: metadata.publication_year,
+          source: metadata.source,
+          doi: metadata.doi,
+          tags: [],
+          plainText: `${title} was imported into ${collectionName(input.collection_id)} and normalized for AI-assisted reading.`,
+          normalizedHtml: normalizedHtmlFromTitle(title, input.mode),
+          attachmentFormat: path.toLowerCase().endsWith(".docx")
+            ? "docx"
+            : path.toLowerCase().endsWith(".epub")
+              ? "epub"
+              : "pdf",
+          primaryAttachmentPath: path,
+          pageCount: 1,
+          contentStatus: "ready",
+          contentNotice: null,
+        });
+      }
+      return state.importFileResults;
+    }
+
     const imported = input.paths.map((path) => {
       const title = titleFromPath(path);
       const metadata = metadataFromTitle(title);
@@ -503,6 +549,38 @@ export const fakeApi: AppApi = {
   },
 
   async importCitations(input) {
+    if (state.importCitationResults) {
+      for (const importedItem of state.importCitationResults.imported) {
+        const path =
+          state.importCitationResults.results.find((result) => result.item?.id === importedItem.id)?.path ??
+          `${importedItem.title}.bib`;
+        const title = importedItem.title;
+        const metadata = metadataFromTitle(title);
+        state.items = state.items.filter((item) => item.id !== importedItem.id);
+        state.items.unshift({
+          id: importedItem.id,
+          title,
+          collection_id: input.collection_id,
+          primary_attachment_id: importedItem.primary_attachment_id,
+          attachment_format: "unknown",
+          attachment_status: "citation_only",
+          authors: metadata.authors,
+          publication_year: metadata.publication_year,
+          source: metadata.source,
+          doi: metadata.doi,
+          tags: [],
+          plainText: `${title} was imported from a citation record and is ready for metadata-first triage.`,
+          normalizedHtml: `<article><h1>${title}</h1><p>Citation-only import.</p><p>Add a source file later or use this entry for bibliography management.</p></article>`,
+          attachmentFormat: "unknown",
+          primaryAttachmentPath: path,
+          pageCount: 1,
+          contentStatus: "ready",
+          contentNotice: null,
+        });
+      }
+      return state.importCitationResults;
+    }
+
     const imported = input.paths.map((path) => {
       const title = titleFromPath(path);
       const metadata = metadataFromTitle(title);
@@ -644,8 +722,8 @@ export const fakeApi: AppApi = {
       primary_attachment_id: item.primary_attachment_id,
       primary_attachment_path: item.primaryAttachmentPath ?? null,
       page_count: item.pageCount ?? null,
-      content_status: "ready",
-      content_notice: null,
+      content_status: item.contentStatus ?? "ready",
+      content_notice: item.contentNotice ?? null,
       normalized_html: item.normalizedHtml,
       plain_text: item.plainText,
     } satisfies ReaderView;

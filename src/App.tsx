@@ -12,6 +12,7 @@ import type {
   CitationFormat,
   Collection,
   ImportMode,
+  ImportBatchResult,
   LibraryItem,
   ReaderView,
   ResearchNote,
@@ -312,6 +313,24 @@ const canRunReaderActions = (activePaper: LibraryItem | null) =>
   activePaper?.attachment_status !== "missing" &&
   activePaper?.attachment_status !== "citation_only";
 
+const readerContentStateCopy = (readerView: ReaderView | null) => {
+  if (!readerView || readerView.content_status === "ready") return null;
+  if (readerView.content_status === "partial") {
+    return {
+      title: "Partial content extracted",
+      body:
+        readerView.content_notice ??
+        "The source file can be read, but only part of its text content was extracted.",
+    };
+  }
+  return {
+    title: "Reader content unavailable",
+    body:
+      readerView.content_notice ??
+      "No readable text could be extracted from this document yet.",
+  };
+};
+
 type CollectionTreeEntry = {
   collection: Collection;
   depth: number;
@@ -416,6 +435,7 @@ export default function App({ api }: { api: AppApi }) {
   });
   const [pendingCollectionStatus, setPendingCollectionStatus] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
+  const [lastImportResult, setLastImportResult] = useState<ImportBatchResult | null>(null);
   const [itemSort, setItemSort] = useState<ItemSort>("recent");
   const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>("all");
   const [moveItemTargetId, setMoveItemTargetId] = useState("current");
@@ -715,7 +735,9 @@ export default function App({ api }: { api: AppApi }) {
     collections.find((collection) => collection.id === selectedCollectionId) ?? null;
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
   const readerState = readerStateCopy(activePaper, visibleItems.length);
-  const paperActionsEnabled = canRunReaderActions(activePaper);
+  const readerContentState = readerContentStateCopy(readerView);
+  const paperActionsEnabled =
+    canRunReaderActions(activePaper) && readerView?.content_status !== "unavailable";
   const isCollectionDraftStale = Boolean(
     collectionArtifact &&
       collectionArtifact.collection_id === activeCollection?.id &&
@@ -852,6 +874,7 @@ export default function App({ api }: { api: AppApi }) {
         paths: acceptedPaths,
         mode: importMode,
       });
+      setLastImportResult(result);
       const importMessage = `Imported ${result.imported.length} files (duplicates ${result.duplicates.length}, failed ${result.failed.length}) into ${activeCollection.name} from ${sourceLabel}.`;
       setPendingCollectionStatus(importMessage);
       await refreshItemsForCollection(selectedCollectionId, result.imported[0]?.id);
@@ -910,6 +933,7 @@ export default function App({ api }: { api: AppApi }) {
         collection_id: selectedCollectionId,
         paths,
       });
+      setLastImportResult(result);
       const message = `Imported ${result.imported.length} citation records (duplicates ${result.duplicates.length}, failed ${result.failed.length}) into ${activeCollection.name}.`;
       setPendingCollectionStatus(message);
       await refreshItemsForCollection(selectedCollectionId, result.imported[0]?.id);
@@ -1887,6 +1911,21 @@ export default function App({ api }: { api: AppApi }) {
         <section className="section-block footer-block">
           <h2>Import Status</h2>
           <p>{statusMessage}</p>
+          {lastImportResult ? (
+            <div className="citation-card">
+              <p className="eyebrow">Recent import results</p>
+              {lastImportResult.results.map((result) => (
+                <div key={`${result.path}-${result.status}`} className="export-row">
+                  <span>{result.status}</span>
+                  <span>
+                    {result.item?.title ?? result.path}
+                    {" · "}
+                    {result.message}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </section>
       </aside>
 
@@ -2265,6 +2304,13 @@ export default function App({ api }: { api: AppApi }) {
                   <h3>{readerState.title}</h3>
                   <p>{readerState.body}</p>
                   {"secondary" in readerState && readerState.secondary ? <p>{readerState.secondary}</p> : null}
+                </div>
+              ) : null}
+              {readerContentState ? (
+                <div className="citation-card">
+                  <p className="eyebrow">Reader Content</p>
+                  <h3>{readerContentState.title}</h3>
+                  <p>{readerContentState.body}</p>
                 </div>
               ) : null}
               <p className="document-lead">

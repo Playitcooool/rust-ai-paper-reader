@@ -1152,6 +1152,164 @@ describe("App workspace", () => {
     expect(screen.getByText(/Systems · ready · EPUB/i)).toBeInTheDocument();
   });
 
+  it("shows a partial extraction notice while keeping paper actions enabled", async () => {
+    const user = userEvent.setup();
+
+    replaceFakeApiState({
+      items: [
+        {
+          id: 1,
+          title: "Partial PDF",
+          collection_id: 1,
+          primary_attachment_id: 101,
+          attachment_status: "ready",
+          authors: "Reader Team",
+          publication_year: 2026,
+          source: "Paper Reader",
+          doi: null,
+          tags: [],
+          plainText: "Only part of the PDF text was extracted.",
+          normalizedHtml: "<article><h1>Partial PDF</h1><p>Only part of the PDF text was extracted.</p></article>",
+          attachmentFormat: "pdf",
+          primaryAttachmentPath: "/mock/partial.pdf",
+          pageCount: 1,
+          contentStatus: "partial",
+          contentNotice: "This PDF loaded successfully, but text extraction only found partial content.",
+        } as never,
+      ],
+      annotations: [],
+      tasks: [],
+      artifacts: [],
+    });
+
+    render(<App api={fakeApi} />);
+
+    expect(await screen.findByText(/Partial content extracted/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/This PDF loaded successfully, but text extraction only found partial content/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Summarize document" }));
+    expect((await screen.findAllByText(/item\.summarize/i)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows an unavailable extraction state and disables paper actions", async () => {
+    replaceFakeApiState({
+      items: [
+        {
+          id: 1,
+          title: "Unreadable EPUB",
+          collection_id: 1,
+          primary_attachment_id: 101,
+          attachment_status: "ready",
+          authors: "Reader Team",
+          publication_year: 2026,
+          source: "Paper Reader",
+          doi: null,
+          tags: [],
+          plainText: "",
+          normalizedHtml: "<article><h1>Unreadable EPUB</h1></article>",
+          attachmentFormat: "epub",
+          primaryAttachmentPath: "/mock/unreadable.epub",
+          pageCount: 1,
+          contentStatus: "unavailable",
+          contentNotice: "No readable text could be extracted from this document yet.",
+        } as never,
+      ],
+      annotations: [],
+      tasks: [],
+      artifacts: [],
+    });
+
+    render(<App api={fakeApi} />);
+
+    expect(await screen.findByText(/Reader content unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/No readable text could be extracted from this document yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Highlight" })).toBeDisabled();
+  });
+
+  it("renders detailed import batch results for imported duplicates and failures", async () => {
+    const user = userEvent.setup();
+
+    replaceFakeApiState({
+      importFileResults: {
+        imported: [
+          {
+            id: 1001,
+            title: "Fresh Import Paper",
+            primary_attachment_id: 1002,
+          },
+        ],
+        duplicates: [
+          {
+            path: "/imports/already-owned.pdf",
+            status: "duplicate",
+            message: "Duplicate of existing library item Transformer Scaling Laws.",
+            item: {
+              id: 1,
+              title: "Transformer Scaling Laws",
+              primary_attachment_id: 101,
+            },
+          },
+        ],
+        failed: [
+          {
+            path: "/imports/broken.epub",
+            status: "failed",
+            message: "Unsupported attachment format.",
+            item: null,
+          },
+        ],
+        results: [
+          {
+            path: "/imports/fresh-import-paper.pdf",
+            status: "imported",
+            message: "Imported successfully.",
+            item: {
+              id: 1001,
+              title: "Fresh Import Paper",
+              primary_attachment_id: 1002,
+            },
+          },
+          {
+            path: "/imports/already-owned.pdf",
+            status: "duplicate",
+            message: "Duplicate of existing library item Transformer Scaling Laws.",
+            item: {
+              id: 1,
+              title: "Transformer Scaling Laws",
+              primary_attachment_id: 101,
+            },
+          },
+          {
+            path: "/imports/broken.epub",
+            status: "failed",
+            message: "Unsupported attachment format.",
+            item: null,
+          },
+        ],
+      },
+    });
+
+    render(<App api={fakeApi} />);
+
+    expect(await screen.findByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import" }));
+
+    expect(await screen.findByRole("tab", { name: "Fresh Import Paper" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/Imported 1 files \(duplicates 1, failed 1\) into Machine Learning from picker\./i),
+    ).toBeInTheDocument();
+    const importResults = screen.getByText(/Recent import results/i).closest(".citation-card");
+    expect(importResults).not.toBeNull();
+    expect(within(importResults as HTMLElement).getByText(/^duplicate$/i)).toBeInTheDocument();
+    expect(within(importResults as HTMLElement).getByText(/^failed$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Duplicate of existing library item Transformer Scaling Laws/i)).toBeInTheDocument();
+    expect(screen.getByText(/Unsupported attachment format/i)).toBeInTheDocument();
+  });
+
   it("closes reader tabs and keeps the workspace stable", async () => {
     const user = userEvent.setup();
 
