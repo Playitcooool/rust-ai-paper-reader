@@ -1,10 +1,9 @@
-import type { AppApi } from "./contracts";
-import { mockApi } from "./mockApi";
+import type { AppApi , ImportBatchResult} from "./contracts";
 
-const isTauriRuntime = () =>
+export const isTauriRuntime = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-async function createTauriApi(): Promise<AppApi> {
+export async function createTauriApi(): Promise<AppApi> {
   const { invoke } = await import("@tauri-apps/api/core");
   const { open, save } = await import("@tauri-apps/plugin-dialog");
 
@@ -91,13 +90,4 @@ async function createTauriApi(): Promise<AppApi> {
     },
     writeExportFile: (input) => invoke("write_export_file", { input }),
   };
-}
-
-let apiPromise: Promise<AppApi> | null = null;
-
-export function getApi(): Promise<AppApi> {
-  if (!apiPromise) {
-    apiPromise = isTauriRuntime() ? createTauriApi() : Promise.resolve(mockApi);
-  }
-  return apiPromise;
 }

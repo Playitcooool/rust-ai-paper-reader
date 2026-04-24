@@ -33,6 +33,8 @@ const pdfView: ReaderView = {
   primary_attachment_id: 101,
   primary_attachment_path: "/mock/native-pdf-paper.pdf",
   page_count: null,
+  content_status: "ready",
+  content_notice: null,
   normalized_html: "<article><p>Fallback</p></article>",
   plain_text: "PDF preview",
 };

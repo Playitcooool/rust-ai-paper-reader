@@ -7,11 +7,12 @@ import type {
   CitationFormat,
   Collection,
   ImportMode,
+  ImportBatchResult,
   LibraryItem,
   ReaderView,
   ResearchNote,
   Tag,
-} from "./contracts";
+} from "../lib/contracts";
 
 type MockItemDetails = LibraryItem & {
   plainText: string;
@@ -308,12 +309,12 @@ const itemTaskOutput = (item: MockItemDetails, kind: string) => {
   }
 };
 
-export function resetMockApi() {
+export function resetFakeApi() {
   state = initialState();
   exportWrites.length = 0;
 }
 
-export function replaceMockApiState(nextState: Partial<MockState>) {
+export function replaceFakeApiState(nextState: Partial<MockState>) {
   state = {
     ...initialState(),
     ...nextState,
@@ -321,7 +322,7 @@ export function replaceMockApiState(nextState: Partial<MockState>) {
   exportWrites.length = 0;
 }
 
-export const mockApi: AppApi = {
+export const fakeApi: AppApi = {
   async listCollections() {
     return [...state.collections];
   },
@@ -451,7 +452,7 @@ export const mockApi: AppApi = {
   },
 
   async importFiles(input) {
-    return input.paths.map((path) => {
+    const imported = input.paths.map((path) => {
       const title = titleFromPath(path);
       const metadata = metadataFromTitle(title);
       const itemId = state.nextId++;
@@ -487,10 +488,22 @@ export const mockApi: AppApi = {
         primary_attachment_id: attachmentId,
       };
     });
+    const results: ImportBatchResult["results"] = imported.map((item, index) => ({
+      path: input.paths[index] ?? "",
+      status: "imported" as const,
+      message: "Imported successfully.",
+      item,
+    }));
+    return {
+      imported,
+      duplicates: [],
+      failed: [],
+      results,
+    } satisfies ImportBatchResult;
   },
 
   async importCitations(input) {
-    return input.paths.map((path) => {
+    const imported = input.paths.map((path) => {
       const title = titleFromPath(path);
       const metadata = metadataFromTitle(title);
       const itemId = state.nextId++;
@@ -518,6 +531,18 @@ export const mockApi: AppApi = {
         primary_attachment_id: attachmentId,
       };
     });
+    const results: ImportBatchResult["results"] = imported.map((item, index) => ({
+      path: input.paths[index] ?? "",
+      status: "imported" as const,
+      message: "Citation imported successfully.",
+      item,
+    }));
+    return {
+      imported,
+      duplicates: [],
+      failed: [],
+      results,
+    } satisfies ImportBatchResult;
   },
 
   async relinkAttachment(input) {
@@ -619,6 +644,8 @@ export const mockApi: AppApi = {
       primary_attachment_id: item.primary_attachment_id,
       primary_attachment_path: item.primaryAttachmentPath ?? null,
       page_count: item.pageCount ?? null,
+      content_status: "ready",
+      content_notice: null,
       normalized_html: item.normalizedHtml,
       plain_text: item.plainText,
     } satisfies ReaderView;

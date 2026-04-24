@@ -1,13 +1,18 @@
 use std::{
     fs,
+    io::{Cursor, Read, Seek},
     path::{Path, PathBuf},
 };
 
 use anyhow::{anyhow, Context, Result};
+use html_escape::encode_safe;
+use regex::Regex;
+use roxmltree::Document;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use sha2::{Digest, Sha256};
+use zip::ZipArchive;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ImportMode {
@@ -108,8 +113,26 @@ pub struct ReaderView {
     pub primary_attachment_id: Option<i64>,
     pub primary_attachment_path: Option<String>,
     pub page_count: Option<i64>,
+    pub content_status: String,
+    pub content_notice: Option<String>,
     pub normalized_html: String,
     pub plain_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportPathResult {
+    pub path: String,
+    pub status: String,
+    pub message: String,
+    pub item: Option<ImportedItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportBatchResult {
+    pub imported: Vec<ImportedItem>,
+    pub duplicates: Vec<ImportPathResult>,
+    pub failed: Vec<ImportPathResult>,
+    pub results: Vec<ImportPathResult>,
 }
 
 pub struct LibraryService {
@@ -118,10 +141,20 @@ pub struct LibraryService {
 }
 
 struct InferredMetadata {
-    authors: &'static str,
+    title: Option<String>,
+    authors: String,
     publication_year: Option<i64>,
-    source: &'static str,
-    doi: Option<&'static str>,
+    source: String,
+    doi: Option<String>,
+}
+
+struct ExtractedDocument {
+    plain_text: String,
+    normalized_html: String,
+    page_count: Option<i64>,
+    content_status: String,
+    content_notice: Option<String>,
+    metadata: InferredMetadata,
 }
 
 impl LibraryService {
@@ -343,29 +376,93 @@ impl LibraryService {
         collection_id: i64,
         paths: &[PathBuf],
         mode: ImportMode,
-    ) -> Result<Vec<ImportedItem>> {
+    ) -> Result<ImportBatchResult> {
         let mut imported = Vec::new();
+        let mut duplicates = Vec::new();
+        let mut failed = Vec::new();
+        let mut results = Vec::new();
         let mut conn = self.connect()?;
+
         for path in paths {
-            let source_bytes =
-                fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-            let title = path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or("untitled")
-                .to_owned();
-            let metadata = infer_metadata(&title);
+            let path_label = path.to_string_lossy().to_string();
+            let format = infer_attachment_format(&path_label);
+            if format == "unknown" {
+                let result = ImportPathResult {
+                    path: path_label,
+                    status: "failed".into(),
+                    message: "Unsupported attachment format.".into(),
+                    item: None,
+                };
+                failed.push(result.clone());
+                results.push(result);
+                continue;
+            }
+
+            let source_bytes = match fs::read(path)
+                .with_context(|| format!("failed to read {}", path.display()))
+            {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let result = ImportPathResult {
+                        path: path_label,
+                        status: "failed".into(),
+                        message: error.to_string(),
+                        item: None,
+                    };
+                    failed.push(result.clone());
+                    results.push(result);
+                    continue;
+                }
+            };
             let fingerprint = digest_bytes(&source_bytes);
             let existing = conn
                 .query_row(
-                    "SELECT item_id FROM attachments WHERE fingerprint = ?1 LIMIT 1",
+                    "SELECT attachments.item_id, attachments.id, items.title FROM attachments
+                     JOIN items ON items.id = attachments.item_id
+                     WHERE fingerprint = ?1 LIMIT 1",
                     params![fingerprint],
-                    |row| row.get::<_, i64>(0),
+                    |row| {
+                        Ok(ImportedItem {
+                            id: row.get(0)?,
+                            primary_attachment_id: row.get(1)?,
+                            title: row.get(2)?,
+                        })
+                    },
                 )
                 .optional()?;
-            if existing.is_some() {
+
+            if let Some(item) = existing {
+                let result = ImportPathResult {
+                    path: path_label,
+                    status: "duplicate".into(),
+                    message: format!("Duplicate of existing library item {}.", item.title),
+                    item: Some(item),
+                };
+                duplicates.push(result.clone());
+                results.push(result);
                 continue;
             }
+
+            let extracted = match extract_document(path, &source_bytes, format) {
+                Ok(extracted) => extracted,
+                Err(error) => {
+                    let result = ImportPathResult {
+                        path: path_label,
+                        status: "failed".into(),
+                        message: error.to_string(),
+                        item: None,
+                    };
+                    failed.push(result.clone());
+                    results.push(result);
+                    continue;
+                }
+            };
+            let title = extracted.metadata.title.clone().unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("untitled")
+                    .replace(['-', '_'], " ")
+            });
 
             let storage_path = match mode {
                 ImportMode::ManagedCopy => {
@@ -381,8 +478,6 @@ impl LibraryService {
             } else {
                 "missing"
             };
-            let plain_text = normalize_bytes(&source_bytes);
-            let normalized_html = wrap_as_article(&title, &plain_text);
 
             let tx = conn.transaction()?;
             tx.execute(
@@ -392,10 +487,10 @@ impl LibraryService {
                     collection_id,
                     title,
                     attachment_status,
-                    metadata.authors,
-                    metadata.publication_year,
-                    metadata.source,
-                    metadata.doi
+                    extracted.metadata.authors,
+                    extracted.metadata.publication_year,
+                    extracted.metadata.source,
+                    extracted.metadata.doi
                 ],
             )?;
             let item_id = tx.last_insert_rowid();
@@ -412,32 +507,54 @@ impl LibraryService {
             )?;
             let attachment_id = tx.last_insert_rowid();
             tx.execute(
-                "INSERT INTO extracted_content(item_id, plain_text, normalized_html)
-                 VALUES (?1, ?2, ?3)",
-                params![item_id, plain_text, normalized_html],
+                "INSERT INTO extracted_content(item_id, plain_text, normalized_html, page_count, content_status, content_notice)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    item_id,
+                    extracted.plain_text,
+                    extracted.normalized_html,
+                    extracted.page_count,
+                    extracted.content_status,
+                    extracted.content_notice
+                ],
             )?;
             tx.execute(
                 "INSERT INTO search_index(item_id, title, plain_text) VALUES (?1, ?2, ?3)",
-                params![item_id, title, plain_text],
+                params![item_id, title, extracted.plain_text],
             )?;
             tx.commit()?;
 
-            imported.push(ImportedItem {
+            let item = ImportedItem {
                 id: item_id,
                 title,
                 primary_attachment_id: attachment_id,
+            };
+            imported.push(item.clone());
+            results.push(ImportPathResult {
+                path: path.to_string_lossy().to_string(),
+                status: "imported".into(),
+                message: "Imported successfully.".into(),
+                item: Some(item),
             });
         }
 
-        Ok(imported)
+        Ok(ImportBatchResult {
+            imported,
+            duplicates,
+            failed,
+            results,
+        })
     }
 
     pub fn import_citations(
         &self,
         collection_id: i64,
         paths: &[PathBuf],
-    ) -> Result<Vec<ImportedItem>> {
+    ) -> Result<ImportBatchResult> {
         let mut imported = Vec::new();
+        let duplicates = Vec::new();
+        let failed = Vec::new();
+        let mut results = Vec::new();
         let mut conn = self.connect()?;
 
         for path in paths {
@@ -490,9 +607,16 @@ impl LibraryService {
             )?;
             let attachment_id = tx.last_insert_rowid();
             tx.execute(
-                "INSERT INTO extracted_content(item_id, plain_text, normalized_html)
-                 VALUES (?1, ?2, ?3)",
-                params![item_id, plain_text, normalized_html],
+                "INSERT INTO extracted_content(item_id, plain_text, normalized_html, page_count, content_status, content_notice)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    item_id,
+                    plain_text,
+                    normalized_html,
+                    Option::<i64>::None,
+                    "partial",
+                    Some("Citation-only entry. Attach a source file to enable reading.".to_string())
+                ],
             )?;
             tx.execute(
                 "INSERT INTO search_index(item_id, title, plain_text) VALUES (?1, ?2, ?3)",
@@ -505,9 +629,20 @@ impl LibraryService {
                 title: normalized_title,
                 primary_attachment_id: attachment_id,
             });
+            results.push(ImportPathResult {
+                path: path.to_string_lossy().to_string(),
+                status: "imported".into(),
+                message: "Citation imported successfully.".into(),
+                item: imported.last().cloned(),
+            });
         }
 
-        Ok(imported)
+        Ok(ImportBatchResult {
+            imported,
+            duplicates,
+            failed,
+            results,
+        })
     }
 
     pub fn list_items(&self, collection_id: Option<i64>) -> Result<Vec<LibraryItem>> {
@@ -707,7 +842,7 @@ impl LibraryService {
         let conn = self.connect()?;
         conn.query_row(
             "
-            SELECT i.id, i.title, a.id, a.path, e.normalized_html, e.plain_text
+            SELECT i.id, i.title, a.id, a.path, e.normalized_html, e.plain_text, e.page_count, e.content_status, e.content_notice
             FROM items i
             LEFT JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
             JOIN extracted_content e ON e.item_id = i.id
@@ -733,7 +868,9 @@ impl LibraryService {
                     attachment_format,
                     primary_attachment_id: row.get(2)?,
                     primary_attachment_path: attachment_path,
-                    page_count: None,
+                    page_count: row.get(6)?,
+                    content_status: row.get(7)?,
+                    content_notice: row.get(8)?,
                     normalized_html: row.get(4)?,
                     plain_text: row.get(5)?,
                 })
@@ -1186,7 +1323,10 @@ impl LibraryService {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
                 plain_text TEXT NOT NULL,
-                normalized_html TEXT NOT NULL
+                normalized_html TEXT NOT NULL,
+                page_count INTEGER NULL,
+                content_status TEXT NOT NULL DEFAULT 'unavailable',
+                content_notice TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS annotations(
@@ -1235,6 +1375,14 @@ impl LibraryService {
         ensure_column(&conn, "items", "publication_year", "INTEGER NULL")?;
         ensure_column(&conn, "items", "source", "TEXT NOT NULL DEFAULT ''")?;
         ensure_column(&conn, "items", "doi", "TEXT NULL")?;
+        ensure_column(&conn, "extracted_content", "page_count", "INTEGER NULL")?;
+        ensure_column(
+            &conn,
+            "extracted_content",
+            "content_status",
+            "TEXT NOT NULL DEFAULT 'unavailable'",
+        )?;
+        ensure_column(&conn, "extracted_content", "content_notice", "TEXT NULL")?;
         ensure_column(&conn, "ai_tasks", "scope_item_ids", "TEXT NULL")?;
         ensure_column(&conn, "ai_artifacts", "scope_item_ids", "TEXT NULL")?;
         Ok(())
@@ -1372,45 +1520,353 @@ fn extract_markdown_heading(markdown: &str) -> Option<String> {
 fn infer_metadata(title: &str) -> InferredMetadata {
     match title.to_lowercase().as_str() {
         "transformer scaling laws" | "transformer-scaling-laws" => InferredMetadata {
-            authors: "Kaplan et al.",
+            title: Some("Transformer Scaling Laws".into()),
+            authors: "Kaplan et al.".into(),
             publication_year: Some(2020),
-            source: "OpenAI",
-            doi: Some("10.1000/scaling-laws"),
+            source: "OpenAI".into(),
+            doi: Some("10.1000/scaling-laws".into()),
         },
         "graph neural survey" | "graph-neural-survey" => InferredMetadata {
-            authors: "Wu et al.",
+            title: Some("Graph Neural Survey".into()),
+            authors: "Wu et al.".into(),
             publication_year: Some(2021),
-            source: "IEEE TPAMI",
-            doi: Some("10.1000/gnn-survey"),
+            source: "IEEE TPAMI".into(),
+            doi: Some("10.1000/gnn-survey".into()),
         },
         "distributed consensus notes" | "distributed-consensus-notes" => InferredMetadata {
-            authors: "Ongaro & Ousterhout",
+            title: Some("Distributed Consensus Notes".into()),
+            authors: "Ongaro & Ousterhout".into(),
             publication_year: Some(2014),
-            source: "USENIX",
-            doi: Some("10.1000/raft"),
+            source: "USENIX".into(),
+            doi: Some("10.1000/raft".into()),
         },
         _ => InferredMetadata {
-            authors: "Imported Author",
-            publication_year: Some(2026),
-            source: "Paper Reader Library",
+            title: Some(title_from_slug(title)),
+            authors: "Imported Author".into(),
+            publication_year: None,
+            source: "Paper Reader Library".into(),
             doi: None,
         },
     }
 }
 
-fn normalize_bytes(bytes: &[u8]) -> String {
-    let normalized = String::from_utf8_lossy(bytes).replace('\u{0}', " ");
-    if normalized.trim().is_empty() {
+fn extract_document(path: &Path, bytes: &[u8], format: &str) -> Result<ExtractedDocument> {
+    match format {
+        "pdf" => extract_pdf(path, bytes),
+        "docx" => extract_docx(path, bytes),
+        "epub" => extract_epub(path, bytes),
+        _ => Err(anyhow!("unsupported attachment format")),
+    }
+}
+
+fn extract_pdf(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
+    let fallback_title = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(title_from_slug)
+        .unwrap_or_else(|| "Untitled".into());
+    let raw = String::from_utf8_lossy(bytes);
+    // Best-effort page count from PDF object markers.
+    // Avoid counting the "/Type /Pages" node by subtracting those matches.
+    let page_count = (raw.matches("/Type /Page").count() as i64)
+        - (raw.matches("/Type /Pages").count() as i64);
+    let title = capture_pdf_metadata(&raw, "Title").unwrap_or(fallback_title.clone());
+    let authors = capture_pdf_metadata(&raw, "Author").unwrap_or_else(|| "Imported Author".into());
+    let publication_year = capture_pdf_year(&raw);
+    let strings = extract_pdf_text_fragments(&raw);
+    let plain_text = if strings.is_empty() {
+        "PDF imported, but no text layer was extracted.".into()
+    } else {
+        strings.join("\n\n")
+    };
+    let content_status = if strings.is_empty() { "partial" } else { "ready" }.to_string();
+    let content_notice = if strings.is_empty() {
+        Some("This PDF loaded successfully, but text extraction only found partial content.".into())
+    } else {
+        None
+    };
+
+    Ok(ExtractedDocument {
+        normalized_html: article_from_paragraphs(&title, &strings),
+        plain_text,
+        page_count: if page_count > 0 { Some(page_count) } else { None },
+        content_status,
+        content_notice,
+        metadata: InferredMetadata {
+            title: Some(title),
+            authors,
+            publication_year,
+            source: "Imported PDF".into(),
+            doi: None,
+        },
+    })
+}
+
+fn extract_docx(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes))?;
+    let document_xml = read_zip_entry(&mut archive, "word/document.xml")?;
+    let paragraphs = extract_docx_paragraphs(&document_xml)?;
+    let title = read_docx_title(&mut archive)?.unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|value| value.to_str())
+            .map(title_from_slug)
+            .unwrap_or_else(|| "Untitled".into())
+    });
+    let authors = read_docx_author(&mut archive)?.unwrap_or_else(|| "Imported Author".into());
+    let plain_text = join_plain_text(&paragraphs);
+
+    Ok(ExtractedDocument {
+        normalized_html: article_from_paragraphs(&title, &paragraphs),
+        plain_text,
+        page_count: Some(paragraphs.len() as i64),
+        content_status: "ready".into(),
+        content_notice: None,
+        metadata: InferredMetadata {
+            title: Some(title),
+            authors,
+            publication_year: None,
+            source: "Imported DOCX".into(),
+            doi: None,
+        },
+    })
+}
+
+fn extract_epub(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes))?;
+    let container_xml = read_zip_entry(&mut archive, "META-INF/container.xml")?;
+    let rootfile = find_epub_rootfile(&container_xml)?;
+    let package_xml = read_zip_entry(&mut archive, &rootfile)?;
+    let (title, authors, sections) = extract_epub_sections(&mut archive, &rootfile, &package_xml)?;
+    let resolved_title = title.unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|value| value.to_str())
+            .map(title_from_slug)
+            .unwrap_or_else(|| "Untitled".into())
+    });
+    let plain_text = join_plain_text(&sections);
+
+    Ok(ExtractedDocument {
+        normalized_html: article_from_paragraphs(&resolved_title, &sections),
+        plain_text,
+        page_count: Some(sections.len() as i64),
+        content_status: "ready".into(),
+        content_notice: None,
+        metadata: InferredMetadata {
+            title: Some(resolved_title),
+            authors: authors.unwrap_or_else(|| "Imported Author".into()),
+            publication_year: None,
+            source: "Imported EPUB".into(),
+            doi: None,
+        },
+    })
+}
+
+fn read_zip_entry<R: Read + Seek>(archive: &mut ZipArchive<R>, path: &str) -> Result<String> {
+    let mut file = archive.by_name(path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok(contents)
+}
+
+fn extract_docx_paragraphs(xml: &str) -> Result<Vec<String>> {
+    let document = Document::parse(xml)?;
+    let mut paragraphs = Vec::new();
+    for paragraph in document.descendants().filter(|node| node.has_tag_name(("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "p"))) {
+        let text = paragraph
+            .descendants()
+            .filter(|node| node.has_tag_name(("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "t")))
+            .filter_map(|node| node.text())
+            .collect::<Vec<_>>()
+            .join("");
+        let normalized = normalize_whitespace(&text);
+        if !normalized.is_empty() {
+            paragraphs.push(normalized);
+        }
+    }
+    if paragraphs.is_empty() {
+        paragraphs.push("DOCX imported, but no readable paragraphs were extracted.".into());
+    }
+    Ok(paragraphs)
+}
+
+fn read_docx_title<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Option<String>> {
+    match archive.by_name("docProps/core.xml") {
+        Ok(mut file) => {
+            let mut xml = String::new();
+            file.read_to_string(&mut xml)?;
+            let doc = Document::parse(&xml)?;
+            Ok(doc
+                .descendants()
+                .find(|node| node.tag_name().name() == "title")
+                .and_then(|node| node.text())
+                .map(normalize_whitespace)
+                .filter(|value| !value.is_empty()))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn read_docx_author<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Option<String>> {
+    match archive.by_name("docProps/core.xml") {
+        Ok(mut file) => {
+            let mut xml = String::new();
+            file.read_to_string(&mut xml)?;
+            let doc = Document::parse(&xml)?;
+            Ok(doc
+                .descendants()
+                .find(|node| node.tag_name().name() == "creator")
+                .and_then(|node| node.text())
+                .map(normalize_whitespace)
+                .filter(|value| !value.is_empty()))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn find_epub_rootfile(container_xml: &str) -> Result<String> {
+    let document = Document::parse(container_xml)?;
+    document
+        .descendants()
+        .find(|node| node.tag_name().name() == "rootfile")
+        .and_then(|node| node.attribute("full-path"))
+        .map(|value| value.to_string())
+        .ok_or_else(|| anyhow!("EPUB rootfile is missing"))
+}
+
+fn extract_epub_sections<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    rootfile: &str,
+    package_xml: &str,
+) -> Result<(Option<String>, Option<String>, Vec<String>)> {
+    let document = Document::parse(package_xml)?;
+    let title = document
+        .descendants()
+        .find(|node| node.tag_name().name() == "title")
+        .and_then(|node| node.text())
+        .map(normalize_whitespace)
+        .filter(|value| !value.is_empty());
+    let author = document
+        .descendants()
+        .find(|node| node.tag_name().name() == "creator")
+        .and_then(|node| node.text())
+        .map(normalize_whitespace)
+        .filter(|value| !value.is_empty());
+
+    let mut manifest = std::collections::HashMap::new();
+    for item in document.descendants().filter(|node| node.tag_name().name() == "item") {
+        if let (Some(id), Some(href)) = (item.attribute("id"), item.attribute("href")) {
+            manifest.insert(id.to_string(), resolve_relative_path(rootfile, href));
+        }
+    }
+
+    let mut sections = Vec::new();
+    for itemref in document.descendants().filter(|node| node.tag_name().name() == "itemref") {
+        let Some(idref) = itemref.attribute("idref") else {
+            continue;
+        };
+        let Some(chapter_path) = manifest.get(idref) else {
+            continue;
+        };
+        let chapter_xml = read_zip_entry(archive, chapter_path)?;
+        sections.extend(extract_xhtml_sections(&chapter_xml)?);
+    }
+
+    if sections.is_empty() {
+        sections.push("EPUB imported, but no readable sections were extracted.".into());
+    }
+    Ok((title, author, sections))
+}
+
+fn extract_xhtml_sections(xml: &str) -> Result<Vec<String>> {
+    let document = Document::parse(xml)?;
+    let mut sections = Vec::new();
+    for node in document.descendants().filter(|node| {
+        matches!(node.tag_name().name(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "li")
+    }) {
+        let text = normalize_whitespace(node.text().unwrap_or_default());
+        if !text.is_empty() {
+            sections.push(text);
+        }
+    }
+    Ok(sections)
+}
+
+fn capture_pdf_metadata(raw: &str, field: &str) -> Option<String> {
+    let pattern = format!(r"/{}\s*\(([^)]*)\)", field);
+    Regex::new(&pattern)
+        .ok()?
+        .captures(raw)
+        .and_then(|captures| captures.get(1))
+        .map(|value| normalize_whitespace(value.as_str()))
+        .filter(|value| !value.is_empty())
+}
+
+fn capture_pdf_year(raw: &str) -> Option<i64> {
+    Regex::new(r"/CreationDate\s*\(D:(\d{4})")
+        .ok()?
+        .captures(raw)
+        .and_then(|captures| captures.get(1))
+        .and_then(|value| value.as_str().parse::<i64>().ok())
+}
+
+fn extract_pdf_text_fragments(raw: &str) -> Vec<String> {
+    let Some(regex) = Regex::new(r"\(([^()]*)\)\s*Tj").ok() else {
+        return Vec::new();
+    };
+    regex
+        .captures_iter(raw)
+        .filter_map(|captures| captures.get(1))
+        .map(|value| normalize_whitespace(value.as_str()))
+        .filter(|value| value.len() > 2)
+        .collect()
+}
+
+fn article_from_paragraphs(title: &str, paragraphs: &[String]) -> String {
+    let body = if paragraphs.is_empty() {
+        "<p>No readable content was extracted.</p>".to_string()
+    } else {
+        paragraphs
+            .iter()
+            .map(|paragraph| format!("<p>{}</p>", encode_safe(paragraph)))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    format!("<article><h1>{}</h1>{}</article>", encode_safe(title), body)
+}
+
+fn title_from_slug(value: &str) -> String {
+    value
+        .replace(['-', '_'], " ")
+        .split_whitespace()
+        .map(|chunk| {
+            let mut chars = chunk.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn join_plain_text(parts: &[String]) -> String {
+    if parts.is_empty() {
         "No textual content extracted.".into()
     } else {
-        normalized
+        parts.join("\n\n")
     }
 }
 
 fn wrap_as_article(title: &str, body: &str) -> String {
-    format!(
-        "<article><h1>{}</h1><section>{}</section></article>",
-        title,
-        body.replace('\n', "<br />")
-    )
+    article_from_paragraphs(title, &[body.to_string()])
+}
+
+fn resolve_relative_path(base: &str, relative: &str) -> String {
+    let base = Path::new(base);
+    let parent = base.parent().unwrap_or_else(|| Path::new(""));
+    parent.join(relative).to_string_lossy().to_string()
 }
