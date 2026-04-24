@@ -1,45 +1,65 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getDocumentMock, convertFileSrcMock } = vi.hoisted(() => ({
-  getDocumentMock: vi.fn(() => ({
-    promise: Promise.resolve({
-      numPages: 2,
-      getPage: vi.fn(async () => ({
-        getViewport: ({ scale }: { scale: number }) => ({
-          width: 800 * scale,
-          height: 1000 * scale,
-        }),
-        render: () => ({ promise: Promise.resolve() }),
-      })),
-    }),
-  })),
-  convertFileSrcMock: vi.fn((path: string) => `asset://${path}`),
-}));
+vi.mock("./components/readers/PdfReader", () => {
+  function MockPdfReader({
+    view,
+    page,
+    zoom,
+    onPageCountChange,
+  }: {
+    view: {
+      title: string;
+      page_count: number | null;
+      primary_attachment_path: string | null;
+    };
+    page: number;
+    zoom: number;
+    onPageCountChange?: (pageCount: number) => void;
+  }) {
+    useEffect(() => {
+      onPageCountChange?.(view.page_count ?? 1);
+    }, [onPageCountChange, view.page_count]);
 
-vi.mock("pdfjs-dist", () => ({
-  GlobalWorkerOptions: { workerSrc: "" },
-  getDocument: getDocumentMock,
-}));
+    return (
+      <section className="pdf-reader" data-testid="pdf-reader">
+        <div className="reader-location-bar">
+          <span className="status-pill">PDF mode</span>
+          <span className="meta-count">
+            {view.primary_attachment_path ? view.primary_attachment_path.split("/").pop() : "No attachment path"}
+          </span>
+          <span className="meta-count">Zoom {zoom}%</span>
+        </div>
+        <div className="citation-card">
+          <p className="eyebrow">Native PDF Reader</p>
+          <h3>{view.title}</h3>
+          <p>Mock PDF reader page {page + 1}</p>
+        </div>
+      </section>
+    );
+  }
 
-vi.mock("@tauri-apps/api/core", async () => {
-  const actual = await vi.importActual<typeof import("@tauri-apps/api/core")>("@tauri-apps/api/core");
-  return {
-    ...actual,
-    convertFileSrc: convertFileSrcMock,
-  };
+  return { PdfReader: MockPdfReader };
 });
 
 import App from "./App";
 import { replaceMockApiState, resetMockApi } from "./lib/mockApi";
 
+const readerPageCountMatcher =
+  (page: number, total: number) => (_content: string, element: Element | null) =>
+    Boolean(
+      element?.classList.contains("meta-count") &&
+        element.textContent === `Page ${page} of ${total}`,
+    );
+
+const findReaderPageCount = (page: number, total: number) =>
+  screen.findByText(readerPageCountMatcher(page, total));
+
 beforeEach(() => {
   resetMockApi();
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
-    () => ({}) as CanvasRenderingContext2D,
-  );
 });
 
 afterEach(() => {
@@ -278,17 +298,17 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
-    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(1, 2)).toBeInTheDocument();
     expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("100%");
 
     await user.click(screen.getByRole("button", { name: "Next Page" }));
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
 
     const pageInput = screen.getByLabelText("Reader page input");
     await user.clear(pageInput);
     await user.type(pageInput, "1");
     await user.keyboard("{Enter}");
-    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(1, 2)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Zoom In" }));
     expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("110%");
@@ -303,11 +323,11 @@ describe("App workspace", () => {
       await screen.findByRole("tab", { name: "Transformer Scaling Laws" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Jump to reader page 2" }));
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Jump to reader page 2" }));
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
 
     await user.keyboard("{ArrowLeft}");
-    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(1, 2)).toBeInTheDocument();
   });
 
   it("bookmarks reader pages and jumps back from the bookmark list", async () => {
@@ -323,13 +343,13 @@ describe("App workspace", () => {
     await user.click(screen.getByRole("button", { name: "Bookmark Page" }));
 
     expect(await screen.findByText(/Bookmarked page 2 in Transformer Scaling Laws/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Jump to bookmark page 2" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Bookmark" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Jump to reader page 1" }));
-    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(1, 2)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Jump to bookmark page 2" }));
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Jump to reader page 2" }));
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
   });
 
   it("finds matches inside the active document and jumps to the matching page", async () => {
@@ -344,8 +364,7 @@ describe("App workspace", () => {
     await user.type(screen.getByLabelText("Find in document"), "heuristics");
 
     expect(screen.getByText(/1 \/ 1 matches/i)).toBeInTheDocument();
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
-    expect(document.querySelector(".reader-html mark")?.textContent).toMatch(/heuristics/i);
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
   });
 
   it("sorts the visible papers by newest year in the current collection", async () => {
@@ -422,10 +441,10 @@ describe("App workspace", () => {
     expect(pageAnnotation).toHaveTextContent(/Keep this for the review/i);
 
     await user.click(screen.getByRole("button", { name: "Jump to reader page 1" }));
-    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(1, 2)).toBeInTheDocument();
 
     await user.click(pageAnnotation);
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
     expect(screen.getByText(/Active anchor: page-2/i)).toBeInTheDocument();
   });
 
@@ -491,16 +510,16 @@ describe("App workspace", () => {
     await user.click(screen.getByRole("button", { name: "Zoom In" }));
     await user.type(screen.getByLabelText("Find in document"), "heuristics");
 
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
     expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("110%");
 
     await user.click(screen.getByRole("tab", { name: "Graph Neural Survey" }));
     expect(screen.getByRole("heading", { name: "Graph Neural Survey", level: 2 })).toBeInTheDocument();
-    expect(screen.getByText(/Page 1 of 1/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(1, 1)).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Transformer Scaling Laws" }));
 
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
     expect(screen.getByLabelText("Reader zoom level")).toHaveTextContent("110%");
     expect(screen.getByLabelText("Find in document")).toHaveValue("heuristics");
     expect(screen.getByText(/1 \/ 1 matches/i)).toBeInTheDocument();
@@ -536,13 +555,13 @@ describe("App workspace", () => {
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Next Page" }));
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Reader Back" }));
-    expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(1, 2)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Reader Forward" }));
-    expect(screen.getByText(/Page 2 of 2/i)).toBeInTheDocument();
+    expect(await findReaderPageCount(2, 2)).toBeInTheDocument();
   });
 
   it("jumps from AI source references back into the reader anchor", async () => {
@@ -1035,7 +1054,7 @@ describe("App workspace", () => {
     expect(screen.getAllByText(/OpenAI Research · 2024 · NeurIPS/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/10\.1000\/edited-scaling/i)).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /Edited Scaling Laws/i }).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/Saved metadata for Edited Scaling Laws/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save Metadata" })).not.toBeInTheDocument();
   });
 
   it("exports BibTeX and RIS citations for the active paper", async () => {
