@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ReaderView } from "../../lib/contracts";
+import type {
+  PDFDocumentLoadingTask,
+  PDFDocumentProxy,
+  RenderTask,
+} from "pdfjs-dist/types/src/display/api";
 
 type PdfReaderProps = {
   view: ReaderView;
@@ -18,12 +23,46 @@ export function PdfReader({
   onPageCountChange,
 }: PdfReaderProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
+  const pdfDocumentRef = useRef<PDFDocumentProxy | null>(null);
+  const renderTaskRef = useRef<RenderTask | null>(null);
+  const onPageCountChangeRef = useRef(onPageCountChange);
   const [pageCount, setPageCount] = useState(view.page_count);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
+    onPageCountChangeRef.current = onPageCountChange;
+  }, [onPageCountChange]);
+
+  useEffect(() => {
     let cancelled = false;
+
+    const cancelActiveWork = async () => {
+      const activeRenderTask = renderTaskRef.current;
+      renderTaskRef.current = null;
+      activeRenderTask?.cancel();
+
+      const activeLoadingTask = loadingTaskRef.current;
+      loadingTaskRef.current = null;
+      const activeDocument = pdfDocumentRef.current;
+      pdfDocumentRef.current = null;
+
+      await Promise.allSettled([
+        activeLoadingTask?.destroy(),
+        typeof activeDocument?.destroy === "function" ? activeDocument.destroy() : undefined,
+      ]);
+    };
+
+    const isCancellationError = (error: unknown) => {
+      if (!(error instanceof Error)) return false;
+      return (
+        error.name === "RenderingCancelledException" ||
+        error.name === "AbortException" ||
+        /cancel|abort/i.test(error.name) ||
+        /cancel|abort/i.test(error.message)
+      );
+    };
 
     async function renderPage() {
       if (!view.primary_attachment_id) {
@@ -40,8 +79,12 @@ export function PdfReader({
         return;
       }
 
+      await cancelActiveWork();
+      if (cancelled) return;
+
       setStatus("loading");
       setErrorMessage("");
+      setPageCount(view.page_count);
 
       try {
         const [pdfjsModule, workerModule] = await Promise.all([
@@ -51,12 +94,24 @@ export function PdfReader({
         pdfjsModule.GlobalWorkerOptions.workerSrc = workerModule.default;
 
         const bytes = await loadPrimaryAttachmentBytes(view.primary_attachment_id);
-        const pdfDocument = await pdfjsModule.getDocument({ data: bytes }).promise;
         if (cancelled) return;
+
+        const loadingTask = pdfjsModule.getDocument({ data: bytes });
+        loadingTaskRef.current = loadingTask;
+
+        const pdfDocument = await loadingTask.promise;
+        if (cancelled) return;
+        if (loadingTaskRef.current !== loadingTask) {
+          await pdfDocument.destroy();
+          return;
+        }
+
+        loadingTaskRef.current = null;
+        pdfDocumentRef.current = pdfDocument;
 
         const nextPageCount = pdfDocument.numPages ?? view.page_count ?? 1;
         setPageCount(nextPageCount);
-        onPageCountChange?.(nextPageCount);
+        onPageCountChangeRef.current?.(nextPageCount);
 
         const currentPage = await pdfDocument.getPage(Math.min(page + 1, nextPageCount));
         if (cancelled) return;
@@ -65,16 +120,22 @@ export function PdfReader({
         canvas.width = viewport.width;
         canvas.height = viewport.height;
 
-        await currentPage.render({
+        const renderTask = currentPage.render({
           canvas,
           canvasContext: context,
           viewport,
-        }).promise;
+        });
+        renderTaskRef.current = renderTask;
+
+        await renderTask.promise;
 
         if (cancelled) return;
+        if (renderTaskRef.current !== renderTask) return;
+        renderTaskRef.current = null;
         setStatus("ready");
       } catch (error) {
         if (cancelled) return;
+        if (isCancellationError(error)) return;
         setStatus("error");
         setErrorMessage(
           error instanceof Error ? error.message : "Unknown PDF rendering error.",
@@ -86,8 +147,9 @@ export function PdfReader({
 
     return () => {
       cancelled = true;
+      void cancelActiveWork();
     };
-  }, [loadPrimaryAttachmentBytes, onPageCountChange, page, view.page_count, view.primary_attachment_id, zoom]);
+  }, [loadPrimaryAttachmentBytes, page, view.page_count, view.primary_attachment_id, zoom]);
 
   return (
     <section className="pdf-reader" data-testid="pdf-reader">

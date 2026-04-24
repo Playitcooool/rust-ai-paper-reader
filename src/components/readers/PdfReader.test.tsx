@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PdfReader } from "./PdfReader";
 import type { ReaderView } from "../../lib/contracts";
@@ -29,7 +29,22 @@ const pdfView: ReaderView = {
   plain_text: "PDF preview",
 };
 
+const createDeferred = <T,>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
+
 describe("PdfReader", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
   beforeEach(() => {
     getDocumentMock.mockReset();
     getPageMock.mockReset();
@@ -110,5 +125,166 @@ describe("PdfReader", () => {
     );
 
     expect(await screen.findByText(new RegExp(message, "i"))).toBeInTheDocument();
+  });
+
+  it("cancels an in-flight render before starting a replacement render", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+    const firstRender = createDeferred<void>();
+    const cancelFirstRender = vi.fn(() => {
+      firstRender.reject(new Error("RenderingCancelledException"));
+    });
+    const secondRender = createDeferred<void>();
+    const cancelSecondRender = vi.fn();
+
+    renderMock
+      .mockReturnValueOnce({ promise: firstRender.promise, cancel: cancelFirstRender })
+      .mockReturnValueOnce({ promise: secondRender.promise, cancel: cancelSecondRender });
+    getPageMock.mockResolvedValue({
+      getViewport: ({ scale }: { scale: number }) => ({
+        width: 800 * scale,
+        height: 1000 * scale,
+      }),
+      render: renderMock,
+    });
+    getDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 4,
+        getPage: getPageMock,
+      }),
+      destroy: vi.fn(),
+    });
+
+    const { rerender } = render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(renderMock).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        page={1}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(cancelFirstRender).toHaveBeenCalledTimes(1);
+      expect(renderMock).toHaveBeenCalledTimes(2);
+    });
+
+    secondRender.resolve();
+
+    expect(cancelSecondRender).not.toHaveBeenCalled();
+  });
+
+  it("does not reload or rerender only because onPageCountChange gets a new identity", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+    const onPageCountChange = vi.fn();
+
+    renderMock.mockReturnValue({ promise: Promise.resolve(), cancel: vi.fn() });
+    getPageMock.mockResolvedValue({
+      getViewport: ({ scale }: { scale: number }) => ({
+        width: 800 * scale,
+        height: 1000 * scale,
+      }),
+      render: renderMock,
+    });
+    getDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 4,
+        getPage: getPageMock,
+      }),
+      destroy: vi.fn(),
+    });
+
+    const { rerender } = render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        onPageCountChange={onPageCountChange}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(loadPrimaryAttachmentBytes).toHaveBeenCalledTimes(1);
+      expect(renderMock).toHaveBeenCalledTimes(1);
+      expect(onPageCountChange).toHaveBeenCalledWith(4);
+    });
+
+    rerender(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        onPageCountChange={vi.fn()}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(loadPrimaryAttachmentBytes).toHaveBeenCalledTimes(1);
+      expect(getDocumentMock).toHaveBeenCalledTimes(1);
+      expect(renderMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("treats cancelled renders as normal control flow instead of a user-visible error", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+    const renderDeferred = createDeferred<void>();
+    const cancelRender = vi.fn(() => {
+      renderDeferred.reject(new Error("RenderingCancelledException"));
+    });
+
+    renderMock.mockReturnValue({ promise: renderDeferred.promise, cancel: cancelRender });
+    getPageMock.mockResolvedValue({
+      getViewport: ({ scale }: { scale: number }) => ({
+        width: 800 * scale,
+        height: 1000 * scale,
+      }),
+      render: renderMock,
+    });
+    getDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 4,
+        getPage: getPageMock,
+      }),
+      destroy: vi.fn(),
+    });
+
+    const { unmount } = render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(renderMock).toHaveBeenCalledTimes(1);
+    });
+
+    unmount();
+
+    await waitFor(() => {
+      expect(cancelRender).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.queryByText(/RenderingCancelledException/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unable to load this PDF/i)).not.toBeInTheDocument();
   });
 });
