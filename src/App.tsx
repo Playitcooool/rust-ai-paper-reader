@@ -388,11 +388,11 @@ export default function App({ api }: { api: AppApi }) {
       setIsAiPanelOpen(false);
       return;
     }
-    if (workspaceMode === "pdf_focus" && readerView?.attachment_format !== "pdf") {
+    if (workspaceMode === "pdf_focus" && activePaper.attachment_format !== "pdf") {
       setWorkspaceMode("workspace");
       setIsSidebarVisible(true);
     }
-  }, [activePaper, readerView, workspaceMode]);
+  }, [activePaper, workspaceMode]);
 
   useEffect(() => {
     if (workspaceMode === "pdf_focus") {
@@ -1019,39 +1019,19 @@ export default function App({ api }: { api: AppApi }) {
           ))}
         </div>
 
-        {workspaceMode === "pdf_focus" && activePaper && readerView ? (
+        {workspaceMode === "pdf_focus" && activePaper?.attachment_format === "pdf" ? (
           <section className="reader-panel reader-panel-focus">
-            <div className="reader-meta-row reader-meta-row-focus">
-              <div className="reader-focus-heading">
-                <h2>{activePaper.title}</h2>
-                <p className="secondary-copy reader-focus-subtitle">
-                  {activeCollection?.name ?? "No collection"} · {attachmentFormatLabel(activePaper.attachment_format)}
-                </p>
-              </div>
-              <div className="reader-actions reader-actions-focus">
-                <button aria-label="Back to workspace" className="ghost-button focus-action-button" type="button" onClick={() => {
+            <div className="reader-toolbar reader-toolbar-focus" role="toolbar" aria-label="PDF focus toolbar">
+              <button
+                className="ghost-button focus-action-button"
+                type="button"
+                onClick={() => {
                   setWorkspaceMode("workspace");
                   setIsSidebarVisible(true);
-                }}>
-                  Back
-                </button>
-                <button className="ghost-button focus-action-button" type="button" onClick={() => {
-                  setWorkspaceMode("workspace");
-                  setIsSidebarVisible(true);
-                }}>
-                  Show sidebar
-                </button>
-              </div>
-            </div>
-
-            <div className="reader-toolbar">
-              <div className="reader-toolbar-status">
-                <span className="status-pill">{readerView.content_status}</span>
-                <span className="meta-count">
-                  Page {readerPage + 1} of {readerPageCount}
-                </span>
-                <span className="meta-count">Zoom {readerZoom}%</span>
-              </div>
+                }}
+              >
+                Back
+              </button>
               <div className="reader-control-group reader-control-group-page">
                 <button
                   aria-label="Previous Page"
@@ -1127,27 +1107,27 @@ export default function App({ api }: { api: AppApi }) {
               </div>
             </div>
 
-            {showPdfNotice ? (
-              <div className="citation-card">
-                <p className="eyebrow">Text Capabilities</p>
-                <p>{readerView.content_notice ?? "This PDF can be read by page, but no reliable text layer is available."}</p>
+            {readerView ? (
+              <PdfReader
+                loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+                mode="focus"
+                page={readerPage}
+                view={readerView}
+                zoom={readerZoom}
+                onPageCountChange={(pageCount) => {
+                  if (!activePaper) return;
+                  setPdfPageCounts((current) =>
+                    current[activePaper.id] === pageCount
+                      ? current
+                      : { ...current, [activePaper.id]: pageCount },
+                  );
+                }}
+              />
+            ) : (
+              <div className="reader-focus-loading" role="status">
+                Loading PDF...
               </div>
-            ) : null}
-
-            <PdfReader
-              loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
-              page={readerPage}
-              view={readerView}
-              zoom={readerZoom}
-              onPageCountChange={(pageCount) => {
-                if (!activePaper) return;
-                setPdfPageCounts((current) =>
-                  current[activePaper.id] === pageCount
-                    ? current
-                    : { ...current, [activePaper.id]: pageCount },
-                );
-              }}
-            />
+            )}
           </section>
         ) : (
           <section className="reader-panel reader-panel-workspace">

@@ -11,6 +11,7 @@ type PdfReaderProps = {
   view: ReaderView;
   page: number;
   zoom: number;
+  mode?: "workspace" | "focus";
   loadPrimaryAttachmentBytes: (primaryAttachmentId: number) => Promise<Uint8Array>;
   onPageCountChange?: (pageCount: number) => void;
 };
@@ -19,6 +20,7 @@ export function PdfReader({
   view,
   page,
   zoom,
+  mode = "workspace",
   loadPrimaryAttachmentBytes,
   onPageCountChange,
 }: PdfReaderProps) {
@@ -151,24 +153,40 @@ export function PdfReader({
     };
   }, [loadPrimaryAttachmentBytes, page, view.page_count, view.primary_attachment_id, zoom]);
 
+  const showChrome = mode === "workspace";
+
   return (
-    <section className="pdf-reader" data-testid="pdf-reader">
-      <div className="reader-location-bar">
-        <span className="status-pill">PDF mode</span>
-        <span className="meta-count">
-          {view.primary_attachment_path ? view.primary_attachment_path.split("/").pop() : "No attachment path"}
-        </span>
-        <span className="meta-count">Zoom {zoom}%</span>
-      </div>
-      <div className="citation-card">
-        <p className="eyebrow">Native PDF Reader</p>
-        <h3>{view.title}</h3>
-        <p>
-          Page {page + 1}
-          {pageCount ? ` of ${pageCount}` : ""}
-        </p>
+    <section
+      className={`pdf-reader ${showChrome ? "pdf-reader-workspace" : "pdf-reader-focus"}`}
+      data-testid="pdf-reader"
+    >
+      {showChrome ? (
+        <div className="reader-location-bar">
+          <span className="status-pill">PDF mode</span>
+          <span className="meta-count">
+            {view.primary_attachment_path
+              ? view.primary_attachment_path.split("/").pop()
+              : "No attachment path"}
+          </span>
+          <span className="meta-count">Zoom {zoom}%</span>
+        </div>
+      ) : null}
+
+      <div className={showChrome ? "citation-card" : "pdf-stage"}>
+        {showChrome ? (
+          <>
+            <p className="eyebrow">Native PDF Reader</p>
+            <h3>{view.title}</h3>
+            <p>
+              Page {page + 1}
+              {pageCount ? ` of ${pageCount}` : ""}
+            </p>
+          </>
+        ) : null}
+
         {status === "loading" ? <p>Loading PDF page...</p> : null}
         {status === "error" ? <p>Unable to load this PDF. {errorMessage}</p> : null}
+
         <canvas
           aria-label="PDF page canvas"
           ref={canvasRef}

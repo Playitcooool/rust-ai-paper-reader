@@ -94,6 +94,47 @@ describe("PdfReader", () => {
     expect(screen.getByText(/native-pdf-paper\.pdf/i)).toBeInTheDocument();
   });
 
+  it("hides reader chrome when rendered in focus mode", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+
+    renderMock.mockReturnValue({ promise: Promise.resolve() });
+    getPageMock.mockResolvedValue({
+      getViewport: ({ scale }: { scale: number }) => ({
+        width: 800 * scale,
+        height: 1000 * scale,
+      }),
+      render: renderMock,
+    });
+    getDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 4,
+        getPage: getPageMock,
+      }),
+    });
+
+    render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        mode="focus"
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(loadPrimaryAttachmentBytes).toHaveBeenCalledWith(101);
+      expect(renderMock).toHaveBeenCalled();
+    });
+
+    expect(screen.getByLabelText("PDF page canvas")).toBeInTheDocument();
+    expect(screen.queryByText(/native pdf reader/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(pdfView.title)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pdf mode/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/native-pdf-paper\.pdf/i)).not.toBeInTheDocument();
+  });
+
   it("shows a specific error when the attachment id is missing", async () => {
     render(
       <PdfReader
