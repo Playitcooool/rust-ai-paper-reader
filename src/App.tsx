@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { NormalizedReader } from "./components/readers/NormalizedReader";
 import { PdfReader } from "./components/readers/PdfReader";
+import { isTauriRuntime } from "./lib/api";
 import type {
   AIArtifact,
   AITask,
@@ -10,7 +11,6 @@ import type {
   AppApi,
   Collection,
   ImportBatchResult,
-  ImportMode,
   LibraryItem,
   ReaderView,
   ResearchNote,
@@ -157,6 +157,9 @@ const isTypingTarget = (target: EventTarget | null) =>
 export default function App({ api }: { api: AppApi }) {
   const getApi = () => Promise.resolve(api);
   const readerSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const importDocumentsRef = useRef<() => void>(() => {});
+  const importCitationsRef = useRef<() => void>(() => {});
+  const importPathsRef = useRef<(paths: string[], sourceLabel: string) => void>(() => {});
 
   const [collections, setCollections] = useState<Collection[]>([]);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
@@ -183,7 +186,6 @@ export default function App({ api }: { api: AppApi }) {
   const [search, setSearch] = useState("");
   const [itemSort, setItemSort] = useState<ItemSort>("recent");
   const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>("all");
-  const [importMode, setImportMode] = useState<ImportMode>("managed_copy");
   const [lastImportResult, setLastImportResult] = useState<ImportBatchResult | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [draggedFileCount, setDraggedFileCount] = useState(0);
@@ -196,8 +198,13 @@ export default function App({ api }: { api: AppApi }) {
   const [readerPageInput, setReaderPageInput] = useState("1");
   const [readerZoom, setReaderZoom] = useState(100);
   const [readerSearchQuery, setReaderSearchQuery] = useState("");
+  const [isFindHudOpen, setIsFindHudOpen] = useState(false);
+  const [readerSearchMatchIndex, setReaderSearchMatchIndex] = useState(0);
+  const [readerSearchMatchCount, setReaderSearchMatchCount] = useState(0);
+  const [reportedActiveSearchMatchIndex, setReportedActiveSearchMatchIndex] = useState(-1);
   const [pdfPageCounts, setPdfPageCounts] = useState<Record<number, number>>({});
   const [annotationFilter, setAnnotationFilter] = useState<AnnotationFilter>("all");
+  const [pdfSelection, setPdfSelection] = useState<{ anchor: string; quote: string } | null>(null);
 
   const hasCollections = collections.length > 0;
 
@@ -252,10 +259,17 @@ export default function App({ api }: { api: AppApi }) {
   const readerPageCount =
     activePaper?.id && isPdfReader ? pdfPageCounts[activePaper.id] ?? readerView?.page_count ?? 1 : 1;
   const visibleAnnotations = useMemo(() => {
-    if (annotationFilter === "current_page") {
-      return annotations.filter((annotation) => annotation.anchor === `page-${readerPage + 1}`);
-    }
-    return annotations;
+    if (annotationFilter !== "current_page") return annotations;
+    const currentPage = readerPage + 1;
+    return annotations.filter((annotation) => {
+      if (annotation.anchor === `page-${currentPage}`) return true;
+      try {
+        const parsed = JSON.parse(annotation.anchor) as { type?: string; page?: number };
+        return parsed.type === "pdf_text" && parsed.page === currentPage;
+      } catch {
+        return false;
+      }
+    });
   }, [annotationFilter, annotations, readerPage]);
   const importHasIssues = Boolean(
     lastImportResult &&
@@ -370,6 +384,11 @@ export default function App({ api }: { api: AppApi }) {
       setReaderPage(0);
       setReaderPageInput("1");
       setReaderSearchQuery("");
+      setIsFindHudOpen(false);
+      setReaderSearchMatchIndex(0);
+      setReaderSearchMatchCount(0);
+      setReportedActiveSearchMatchIndex(-1);
+      setPdfSelection(null);
     }
 
     void loadReaderContext();
@@ -402,14 +421,41 @@ export default function App({ api }: { api: AppApi }) {
   }, [workspaceMode]);
 
   useEffect(() => {
+    setReaderSearchMatchIndex(0);
+  }, [activePaperId, readerPage, readerSearchQuery, readerView?.reader_kind]);
+
+  useEffect(() => {
+    if (textCapabilitiesEnabled) return;
+    setIsFindHudOpen(false);
+    setReaderSearchQuery("");
+    setReaderSearchMatchIndex(0);
+    setReaderSearchMatchCount(0);
+    setReportedActiveSearchMatchIndex(-1);
+  }, [textCapabilitiesEnabled]);
+
+  useEffect(() => {
+    if (!isFindHudOpen) return;
+    readerSearchInputRef.current?.focus();
+    readerSearchInputRef.current?.select();
+  }, [isFindHudOpen]);
+
+  useEffect(() => {
     function handleWindowKeydown(event: KeyboardEvent) {
-      if (workspaceMode !== "pdf_focus") return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && textCapabilitiesEnabled) {
         event.preventDefault();
-        readerSearchInputRef.current?.focus();
-        readerSearchInputRef.current?.select();
+        setIsFindHudOpen(true);
         return;
       }
+      if (event.key === "Escape" && isFindHudOpen) {
+        event.preventDefault();
+        setIsFindHudOpen(false);
+        setReaderSearchQuery("");
+        setReaderSearchMatchIndex(0);
+        setReaderSearchMatchCount(0);
+        setReportedActiveSearchMatchIndex(-1);
+        return;
+      }
+      if (workspaceMode !== "pdf_focus") return;
       if (event.key === "Escape" && !isTypingTarget(event.target)) {
         setWorkspaceMode("workspace");
         setIsSidebarVisible(true);
@@ -418,7 +464,15 @@ export default function App({ api }: { api: AppApi }) {
 
     window.addEventListener("keydown", handleWindowKeydown);
     return () => window.removeEventListener("keydown", handleWindowKeydown);
-  }, [textCapabilitiesEnabled, workspaceMode]);
+  }, [isFindHudOpen, textCapabilitiesEnabled, workspaceMode]);
+
+  const moveReaderSearchMatch = (direction: 1 | -1) => {
+    if (readerSearchMatchCount <= 0) return;
+    setReaderSearchMatchIndex((current) => {
+      const base = ((current % readerSearchMatchCount) + readerSearchMatchCount) % readerSearchMatchCount;
+      return (base + direction + readerSearchMatchCount) % readerSearchMatchCount;
+    });
+  };
 
   const toggleCollectionExpanded = (collectionId: number) => {
     setExpandedCollectionIds((current) =>
@@ -485,7 +539,6 @@ export default function App({ api }: { api: AppApi }) {
       const result = await runtimeApi.importFiles({
         collection_id: selectedCollectionId,
         paths: acceptedPaths,
-        mode: importMode,
       });
       setLastImportResult(result);
       await loadLibrary();
@@ -516,6 +569,12 @@ export default function App({ api }: { api: AppApi }) {
       setDraggedFileCount(0);
     }
   };
+
+  useEffect(() => {
+    importPathsRef.current = (paths: string[], sourceLabel: string) => {
+      void importPaths(paths, sourceLabel);
+    };
+  });
 
   const handleImport = async () => {
     if (!selectedCollectionId || !activeCollection || isImporting) {
@@ -549,6 +608,60 @@ export default function App({ api }: { api: AppApi }) {
       `Imported ${result.imported.length} citation records (duplicates ${result.duplicates.length}, failed ${result.failed.length}) into ${activeCollection.name}.`,
     );
   };
+
+  // Native (desktop) menu events.
+  useEffect(() => {
+    importDocumentsRef.current = () => {
+      void handleImport();
+    };
+    importCitationsRef.current = () => {
+      void handleImportCitations();
+    };
+  });
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlistenDocs: null | (() => void) = null;
+    let unlistenCitations: null | (() => void) = null;
+
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlistenDocs = await listen("menu:import-documents", () => importDocumentsRef.current());
+      unlistenCitations = await listen("menu:import-citations", () => importCitationsRef.current());
+    })();
+
+    return () => {
+      unlistenDocs?.();
+      unlistenCitations?.();
+    };
+  }, []);
+
+  // Native drag & drop (desktop): uses absolute file paths provided by Tauri.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: null | (() => void) = null;
+
+    void (async () => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+        if (event.payload.type === "enter") {
+          setDraggedFileCount(event.payload.paths.filter(isSupportedPath).length);
+          return;
+        }
+        if (event.payload.type === "leave") {
+          setDraggedFileCount(0);
+          return;
+        }
+        if (event.payload.type === "drop") {
+          importPathsRef.current(event.payload.paths, "drag & drop");
+        }
+      });
+    })();
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   const handleCreateCollection = async () => {
     const name = newCollectionName.trim();
@@ -685,6 +798,19 @@ export default function App({ api }: { api: AppApi }) {
     setStatusMessage(`Saved Markdown to ${path}.`);
   };
 
+  const handleCreatePdfHighlight = async () => {
+    if (!activePaper || !textCapabilitiesEnabled || !pdfSelection) return;
+    const runtimeApi = await getApi();
+    const annotation = await runtimeApi.createAnnotation({
+      item_id: activePaper.id,
+      anchor: pdfSelection.anchor,
+      kind: "highlight",
+      body: pdfSelection.quote,
+    });
+    setAnnotations((current) => [...current, annotation]);
+    setStatusMessage("Created highlight.");
+  };
+
   const handleReaderPageSubmit = () => {
     const parsed = Number(readerPageInput.trim());
     if (!Number.isFinite(parsed)) {
@@ -702,23 +828,52 @@ export default function App({ api }: { api: AppApi }) {
   );
 
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
-  const showPdfNotice =
-    readerView?.attachment_format === "pdf" && readerView.content_status !== "ready";
-  const showTextTools = Boolean(readerView?.attachment_format === "pdf" ? textCapabilitiesEnabled : true);
+  const showHighlightAction = Boolean(
+    activePaper && readerView?.reader_kind === "pdf" && textCapabilitiesEnabled,
+  );
   const isCollectionDraftStale = Boolean(
     collectionArtifact &&
       collectionArtifact.collection_id === activeCollection?.id &&
       !scopeMatches(collectionArtifact.scope_item_ids, visibleScopeItemIds),
   );
 
+  const treeSearchFilter = useMemo(() => {
+    const normalized = search.trim().toLowerCase();
+    if (normalized.length === 0) return null;
+
+    const matchingItems = activeCollectionItems;
+    const allowedItemIds = new Set(matchingItems.map((item) => item.id));
+    const parentById = new Map(collections.map((collection) => [collection.id, collection.parent_id]));
+    const allowedCollectionIds = new Set<number>();
+
+    for (const item of matchingItems) {
+      let cursor: number | null = item.collection_id;
+      while (cursor !== null && !allowedCollectionIds.has(cursor)) {
+        allowedCollectionIds.add(cursor);
+        cursor = parentById.get(cursor) ?? null;
+      }
+    }
+
+    return { allowedItemIds, allowedCollectionIds };
+  }, [activeCollectionItems, collections, search]);
+
   const renderTreeNodes = (parentId: number | null, depth = 0): JSX.Element[] =>
-    childCollectionsFor(collections, parentId).flatMap((collection) => {
+    childCollectionsFor(collections, parentId)
+      .filter((collection) =>
+        treeSearchFilter ? treeSearchFilter.allowedCollectionIds.has(collection.id) : true,
+      )
+      .flatMap((collection) => {
       const isExpanded = expandedCollectionIds.includes(collection.id);
       const collectionChildren = renderTreeNodes(collection.id, depth + 1);
       const directItems = sortItems(
-        libraryItems.filter((item) => item.collection_id === collection.id),
+        libraryItems
+          .filter((item) => item.collection_id === collection.id)
+          .filter((item) => (treeSearchFilter ? treeSearchFilter.allowedItemIds.has(item.id) : true)),
         "title",
       );
+      const collectionCount = treeSearchFilter
+        ? directItems.length
+        : itemCountForCollection(libraryItems, collection.id);
 
       return [
         <div key={`collection-${collection.id}`} role="none">
@@ -746,7 +901,7 @@ export default function App({ api }: { api: AppApi }) {
             >
               {collection.name}
             </button>
-            <span className="meta-count">{itemCountForCollection(libraryItems, collection.id)}</span>
+            <span className="meta-count">{collectionCount}</span>
           </div>
           {isExpanded ? (
             <div className="resource-tree-group" role="group">
@@ -791,18 +946,6 @@ export default function App({ api }: { api: AppApi }) {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
-            <select
-              aria-label="Import mode"
-              className="mode-select"
-              value={importMode}
-              onChange={(event) => setImportMode(event.target.value as ImportMode)}
-            >
-              <option value="managed_copy">Managed Copy</option>
-              <option value="linked_file">Linked File</option>
-            </select>
-            <button className="primary-button" type="button" onClick={() => void handleImport()}>
-              {isImporting ? "Importing..." : "Import"}
-            </button>
           </div>
 
           <section
@@ -827,6 +970,7 @@ export default function App({ api }: { api: AppApi }) {
             }}
             onDrop={(event) => {
               event.preventDefault();
+              if (isTauriRuntime()) return;
               const files = event.dataTransfer?.files;
               const paths = files ? droppedPathsFromFileList(files) : [];
               void importPaths(paths, "drag & drop");
@@ -848,7 +992,11 @@ export default function App({ api }: { api: AppApi }) {
               </div>
             ) : (
               <div className="resource-tree" role="tree" aria-label="Library resources">
-                {renderTreeNodes(null)}
+                {treeSearchFilter && treeSearchFilter.allowedItemIds.size === 0 ? (
+                  <p className="secondary-copy">No matches.</p>
+                ) : (
+                  renderTreeNodes(null)
+                )}
               </div>
             )}
           </section>
@@ -866,14 +1014,6 @@ export default function App({ api }: { api: AppApi }) {
                 />
                 <button className="ghost-button" type="button" onClick={() => void handleCreateCollection()}>
                   Add Collection
-                </button>
-                <button
-                  className="ghost-button"
-                  disabled={!activeCollection || isImporting}
-                  type="button"
-                  onClick={() => void handleImportCitations()}
-                >
-                  Import Citations
                 </button>
               </div>
               <div className="collection-create-row">
@@ -1089,34 +1229,37 @@ export default function App({ api }: { api: AppApi }) {
                   +
                 </button>
               </div>
-              <div className="reader-control-group reader-control-group-search">
-                <input
-                  aria-label="Find in document"
-                  className="reader-search-input"
-                  disabled={!textCapabilitiesEnabled}
-                  placeholder="Find in document..."
-                  ref={readerSearchInputRef}
-                  value={readerSearchQuery}
-                  onChange={(event) => setReaderSearchQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      setReaderSearchQuery("");
-                    }
-                  }}
-                />
-              </div>
+              {showHighlightAction ? (
+                <button
+                  aria-label="Highlight selection"
+                  className="ghost-button focus-action-button"
+                  disabled={!pdfSelection}
+                  type="button"
+                  onClick={() => void handleCreatePdfHighlight()}
+                >
+                  Highlight
+                </button>
+              ) : null}
             </div>
 
             {readerView ? (
-              <PdfReader
-                loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
-                mode="focus"
-                page={readerPage}
-                view={readerView}
-                zoom={readerZoom}
-                onPageCountChange={(pageCount) => {
-                  if (!activePaper) return;
-                  setPdfPageCounts((current) =>
+                <PdfReader
+                  loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+                  annotations={annotations}
+                  mode="focus"
+                  page={readerPage}
+                  searchQuery={readerSearchQuery}
+                  activeSearchMatchIndex={readerSearchMatchIndex}
+                  view={readerView}
+                  zoom={readerZoom}
+                  onSearchMatchesChange={({ total, activeIndex }) => {
+                    setReaderSearchMatchCount(total);
+                    setReportedActiveSearchMatchIndex(activeIndex);
+                  }}
+                  onSelectionChange={(selection) => setPdfSelection(selection)}
+                  onPageCountChange={(pageCount) => {
+                    if (!activePaper) return;
+                    setPdfPageCounts((current) =>
                     current[activePaper.id] === pageCount
                       ? current
                       : { ...current, [activePaper.id]: pageCount },
@@ -1151,8 +1294,14 @@ export default function App({ api }: { api: AppApi }) {
                     Open AI Workspace
                   </button>
                 ) : null}
-                {showTextTools ? (
-                  <button className="ghost-button" type="button">
+                {showHighlightAction ? (
+                  <button
+                    aria-label="Highlight selection"
+                    className="ghost-button"
+                    disabled={!pdfSelection}
+                    type="button"
+                    onClick={() => void handleCreatePdfHighlight()}
+                  >
                     Highlight
                   </button>
                 ) : null}
@@ -1176,28 +1325,7 @@ export default function App({ api }: { api: AppApi }) {
               </div>
             </div>
 
-            {showPdfNotice ? (
-              <div className="citation-card">
-                <p className="eyebrow">Text Capabilities</p>
-                <p>{readerView?.content_notice ?? "This PDF can be read by page, but no reliable text layer is available."}</p>
-              </div>
-            ) : null}
-
             <div className="reader-toolbar">
-              <input
-                aria-label="Find in document"
-                className="reader-search-input"
-                disabled={!textCapabilitiesEnabled}
-                placeholder="Find in document..."
-                ref={readerSearchInputRef}
-                value={readerSearchQuery}
-                onChange={(event) => setReaderSearchQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    setReaderSearchQuery("");
-                  }
-                }}
-              />
               <span className="meta-count">
                 {textCapabilitiesEnabled ? "ready" : readerView?.content_status ?? "idle"}
               </span>
@@ -1207,9 +1335,17 @@ export default function App({ api }: { api: AppApi }) {
               readerView.reader_kind === "pdf" ? (
                 <PdfReader
                   loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+                  annotations={annotations}
                   page={readerPage}
+                  searchQuery={readerSearchQuery}
+                  activeSearchMatchIndex={readerSearchMatchIndex}
                   view={readerView}
                   zoom={readerZoom}
+                  onSearchMatchesChange={({ total, activeIndex }) => {
+                    setReaderSearchMatchCount(total);
+                    setReportedActiveSearchMatchIndex(activeIndex);
+                  }}
+                  onSelectionChange={(selection) => setPdfSelection(selection)}
                   onPageCountChange={(pageCount) => {
                     setPdfPageCounts((current) =>
                       current[activePaper.id] === pageCount
@@ -1219,7 +1355,16 @@ export default function App({ api }: { api: AppApi }) {
                   }}
                 />
               ) : (
-                <NormalizedReader pageHtml={currentReaderHtml} zoom={readerZoom} />
+                <NormalizedReader
+                  pageHtml={currentReaderHtml}
+                  searchQuery={readerSearchQuery}
+                  activeSearchMatchIndex={readerSearchMatchIndex}
+                  onSearchMatchesChange={({ total, activeIndex }) => {
+                    setReaderSearchMatchCount(total);
+                    setReportedActiveSearchMatchIndex(activeIndex);
+                  }}
+                  zoom={readerZoom}
+                />
               )
             ) : (
               <div className="citation-card">
@@ -1251,7 +1396,7 @@ export default function App({ api }: { api: AppApi }) {
               </div>
             ) : null}
 
-            {readerView && !showPdfNotice && readerView.reader_kind !== "pdf" ? (
+            {readerView && readerView.reader_kind !== "pdf" ? (
               <div className="citation-card">
                 <p className="eyebrow">Reader Content</p>
                 <h3>{readerView.title}</h3>
@@ -1287,6 +1432,68 @@ export default function App({ api }: { api: AppApi }) {
             ) : null}
           </section>
         )}
+
+        {isFindHudOpen ? (
+          <div className="find-hud" role="dialog" aria-label="Find in document">
+            <input
+              aria-label="Find in document"
+              className="find-hud-input"
+              placeholder="Find in document..."
+              ref={readerSearchInputRef}
+              value={readerSearchQuery}
+              onChange={(event) => setReaderSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  moveReaderSearchMatch(event.shiftKey ? -1 : 1);
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setIsFindHudOpen(false);
+                  setReaderSearchQuery("");
+                  setReaderSearchMatchIndex(0);
+                  setReaderSearchMatchCount(0);
+                  setReportedActiveSearchMatchIndex(-1);
+                }
+              }}
+            />
+            <span className="meta-count">
+              {readerSearchMatchCount > 0 && reportedActiveSearchMatchIndex >= 0
+                ? `${reportedActiveSearchMatchIndex + 1} / ${readerSearchMatchCount}`
+                : "0 / 0"}
+            </span>
+            <button
+              aria-label="Previous match"
+              className="ghost-button"
+              type="button"
+              onClick={() => moveReaderSearchMatch(-1)}
+            >
+              Prev
+            </button>
+            <button
+              aria-label="Next match"
+              className="ghost-button"
+              type="button"
+              onClick={() => moveReaderSearchMatch(1)}
+            >
+              Next
+            </button>
+            <button
+              aria-label="Close find"
+              className="ghost-button"
+              type="button"
+              onClick={() => {
+                setIsFindHudOpen(false);
+                setReaderSearchQuery("");
+                setReaderSearchMatchIndex(0);
+                setReaderSearchMatchCount(0);
+                setReportedActiveSearchMatchIndex(-1);
+              }}
+            >
+              Close
+            </button>
+          </div>
+        ) : null}
       </main>
 
       {isAiPanelOpen && readyForAi ? (

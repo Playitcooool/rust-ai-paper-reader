@@ -10,7 +10,6 @@ export type Tag = {
   item_count: number;
 };
 
-export type ImportMode = "managed_copy" | "linked_file";
 export type CitationFormat = "apa7" | "bibtex" | "ris";
 export type ReaderKind = "pdf" | "normalized";
 export type AttachmentFormat = "pdf" | "docx" | "epub" | "unknown";
@@ -115,7 +114,6 @@ export type AppApi = {
   importFiles: (input: {
     collection_id: number;
     paths: string[];
-    mode: ImportMode;
   }) => Promise<ImportBatchResult>;
   importCitations: (input: { collection_id: number; paths: string[] }) => Promise<ImportBatchResult>;
   refreshAttachmentStatuses: () => Promise<void>;

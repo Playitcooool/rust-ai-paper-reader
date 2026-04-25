@@ -5,7 +5,7 @@ use app_core::service::{
     ResearchNote, Tag,
 };
 use serde::Deserialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{menu::{MenuBuilder, SubmenuBuilder}, AppHandle, Emitter, Manager, State};
 
 struct AppState {
     library_root: PathBuf,
@@ -49,7 +49,6 @@ struct AssignTagInput {
 struct ImportFilesInput {
     collection_id: i64,
     paths: Vec<String>,
-    mode: String,
 }
 
 #[derive(Deserialize)]
@@ -231,14 +230,9 @@ fn import_files(
     state: State<'_, AppState>,
     input: ImportFilesInput,
 ) -> Result<ImportBatchResult, String> {
-    let mode = match input.mode.as_str() {
-        "managed_copy" => ImportMode::ManagedCopy,
-        "linked_file" => ImportMode::LinkedFile,
-        _ => return Err("unsupported import mode".into()),
-    };
     let paths = input.paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
     service(&state)?
-        .import_files(input.collection_id, &paths, mode)
+        .import_files(input.collection_id, &paths, ImportMode::ManagedCopy)
         .map_err(|error| error.to_string())
 }
 
@@ -458,6 +452,26 @@ fn main() {
             let library_root = root_dir(app.handle());
             fs::create_dir_all(&library_root)?;
             app.manage(AppState { library_root });
+
+            // Native menu: all imports flow through the same Managed Copy import path on the frontend.
+            let file_menu = SubmenuBuilder::new(app, "File")
+                .text("import_documents", "Import Documents")
+                .text("import_citations", "Import Citations")
+                .separator()
+                .quit()
+                .build()?;
+            let menu = MenuBuilder::new(app).item(&file_menu).build()?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app_handle, event| match event.id().0.as_str() {
+                "import_documents" => {
+                    let _ = app_handle.emit("menu:import-documents", ());
+                }
+                "import_citations" => {
+                    let _ = app_handle.emit("menu:import-citations", ());
+                }
+                _ => {}
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

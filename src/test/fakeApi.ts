@@ -6,7 +6,6 @@ import type {
   AITask,
   CitationFormat,
   Collection,
-  ImportMode,
   ImportBatchResult,
   LibraryItem,
   ReaderView,
@@ -190,8 +189,8 @@ const titleFromPath = (path: string) =>
     .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
     .join(" ") ?? "Imported Paper";
 
-const normalizedHtmlFromTitle = (title: string, mode: ImportMode) =>
-  `<article><h1>${title}</h1><p>Imported in ${mode} mode.</p><p>This mock document is ready for reading, annotation, and AI analysis.</p></article>`;
+const normalizedHtmlFromTitle = (title: string) =>
+  `<article><h1>${title}</h1><p>Imported (managed copy).</p><p>This mock document is ready for reading, annotation, and AI analysis.</p></article>`;
 
 const metadataFromTitle = (title: string) => {
   const normalized = title.toLowerCase();
@@ -483,7 +482,7 @@ export const fakeApi: AppApi = {
           doi: metadata.doi,
           tags: [],
           plainText: `${title} was imported into ${collectionName(input.collection_id)} and normalized for AI-assisted reading.`,
-          normalizedHtml: normalizedHtmlFromTitle(title, input.mode),
+          normalizedHtml: normalizedHtmlFromTitle(title),
           attachmentFormat: path.toLowerCase().endsWith(".docx")
             ? "docx"
             : path.toLowerCase().endsWith(".epub")
@@ -520,7 +519,7 @@ export const fakeApi: AppApi = {
         doi: metadata.doi,
         tags: [],
         plainText: `${title} was imported into ${collectionName(input.collection_id)} and normalized for AI-assisted reading.`,
-        normalizedHtml: normalizedHtmlFromTitle(title, input.mode),
+        normalizedHtml: normalizedHtmlFromTitle(title),
         attachmentFormat: path.toLowerCase().endsWith(".docx")
           ? "docx"
           : path.toLowerCase().endsWith(".epub")

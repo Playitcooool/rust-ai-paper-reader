@@ -797,6 +797,37 @@ p {
   color: #fff7ee;
 }
 
+.reader-html mark.reader-search-hit-active {
+  background: rgba(102, 164, 212, 0.45);
+  box-shadow: 0 0 0 2px rgba(102, 164, 212, 0.35);
+}
+
+.find-hud {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(135deg, rgba(226, 139, 83, 0.14), rgba(102, 164, 212, 0.1)),
+    rgba(18, 20, 24, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.find-hud-input {
+  width: 240px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+}
+
 .document-lead {
   font-size: 1.1rem;
   color: #f8dfc7;
