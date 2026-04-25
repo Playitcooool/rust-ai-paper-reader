@@ -39,8 +39,25 @@ const collectionActions = [
 const attachmentFormatLabel = (format: LibraryItem["attachment_format"] | ReaderView["attachment_format"]) =>
   format.toUpperCase();
 
-const formatItemMetadata = (item: LibraryItem) =>
-  [item.authors, item.publication_year, item.source].filter(Boolean).join(" · ");
+const formatItemMetadata = (item: LibraryItem): string | null => {
+  const parts: string[] = [];
+
+  const authors = item.authors.trim();
+  if (authors.length > 0 && authors !== "Imported Author") {
+    parts.push(authors);
+  }
+
+  if (item.publication_year !== null) {
+    parts.push(String(item.publication_year));
+  }
+
+  const source = item.source.trim();
+  if (source.length > 0 && !source.startsWith("Imported ")) {
+    parts.push(source);
+  }
+
+  return parts.length > 0 ? parts.join(" · ") : null;
+};
 
 const sanitizeFilename = (value: string) =>
   value
@@ -248,6 +265,7 @@ export default function App({ api }: { api: AppApi }) {
     () => libraryItems.find((item) => item.id === activePaperId) ?? openPapers[openPapers.length - 1] ?? null,
     [activePaperId, libraryItems, openPapers],
   );
+  const activePaperMetadata = activePaper ? formatItemMetadata(activePaper) : null;
   const isPdfReader = readerView?.reader_kind === "pdf";
   const textCapabilitiesEnabled = Boolean(
     activePaper &&
@@ -916,7 +934,11 @@ export default function App({ api }: { api: AppApi }) {
                   role="treeitem"
                   style={{ marginLeft: `${(depth + 1) * 24}px` }}
                   type="button"
-                  onClick={() => activateItem(item)}
+                  onClick={() =>
+                    item.attachment_format === "pdf"
+                      ? activateItem(item, { focusPdf: true })
+                      : activateItem(item)
+                  }
                   onDoubleClick={() => activateItem(item, { focusPdf: true })}
                 >
                   <span>{item.title}</span>
@@ -1143,7 +1165,11 @@ export default function App({ api }: { api: AppApi }) {
                 className="reader-tab"
                 role="tab"
                 type="button"
-                onClick={() => activateItem(paper)}
+                onClick={() =>
+                  workspaceMode === "pdf_focus" && paper.attachment_format === "pdf"
+                    ? activateItem(paper, { focusPdf: true })
+                    : activateItem(paper)
+                }
               >
                 {paper.title}
               </button>
@@ -1161,6 +1187,14 @@ export default function App({ api }: { api: AppApi }) {
 
         {workspaceMode === "pdf_focus" && activePaper?.attachment_format === "pdf" ? (
           <section className="reader-panel reader-panel-focus">
+            <div className="reader-meta-row reader-meta-row-focus">
+              <div className="reader-focus-heading">
+                <h2>{activePaper.title}</h2>
+                {activePaperMetadata ? (
+                  <p className="reader-focus-subtitle">{activePaperMetadata}</p>
+                ) : null}
+              </div>
+            </div>
             <div className="reader-toolbar reader-toolbar-focus" role="toolbar" aria-label="PDF focus toolbar">
               <button
                 className="ghost-button focus-action-button"
@@ -1278,9 +1312,17 @@ export default function App({ api }: { api: AppApi }) {
               <div>
                 <p className="eyebrow">Reader</p>
                 <h2>{activePaper?.title ?? "No paper selected"}</h2>
-                <p className="secondary-copy">{activePaper ? formatItemMetadata(activePaper) : "No metadata"}</p>
                 <p className="secondary-copy">
-                  {activeCollection?.name ?? "No collection"} · {activePaper?.attachment_status ?? "idle"} · {activePaper ? attachmentFormatLabel(activePaper.attachment_format) : "Document"}
+                  {activePaper ? activePaperMetadata ?? "No metadata" : "No metadata"}
+                </p>
+                <p className="secondary-copy">
+                  {[
+                    activeCollection?.name ?? "No collection",
+                    activePaper && activePaper.attachment_status !== "ready" ? activePaper.attachment_status : null,
+                    activePaper ? attachmentFormatLabel(activePaper.attachment_format) : "Document",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </p>
               </div>
               <div className="reader-actions">
@@ -1326,9 +1368,12 @@ export default function App({ api }: { api: AppApi }) {
             </div>
 
             <div className="reader-toolbar">
-              <span className="meta-count">
-                {textCapabilitiesEnabled ? "ready" : readerView?.content_status ?? "idle"}
-              </span>
+              {readerView && readerView.content_status !== "ready" ? (
+                <span className="meta-count">{readerView.content_notice ?? readerView.content_status}</span>
+              ) : null}
+              {activePaper && activePaper.attachment_status !== "ready" ? (
+                <span className="meta-count">{activePaper.attachment_status}</span>
+              ) : null}
             </div>
 
             {activePaper && readerView ? (
@@ -1373,28 +1418,6 @@ export default function App({ api }: { api: AppApi }) {
                 <p>{hasCollections ? "Select a document from the resource tree." : "Create your first collection to start building the desktop library."}</p>
               </div>
             )}
-
-            {activePaper ? (
-              <div className="citation-card">
-                <p className="eyebrow">Document Metadata</p>
-                <div className="export-row">
-                  <span>Authors</span>
-                  <span>{activePaper.authors}</span>
-                </div>
-                <div className="export-row">
-                  <span>Year</span>
-                  <span>{activePaper.publication_year ?? "Unknown"}</span>
-                </div>
-                <div className="export-row">
-                  <span>Source</span>
-                  <span>{activePaper.source}</span>
-                </div>
-                <div className="export-row">
-                  <span>Tags</span>
-                  <span>{activePaper.tags.length > 0 ? activePaper.tags.join(" · ") : "No tags"}</span>
-                </div>
-              </div>
-            ) : null}
 
             {readerView && readerView.reader_kind !== "pdf" ? (
               <div className="citation-card">

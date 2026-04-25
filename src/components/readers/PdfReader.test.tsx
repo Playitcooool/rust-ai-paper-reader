@@ -175,6 +175,89 @@ describe("PdfReader", () => {
     expect(screen.queryByText(/Unable to load this PDF/i)).not.toBeInTheDocument();
   });
 
+  it("does not reload the PDF document when paging", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+
+    legacyRenderMock.mockReturnValue({ promise: Promise.resolve(), cancel: vi.fn() });
+    getLegacyPageMock.mockImplementation(async () => ({
+      getViewport: ({ scale }: { scale: number }) => ({ width: 800 * scale, height: 1000 * scale }),
+      getTextContent: () => Promise.resolve({ items: [{ str: "Paging stable" }], styles: {} }),
+      render: legacyRenderMock,
+    }));
+    getLegacyDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 2,
+        getPage: getLegacyPageMock,
+        destroy: vi.fn(),
+      }),
+      destroy: vi.fn(),
+    });
+
+    const { rerender } = render(
+      <PdfReader loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes} page={0} view={pdfView} zoom={100} />,
+    );
+
+    await waitFor(() => {
+      expect(loadPrimaryAttachmentBytes).toHaveBeenCalledTimes(1);
+      expect(getLegacyDocumentMock).toHaveBeenCalledTimes(1);
+      expect(getLegacyPageMock).toHaveBeenCalledWith(1);
+    });
+
+    rerender(
+      <PdfReader loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes} page={1} view={pdfView} zoom={100} />,
+    );
+
+    await waitFor(() => {
+      expect(loadPrimaryAttachmentBytes).toHaveBeenCalledTimes(1);
+      expect(getLegacyDocumentMock).toHaveBeenCalledTimes(1);
+      expect(getLegacyPageMock).toHaveBeenCalledWith(2);
+    });
+  });
+
+  it("keeps the page visible even if the text layer throws", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+
+    legacyRenderMock.mockReturnValue({ promise: Promise.resolve(), cancel: vi.fn() });
+    getLegacyPageMock.mockResolvedValue({
+      getViewport: ({ scale }: { scale: number }) => ({ width: 800 * scale, height: 1000 * scale }),
+      getTextContent: () => Promise.resolve({ items: [{ str: "Alpha scaling" }], styles: {} }),
+      render: legacyRenderMock,
+    });
+    getLegacyDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 1,
+        getPage: getLegacyPageMock,
+      }),
+    });
+
+    // Make TextLayer.render blow up to simulate missing WebKit APIs.
+    const legacyModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const originalTextLayer = legacyModule.TextLayer;
+    (legacyModule as unknown as { TextLayer: unknown }).TextLayer = class BrokenTextLayer {
+      textDivs: HTMLElement[] = [];
+      textContentItemsStr: string[] = [];
+      async render() {
+        throw new TypeError("undefined is not a function");
+      }
+      cancel() {}
+    };
+
+    try {
+      render(
+        <PdfReader loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes} page={0} view={pdfView} zoom={100} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("PDF page canvas")).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Unable to load this PDF/i)).not.toBeInTheDocument();
+    } finally {
+      (legacyModule as unknown as { TextLayer: unknown }).TextLayer = originalTextLayer;
+    }
+  });
+
   it("falls back when replaceChildren is unavailable", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);

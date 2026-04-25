@@ -112,19 +112,21 @@ describe("App reading workspace", () => {
     expect(screen.getByRole("treeitem", { name: /Transformer Scaling Laws/i })).toBeInTheDocument();
   });
 
-  it("single-click opens a global tab and double-clicking a pdf enters focus mode", async () => {
+  it("single-clicking a pdf enters focus mode (non-pdf stays in workspace)", async () => {
     const user = userEvent.setup();
 
     render(<App api={fakeApi} />);
+
+    const docxNode = await screen.findByRole("treeitem", { name: /Graph Neural Survey/i });
+    await user.click(docxNode);
+
+    expect(screen.getByRole("tab", { name: "Graph Neural Survey" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
 
     const pdfNode = await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i });
     await user.click(pdfNode);
 
     expect(screen.getByRole("tab", { name: "Transformer Scaling Laws" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
-
-    await user.dblClick(pdfNode);
-
     expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Show sidebar" })).not.toBeInTheDocument();
     expect(screen.queryByText(/text capabilities/i)).not.toBeInTheDocument();
@@ -146,7 +148,7 @@ describe("App reading workspace", () => {
     const user = userEvent.setup();
     render(<App api={apiWithDelay} />);
 
-    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
 
     expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
     expect(screen.getByRole("toolbar", { name: /pdf focus/i })).toBeInTheDocument();
@@ -169,7 +171,7 @@ describe("App reading workspace", () => {
     await user.click(docxNode);
     expect(screen.getByRole("tab", { name: "Graph Neural Survey" })).toBeInTheDocument();
 
-    await user.dblClick(pdfNode);
+    await user.click(pdfNode);
     expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Graph Neural Survey" }));
@@ -185,7 +187,7 @@ describe("App reading workspace", () => {
 
     render(<App api={fakeApi} />);
 
-    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
     expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "Escape" });
@@ -193,7 +195,7 @@ describe("App reading workspace", () => {
       expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
     });
 
-    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
     fireEvent.keyDown(window, { key: "f", metaKey: true });
     const searchInput = await screen.findByRole("textbox", { name: "Find in document" });
     searchInput.focus();
@@ -229,7 +231,7 @@ describe("App reading workspace", () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
 
-    await user.dblClick(await screen.findByRole("treeitem", { name: /Scanned PDF/i }));
+    await user.click(await screen.findByRole("treeitem", { name: /Scanned PDF/i }));
 
     expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
     expect(screen.queryByText(/only part of the text layer is reliable/i)).not.toBeInTheDocument();
@@ -238,6 +240,101 @@ describe("App reading workspace", () => {
     expect(screen.queryByRole("button", { name: "Open AI Workspace" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Highlight" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Reader Content/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps pdf focus when switching between pdf tabs", async () => {
+    replaceFakeApiState({
+      items: [
+        {
+          id: 1,
+          title: "Transformer Scaling Laws",
+          collection_id: 1,
+          primary_attachment_id: 101,
+          attachment_format: "pdf",
+          attachment_status: "ready",
+          authors: "Kaplan et al.",
+          publication_year: 2020,
+          source: "OpenAI",
+          doi: "10.1000/scaling-laws",
+          tags: [],
+          plainText:
+            "Overview. Scaling behavior emerges when model size, data volume, and compute are balanced. Methods. This paper discusses predictable loss curves and practical planning heuristics.",
+          normalizedHtml:
+            "<article><h1>Transformer Scaling Laws</h1><p>Scaling behavior emerges when model size, data volume, and compute are balanced.</p><h2>Methods</h2><p>This paper discusses predictable loss curves and practical planning heuristics.</p></article>",
+          attachmentFormat: "pdf",
+          primaryAttachmentPath: "/mock/transformer-scaling-laws.pdf",
+          pageCount: 2,
+        } as never,
+        {
+          id: 4,
+          title: "Second PDF",
+          collection_id: 1,
+          primary_attachment_id: 104,
+          attachment_format: "pdf",
+          attachment_status: "ready",
+          authors: "Reader Team",
+          publication_year: 2026,
+          source: "Paper Reader",
+          doi: null,
+          tags: [],
+          plainText: "Second PDF plain text.",
+          normalizedHtml: "<article><h1>Second PDF</h1><p>Second PDF</p></article>",
+          attachmentFormat: "pdf",
+          primaryAttachmentPath: "/mock/second.pdf",
+          pageCount: 1,
+        } as never,
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Back" }));
+
+    await user.click(await screen.findByRole("treeitem", { name: /Second PDF/i }));
+    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Transformer Scaling Laws" }));
+    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+  });
+
+  it("filters imported placeholder metadata in pdf focus", async () => {
+    replaceFakeApiState({
+      items: [
+        {
+          id: 1,
+          title: "Imported Placeholder PDF",
+          collection_id: 1,
+          primary_attachment_id: 101,
+          attachment_status: "ready",
+          authors: "Imported Author",
+          publication_year: null,
+          source: "Imported PDF",
+          doi: null,
+          tags: [],
+          plainText: "",
+          normalizedHtml: "<article><p>Imported</p></article>",
+          attachmentFormat: "pdf",
+          primaryAttachmentPath: "/mock/imported.pdf",
+          pageCount: 1,
+          contentStatus: "ready",
+          contentNotice: null,
+        } as never,
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Imported Placeholder PDF/i }));
+    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+
+    expect(document.querySelector(".reader-focus-subtitle")).toBeNull();
+    expect(screen.queryByText(/Imported Author/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Imported PDF/i)).not.toBeInTheDocument();
   });
 
   it("responds to native menu import events and removes legacy import controls", async () => {

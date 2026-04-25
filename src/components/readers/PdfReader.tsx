@@ -69,6 +69,7 @@ export function PdfReader({
   const textLayerHostRef = useRef<HTMLDivElement | null>(null);
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
   const pdfDocumentRef = useRef<PDFDocumentProxy | null>(null);
+  const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const renderTaskRef = useRef<RenderTask | null>(null);
   const textLayerRef = useRef<TextLayer | null>(null);
   const textDivsRef = useRef<HTMLElement[]>([]);
@@ -81,6 +82,31 @@ export function PdfReader({
   const textEnabled = view.content_status === "ready";
   const loweredSearch = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
 
+  const isCancellationError = (error: unknown) => {
+    if (!(error instanceof Error)) return false;
+    return (
+      error.name === "RenderingCancelledException" ||
+      error.name === "AbortException" ||
+      /cancel|abort/i.test(error.name) ||
+      /cancel|abort/i.test(error.message)
+    );
+  };
+
+  const cancelRenderWork = () => {
+    const activeRenderTask = renderTaskRef.current;
+    renderTaskRef.current = null;
+    activeRenderTask?.cancel();
+
+    const activeTextLayer = textLayerRef.current;
+    textLayerRef.current = null;
+    activeTextLayer?.cancel();
+    textDivsRef.current = [];
+    textDivStringsRef.current = [];
+    if (textLayerHostRef.current) {
+      clearChildren(textLayerHostRef.current);
+    }
+  };
+
   useEffect(() => {
     onPageCountChangeRef.current = onPageCountChange;
   }, [onPageCountChange]);
@@ -88,24 +114,14 @@ export function PdfReader({
   useEffect(() => {
     let cancelled = false;
 
-    const cancelActiveWork = async () => {
-      const activeRenderTask = renderTaskRef.current;
-      renderTaskRef.current = null;
-      activeRenderTask?.cancel();
-
-      const activeTextLayer = textLayerRef.current;
-      textLayerRef.current = null;
-      activeTextLayer?.cancel();
-      textDivsRef.current = [];
-      textDivStringsRef.current = [];
-      if (textLayerHostRef.current) {
-        clearChildren(textLayerHostRef.current);
-      }
+    const destroyActiveDocument = async () => {
+      cancelRenderWork();
 
       const activeLoadingTask = loadingTaskRef.current;
       loadingTaskRef.current = null;
       const activeDocument = pdfDocumentRef.current;
       pdfDocumentRef.current = null;
+      setPdfDocument(null);
 
       await Promise.allSettled([
         activeLoadingTask?.destroy(),
@@ -113,38 +129,15 @@ export function PdfReader({
       ]);
     };
 
-    const isCancellationError = (error: unknown) => {
-      if (!(error instanceof Error)) return false;
-      return (
-        error.name === "RenderingCancelledException" ||
-        error.name === "AbortException" ||
-        /cancel|abort/i.test(error.name) ||
-        /cancel|abort/i.test(error.message)
-      );
-    };
-
-    async function renderPage() {
+    async function loadDocument() {
       if (!view.primary_attachment_id) {
         setStatus("error");
         setErrorMessage("Unable to load this PDF because the primary attachment id is missing.");
+        setPdfDocument(null);
         return;
       }
 
-      const canvas = canvasRef.current;
-      const context = canvas?.getContext("2d");
-      const textLayerHost = textLayerHostRef.current;
-      if (!canvas || !context) {
-        setStatus("error");
-        setErrorMessage("Unable to load this PDF because the canvas is unavailable.");
-        return;
-      }
-      if (!textLayerHost) {
-        setStatus("error");
-        setErrorMessage("Unable to load this PDF because the text layer container is unavailable.");
-        return;
-      }
-
-      await cancelActiveWork();
+      await destroyActiveDocument();
       if (cancelled) return;
 
       setStatus("loading");
@@ -165,7 +158,10 @@ export function PdfReader({
         loadingTaskRef.current = loadingTask;
 
         const pdfDocument = await loadingTask.promise;
-        if (cancelled) return;
+        if (cancelled) {
+          await pdfDocument.destroy();
+          return;
+        }
         if (loadingTaskRef.current !== loadingTask) {
           await pdfDocument.destroy();
           return;
@@ -173,12 +169,66 @@ export function PdfReader({
 
         loadingTaskRef.current = null;
         pdfDocumentRef.current = pdfDocument;
+        setPdfDocument(pdfDocument);
 
         const nextPageCount = pdfDocument.numPages ?? view.page_count ?? 1;
         setPageCount(nextPageCount);
         onPageCountChangeRef.current?.(nextPageCount);
+      } catch (error) {
+        if (cancelled) return;
+        if (isCancellationError(error)) return;
+        setStatus("error");
+        setErrorMessage(
+          error instanceof Error ? error.message : "Unknown PDF rendering error.",
+        );
+      }
+    }
 
-        const currentPage = await pdfDocument.getPage(Math.min(page + 1, nextPageCount));
+    void loadDocument();
+
+    return () => {
+      cancelled = true;
+      void destroyActiveDocument();
+    };
+  }, [
+    loadPrimaryAttachmentBytes,
+    view.page_count,
+    view.primary_attachment_id,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function renderPage() {
+      const currentDocument = pdfDocumentRef.current;
+      if (!currentDocument) return;
+      if (pdfDocument !== currentDocument) return;
+
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext("2d");
+      const textLayerHost = textLayerHostRef.current;
+      if (!canvas || !context) {
+        setStatus("error");
+        setErrorMessage("Unable to load this PDF because the canvas is unavailable.");
+        return;
+      }
+      if (!textLayerHost) {
+        setStatus("error");
+        setErrorMessage("Unable to load this PDF because the text layer container is unavailable.");
+        return;
+      }
+
+      cancelRenderWork();
+      if (cancelled) return;
+
+      setStatus("loading");
+      setErrorMessage("");
+
+      try {
+        const pdfjsModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
+        const nextPageCount = currentDocument.numPages ?? view.page_count ?? 1;
+
+        const currentPage = await currentDocument.getPage(Math.min(page + 1, nextPageCount));
         if (cancelled) return;
 
         const viewport = currentPage.getViewport({ scale: zoom / 100 });
@@ -198,38 +248,51 @@ export function PdfReader({
 
         renderTaskRef.current = null;
 
-        // Text layer is only reliable for content_status === "ready".
-        if (textEnabled) {
-          clearChildren(textLayerHost);
-          const textContent = await currentPage.getTextContent();
-          if (cancelled) return;
-
-          const textLayer = new pdfjsModule.TextLayer({
-            textContentSource: textContent,
-            container: textLayerHost,
-            viewport,
-          }) as TextLayer;
-          textLayerRef.current = textLayer;
-
-          await textLayer.render();
-          if (cancelled) return;
-          if (textLayerRef.current !== textLayer) return;
-
-          // Attach stable indices so we can serialize selections into anchors.
-          textDivsRef.current = textLayer.textDivs as unknown as HTMLElement[];
-          textDivStringsRef.current = textLayer.textContentItemsStr.slice();
-          textDivsRef.current.forEach((div, index) => {
-            div.dataset.divIndex = String(index);
-          });
-        }
         setStatus("ready");
+
+        // Text layer is optional. Some WKWebView builds are missing modern web APIs
+        // that pdf.js uses internally; keep the page visible even if text fails.
+        if (textEnabled) {
+          try {
+            clearChildren(textLayerHost);
+            const textContent = await currentPage.getTextContent();
+            if (cancelled) return;
+
+            const textLayer = new pdfjsModule.TextLayer({
+              textContentSource: textContent,
+              container: textLayerHost,
+              viewport,
+            }) as TextLayer;
+            textLayerRef.current = textLayer;
+
+            await textLayer.render();
+            if (cancelled) return;
+            if (textLayerRef.current !== textLayer) return;
+
+            // Attach stable indices so we can serialize selections into anchors.
+            textDivsRef.current = textLayer.textDivs as unknown as HTMLElement[];
+            textDivStringsRef.current = textLayer.textContentItemsStr.slice();
+            textDivsRef.current.forEach((div, index) => {
+              div.dataset.divIndex = String(index);
+            });
+          } catch (error) {
+            if (cancelled) return;
+            if (isCancellationError(error)) return;
+            // Non-fatal: keep the canvas, just disable text/search/highlights.
+            textLayerRef.current = null;
+            textDivsRef.current = [];
+            textDivStringsRef.current = [];
+            if (textLayerHostRef.current) clearChildren(textLayerHostRef.current);
+            // Best effort logging for debugging old WebKit builds.
+            // eslint-disable-next-line no-console
+            console.warn("PDF text layer unavailable:", error);
+          }
+        }
       } catch (error) {
         if (cancelled) return;
         if (isCancellationError(error)) return;
         setStatus("error");
-        setErrorMessage(
-          error instanceof Error ? error.message : "Unknown PDF rendering error.",
-        );
+        setErrorMessage(error instanceof Error ? error.message : "Unknown PDF rendering error.");
       }
     }
 
@@ -237,16 +300,9 @@ export function PdfReader({
 
     return () => {
       cancelled = true;
-      void cancelActiveWork();
+      cancelRenderWork();
     };
-  }, [
-    loadPrimaryAttachmentBytes,
-    page,
-    textEnabled,
-    view.page_count,
-    view.primary_attachment_id,
-    zoom,
-  ]);
+  }, [page, pdfDocument, textEnabled, view.page_count, zoom]);
 
   const searchMatches = useMemo(() => {
     if (!textEnabled) return [];
@@ -477,13 +533,12 @@ export function PdfReader({
     >
       {showChrome ? (
         <div className="reader-location-bar">
-          <span className="status-pill">PDF mode</span>
           <span className="meta-count">
             {view.primary_attachment_path
               ? view.primary_attachment_path.split("/").pop()
               : "No attachment path"}
           </span>
-          <span className="meta-count">Zoom {zoom}%</span>
+          {zoom !== 100 ? <span className="meta-count">Zoom {zoom}%</span> : null}
         </div>
       ) : null}
 
@@ -514,8 +569,8 @@ export function PdfReader({
             style={{
               position: "absolute",
               inset: 0,
-              pointerEvents: textEnabled ? "auto" : "none",
-              userSelect: textEnabled ? "text" : "none",
+              pointerEvents: textEnabled && textDivsRef.current.length > 0 ? "auto" : "none",
+              userSelect: textEnabled && textDivsRef.current.length > 0 ? "text" : "none",
             }}
           />
         </div>
