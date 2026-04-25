@@ -297,9 +297,10 @@ fn move_item(state: State<'_, AppState>, input: MoveItemInput) -> Result<(), Str
 
 #[tauri::command]
 fn get_reader_view(state: State<'_, AppState>, item_id: i64) -> Result<ReaderView, String> {
-    service(&state)?
-        .get_reader_view(item_id)
-        .map_err(|error| error.to_string())
+    let svc = service(&state)?;
+    // Lazy self-heal: opening a PDF upgrades legacy extracted content + search index if needed.
+    let _ = svc.repair_item_content_if_needed(item_id);
+    svc.get_reader_view(item_id).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -451,7 +452,14 @@ fn main() {
         .setup(|app| {
             let library_root = root_dir(app.handle());
             fs::create_dir_all(&library_root)?;
+            // Startup backfill (non-blocking): upgrade legacy PDF extraction results in the background.
+            let background_root = library_root.clone();
             app.manage(AppState { library_root });
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Ok(service) = LibraryService::new(&background_root) {
+                    let _ = service.repair_library_content_if_needed();
+                }
+            });
 
             // Native menu: all imports flow through the same Managed Copy import path on the frontend.
             let file_menu = SubmenuBuilder::new(app, "File")

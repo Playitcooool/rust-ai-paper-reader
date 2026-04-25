@@ -2,6 +2,7 @@ use std::{fs, io::Write, path::{Path, PathBuf}};
 
 use app_core::service::{ImportMode, LibraryService};
 use flate2::{write::ZlibEncoder, Compression};
+use rusqlite::Connection;
 use tempfile::tempdir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
@@ -40,6 +41,15 @@ fn write_unavailable_pdf_fixture(path: &Path) {
         Some(2025),
         &[None, None],
     );
+}
+
+fn write_pdf_fixture_without_metadata(path: &Path, pages: &[Option<&str>]) {
+    write_compressed_pdf_fixture(path, None, None, None, pages);
+}
+
+fn write_broken_pdf_fixture(path: &Path) {
+    // Intentionally not a valid PDF. Import should still succeed and mark content as unavailable.
+    fs::write(path, b"%PDF-1.4\n% broken\n").unwrap();
 }
 
 fn compress_pdf_stream(stream: &str) -> Vec<u8> {
@@ -261,6 +271,107 @@ fn imports_pdf_with_partial_text_as_partial_and_indexes_reliable_excerpt() {
 
     let search = service.search_items("reliable text layer").unwrap();
     assert_eq!(search.len(), 1);
+}
+
+#[test]
+fn imports_pdf_with_chinese_filename_and_missing_metadata_falls_back_to_filename() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "中文论文.pdf");
+    write_pdf_fixture_without_metadata(&pdf, &[Some("中文内容可被提取。")]);
+
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+
+    assert!(result.failed.is_empty());
+    assert_eq!(result.imported.len(), 1);
+    let item = service.list_items(Some(collection.id)).unwrap().remove(0);
+    assert_eq!(item.title, "中文论文");
+}
+
+#[test]
+fn imports_pdf_even_when_pdf_parsing_fails_and_marks_content_unavailable() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "broken.pdf");
+    write_broken_pdf_fixture(&pdf);
+
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+
+    assert_eq!(result.imported.len(), 1);
+    assert!(result.failed.is_empty());
+    let reader = service.get_reader_view(result.imported[0].id).unwrap();
+    assert_eq!(reader.reader_kind, "pdf");
+    assert_eq!(reader.content_status, "unavailable");
+    assert!(reader.plain_text.is_empty());
+}
+
+#[test]
+fn repairs_old_pdf_extraction_version_on_demand_and_rebuilds_search_index() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "repair-me.pdf");
+    write_pdf_fixture(&pdf);
+
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+    let item_id = result.imported[0].id;
+
+    // Simulate an older extractor run.
+    {
+        let conn = Connection::open(root.path().join("library.db")).unwrap();
+        conn.execute(
+            "UPDATE extracted_content SET plain_text = '', normalized_html = '', content_status = 'unavailable', extractor_version = 0 WHERE item_id = ?1",
+            [item_id],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM search_index WHERE item_id = ?1", [item_id])
+            .unwrap();
+    }
+
+    let repaired = service.repair_item_content_if_needed(item_id).unwrap();
+    assert!(repaired);
+
+    let reader = service.get_reader_view(item_id).unwrap();
+    assert_eq!(reader.content_status, "ready");
+    assert!(reader.plain_text.contains("Scaling laws improve planning"));
+
+    let search = service.search_items("stable returns").unwrap();
+    assert_eq!(search.len(), 1);
+}
+
+#[test]
+fn repairs_outdated_pdf_content_in_bulk() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf1 = fixture_path(root.path(), "bulk-1.pdf");
+    let pdf2 = fixture_path(root.path(), "bulk-2.pdf");
+    write_pdf_fixture(&pdf1);
+    write_partial_pdf_fixture(&pdf2);
+
+    let result = service
+        .import_files(collection.id, &[pdf1, pdf2], ImportMode::ManagedCopy)
+        .unwrap();
+    assert_eq!(result.imported.len(), 2);
+
+    {
+        let conn = Connection::open(root.path().join("library.db")).unwrap();
+        conn.execute("UPDATE extracted_content SET extractor_version = 0, plain_text = '', normalized_html = '', content_status = 'unavailable' WHERE item_id = ?1", [result.imported[0].id]).unwrap();
+        conn.execute("UPDATE extracted_content SET extractor_version = 0, plain_text = '', normalized_html = '', content_status = 'unavailable' WHERE item_id = ?1", [result.imported[1].id]).unwrap();
+        conn.execute("DELETE FROM search_index", []).unwrap();
+    }
+
+    let repaired = service.repair_library_content_if_needed().unwrap();
+    assert_eq!(repaired, 2);
+    assert_eq!(service.search_items("stable returns").unwrap().len(), 1);
 }
 
 #[test]

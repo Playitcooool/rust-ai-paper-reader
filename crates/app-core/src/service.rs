@@ -3,6 +3,7 @@ use std::{
     io::{Cursor, Read, Seek},
     path::{Path, PathBuf},
     panic,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -156,6 +157,7 @@ struct ExtractedDocument {
     page_count: Option<i64>,
     content_status: String,
     content_notice: Option<String>,
+    extractor_version: i64,
     metadata: InferredMetadata,
 }
 
@@ -164,6 +166,8 @@ impl ExtractedDocument {
         !self.plain_text.trim().is_empty() && self.content_status != "unavailable"
     }
 }
+
+const EXTRACTOR_VERSION: i64 = 1;
 
 impl LibraryService {
     pub fn new(root: &Path) -> Result<Self> {
@@ -467,9 +471,9 @@ impl LibraryService {
             };
             let title = extracted.metadata.title.clone().unwrap_or_else(|| {
                 path.file_stem()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("untitled")
-                    .replace(['-', '_'], " ")
+                    .map(|value| value.to_string_lossy().to_string())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "Untitled".into())
             });
 
             let storage_path = match mode {
@@ -515,15 +519,16 @@ impl LibraryService {
             )?;
             let attachment_id = tx.last_insert_rowid();
             tx.execute(
-                "INSERT INTO extracted_content(item_id, plain_text, normalized_html, page_count, content_status, content_notice)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO extracted_content(item_id, plain_text, normalized_html, page_count, content_status, content_notice, extractor_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     item_id,
                     extracted.plain_text,
                     extracted.normalized_html,
                     extracted.page_count,
                     extracted.content_status,
-                    extracted.content_notice
+                    extracted.content_notice,
+                    extracted.extractor_version
                 ],
             )?;
             if extracted.should_index() {
@@ -570,8 +575,9 @@ impl LibraryService {
         for path in paths {
             let title = path
                 .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or("untitled-citation")
+                .map(|value| value.to_string_lossy().to_string())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "Untitled Citation".into())
                 .replace('-', " ");
             let normalized_title = title
                 .split_whitespace()
@@ -617,15 +623,16 @@ impl LibraryService {
             )?;
             let attachment_id = tx.last_insert_rowid();
             tx.execute(
-                "INSERT INTO extracted_content(item_id, plain_text, normalized_html, page_count, content_status, content_notice)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO extracted_content(item_id, plain_text, normalized_html, page_count, content_status, content_notice, extractor_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     item_id,
                     plain_text,
                     normalized_html,
                     Option::<i64>::None,
                     "partial",
-                    Some("Citation-only entry. Attach a source file to enable reading.".to_string())
+                    Some("Citation-only entry. Attach a source file to enable reading.".to_string()),
+                    EXTRACTOR_VERSION
                 ],
             )?;
             tx.execute(
@@ -887,6 +894,132 @@ impl LibraryService {
             },
         )
         .map_err(Into::into)
+    }
+
+    pub fn repair_item_content_if_needed(&self, item_id: i64) -> Result<bool> {
+        let mut conn = self.connect()?;
+        let row = conn
+            .query_row(
+                "
+                SELECT i.title, a.path, COALESCE(e.extractor_version, 0)
+                FROM items i
+                LEFT JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
+                JOIN extracted_content e ON e.item_id = i.id
+                WHERE i.id = ?1
+                ",
+                [item_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?)),
+            )
+            .optional()?;
+        let Some((item_title, attachment_path, extractor_version)) = row else {
+            return Ok(false);
+        };
+        let Some(attachment_path) = attachment_path else {
+            return Ok(false);
+        };
+        if infer_attachment_format(&attachment_path) != "pdf" {
+            return Ok(false);
+        }
+        if extractor_version >= EXTRACTOR_VERSION {
+            return Ok(false);
+        }
+
+        let bytes = match fs::read(Path::new(&attachment_path)) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(false),
+        };
+
+        // Best-effort PDF extraction; even if content is unavailable, we still want to bump
+        // extractor_version so old libraries self-heal without repeated work.
+        let mut extracted = extract_pdf(Path::new(&attachment_path), &bytes)?;
+        extracted.extractor_version = EXTRACTOR_VERSION;
+
+        // Keep the item title stable (users may have edited it), but refresh the extracted HTML/text.
+        let paragraphs = if extracted.plain_text.trim().is_empty() {
+            Vec::new()
+        } else {
+            extracted
+                .plain_text
+                .split("\n\n")
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        };
+        extracted.normalized_html = article_from_paragraphs(&item_title, &paragraphs);
+
+        let tx = conn.transaction()?;
+        tx.execute(
+            "
+            UPDATE extracted_content
+            SET plain_text = ?2,
+                normalized_html = ?3,
+                page_count = ?4,
+                content_status = ?5,
+                content_notice = ?6,
+                extractor_version = ?7
+            WHERE item_id = ?1
+            ",
+            params![
+                item_id,
+                extracted.plain_text,
+                extracted.normalized_html,
+                extracted.page_count,
+                extracted.content_status,
+                extracted.content_notice,
+                extracted.extractor_version
+            ],
+        )?;
+        tx.execute("DELETE FROM search_index WHERE item_id = ?1", [item_id])?;
+        if extracted.should_index() {
+            tx.execute(
+                "INSERT INTO search_index(item_id, title, plain_text) VALUES (?1, ?2, ?3)",
+                params![item_id, item_title, extracted.plain_text],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn repair_library_content_if_needed(&self) -> Result<usize> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare(
+            "
+            SELECT i.id, a.path, COALESCE(e.extractor_version, 0)
+            FROM items i
+            LEFT JOIN attachments a ON a.item_id = i.id AND a.is_primary = 1
+            JOIN extracted_content e ON e.item_id = i.id
+            ORDER BY i.id ASC
+            ",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+
+        let mut item_ids = Vec::new();
+        for row in rows {
+            let (item_id, attachment_path, extractor_version) = row?;
+            let Some(attachment_path) = attachment_path else {
+                continue;
+            };
+            if extractor_version >= EXTRACTOR_VERSION {
+                continue;
+            }
+            if infer_attachment_format(&attachment_path) != "pdf" {
+                continue;
+            }
+            item_ids.push(item_id);
+        }
+
+        let mut repaired = 0usize;
+        for item_id in item_ids {
+            if self.repair_item_content_if_needed(item_id)? {
+                repaired += 1;
+            }
+        }
+        Ok(repaired)
     }
 
     pub fn read_primary_attachment_bytes(&self, primary_attachment_id: i64) -> Result<Vec<u8>> {
@@ -1316,7 +1449,10 @@ impl LibraryService {
     }
 
     fn connect(&self) -> Result<Connection> {
-        Ok(Connection::open(&self.db_path)?)
+        let conn = Connection::open(&self.db_path)?;
+        // Background repair tasks can overlap with UI reads; tolerate short-lived locks.
+        conn.busy_timeout(Duration::from_secs(5))?;
+        Ok(conn)
     }
 
     fn migrate(&self) -> Result<()> {
@@ -1370,7 +1506,8 @@ impl LibraryService {
                 normalized_html TEXT NOT NULL,
                 page_count INTEGER NULL,
                 content_status TEXT NOT NULL DEFAULT 'unavailable',
-                content_notice TEXT NULL
+                content_notice TEXT NULL,
+                extractor_version INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS annotations(
@@ -1427,6 +1564,12 @@ impl LibraryService {
             "TEXT NOT NULL DEFAULT 'unavailable'",
         )?;
         ensure_column(&conn, "extracted_content", "content_notice", "TEXT NULL")?;
+        ensure_column(
+            &conn,
+            "extracted_content",
+            "extractor_version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         ensure_column(&conn, "ai_tasks", "scope_item_ids", "TEXT NULL")?;
         ensure_column(&conn, "ai_artifacts", "scope_item_ids", "TEXT NULL")?;
         Ok(())
@@ -1604,14 +1747,34 @@ fn extract_document(path: &Path, bytes: &[u8], format: &str) -> Result<Extracted
 }
 
 fn extract_pdf(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
-    let fallback_title = path
+    let stem = path
         .file_stem()
-        .and_then(|value| value.to_str())
-        .map(title_from_slug)
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "Untitled".into());
-    let pdf = PdfDocument::load_mem(bytes)?;
-    let page_count = Some(pdf.get_pages().len() as i64).filter(|count| *count > 0);
-    let metadata = read_pdf_metadata(&pdf, &fallback_title);
+    let fallback_title = if stem.contains('-') || stem.contains('_') {
+        title_from_slug(&stem)
+    } else {
+        stem
+    };
+
+    // Best-effort parsing: PDF import/reading should not be blocked by metadata/text extraction.
+    let pdf = PdfDocument::load_mem(bytes).ok();
+    let page_count = pdf
+        .as_ref()
+        .map(|pdf| pdf.get_pages().len() as i64)
+        .filter(|count| *count > 0);
+    let metadata = pdf
+        .as_ref()
+        .map(|pdf| read_pdf_metadata(pdf, &fallback_title))
+        .unwrap_or_else(|| InferredMetadata {
+            title: Some(fallback_title.clone()),
+            authors: "Imported Author".into(),
+            publication_year: None,
+            source: "Imported PDF".into(),
+            doi: None,
+        });
+
     let page_fragments = panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(bytes))
         .ok()
         .and_then(Result::ok)
@@ -1620,7 +1783,13 @@ fn extract_pdf(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
     let plain_text = join_plain_text(&page_fragments);
     let (content_status, content_notice) =
         classify_pdf_content(&page_fragments, page_count.unwrap_or(0) as usize);
-    let normalized_html = article_from_paragraphs(&metadata.title.clone().unwrap_or(fallback_title.clone()), &page_fragments);
+    let normalized_html = article_from_paragraphs(
+        &metadata
+            .title
+            .clone()
+            .unwrap_or_else(|| fallback_title.clone()),
+        &page_fragments,
+    );
 
     Ok(ExtractedDocument {
         normalized_html,
@@ -1628,6 +1797,7 @@ fn extract_pdf(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
         page_count,
         content_status,
         content_notice,
+        extractor_version: EXTRACTOR_VERSION,
         metadata,
     })
 }
@@ -1638,8 +1808,9 @@ fn extract_docx(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
     let paragraphs = extract_docx_paragraphs(&document_xml)?;
     let title = read_docx_title(&mut archive)?.unwrap_or_else(|| {
         path.file_stem()
-            .and_then(|value| value.to_str())
-            .map(title_from_slug)
+            .map(|value| value.to_string_lossy().to_string())
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| title_from_slug(&value))
             .unwrap_or_else(|| "Untitled".into())
     });
     let authors = read_docx_author(&mut archive)?.unwrap_or_else(|| "Imported Author".into());
@@ -1651,6 +1822,7 @@ fn extract_docx(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
         page_count: Some(paragraphs.len() as i64),
         content_status: "ready".into(),
         content_notice: None,
+        extractor_version: EXTRACTOR_VERSION,
         metadata: InferredMetadata {
             title: Some(title),
             authors,
@@ -1669,8 +1841,9 @@ fn extract_epub(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
     let (title, authors, sections) = extract_epub_sections(&mut archive, &rootfile, &package_xml)?;
     let resolved_title = title.unwrap_or_else(|| {
         path.file_stem()
-            .and_then(|value| value.to_str())
-            .map(title_from_slug)
+            .map(|value| value.to_string_lossy().to_string())
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| title_from_slug(&value))
             .unwrap_or_else(|| "Untitled".into())
     });
     let plain_text = join_plain_text(&sections);
@@ -1681,6 +1854,7 @@ fn extract_epub(path: &Path, bytes: &[u8]) -> Result<ExtractedDocument> {
         page_count: Some(sections.len() as i64),
         content_status: "ready".into(),
         content_notice: None,
+        extractor_version: EXTRACTOR_VERSION,
         metadata: InferredMetadata {
             title: Some(resolved_title),
             authors: authors.unwrap_or_else(|| "Imported Author".into()),
