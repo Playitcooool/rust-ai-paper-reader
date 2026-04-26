@@ -528,10 +528,10 @@ p {
 }
 
 .reader-panel-focus {
-  padding: 18px 28px 34px;
-  max-width: 1320px;
+  padding: 10px 14px 18px;
+  max-width: none;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -892,9 +892,13 @@ p {
 }
 
 .reader-tabs-focus {
-  justify-content: center;
-  padding-top: 14px;
-  padding-bottom: 4px;
+  justify-content: flex-start;
+  align-items: center;
+  padding: 6px 10px 2px;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .reader-tabs-focus .reader-tab-shell {
@@ -910,13 +914,13 @@ p {
 }
 
 .reader-shell-focus .pdf-reader-focus .pdf-stage {
-  width: min(1100px, 100%);
-  margin: 0 auto;
-  padding: 18px 0 32px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 0 18px;
   display: grid;
   justify-items: center;
   align-content: start;
-  gap: 10px;
+  gap: 12px;
 }
 
 .reader-shell-focus .pdf-reader-focus canvas {
@@ -926,6 +930,87 @@ p {
     0 30px 90px rgba(0, 0, 0, 0.52),
     0 0 0 1px rgba(255, 255, 255, 0.05);
   background: rgba(255, 255, 255, 0.01);
+}
+
+/* Minimal pdf.js TextLayer + AnnotationLayer CSS (scoped).
+   Avoid broad selectors like ".textLayer span" because we inject nested spans
+   (search hits + highlight decorations) inside the pdf.js textDiv spans. */
+.pdf-reader .pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  overflow: clip;
+  transform-origin: 0 0;
+  line-height: 1;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+/* Target only pdf.js' own text layer nodes. Keep it narrow so we don't break nested highlight spans. */
+.pdf-reader .pdf-text-layer :is(span, br)[role="presentation"] {
+  position: absolute;
+  transform-origin: 0% 0%;
+  white-space: pre;
+  cursor: text;
+  color: transparent;
+  user-select: text;
+}
+
+.pdf-reader .pdf-text-layer span[role="presentation"] {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.pdf-reader .pdf-text-layer .markedContent {
+  display: contents;
+}
+
+.pdf-reader .pdf-text-layer ::selection {
+  background: rgba(102, 164, 212, 0.35);
+}
+
+.pdf-reader .pdf-text-layer .pdf-annotation-highlight {
+  background: rgba(226, 139, 83, 0.34);
+  border-radius: 0.22em;
+  box-shadow: inset 0 0 0 1px rgba(226, 139, 83, 0.26);
+}
+
+.pdf-reader .pdf-text-layer .pdf-search-hit {
+  background: rgba(102, 164, 212, 0.26);
+  border-radius: 0.22em;
+}
+
+.pdf-reader .pdf-text-layer .pdf-search-hit-active {
+  background: rgba(102, 164, 212, 0.42);
+  outline: 2px solid rgba(102, 164, 212, 0.42);
+  outline-offset: 1px;
+}
+
+.annotationLayer {
+  pointer-events: none;
+}
+
+.annotationLayer a {
+  pointer-events: auto;
+}
+
+.pdf-reader .annotationLayer section {
+  position: absolute;
+  pointer-events: auto;
+}
+
+.pdf-reader .pdf-text-layer.selecting ~ .annotationLayer section {
+  pointer-events: none;
+}
+
+.pdf-reader .annotationLayer .linkAnnotation > a {
+  position: absolute;
+  inset: 0;
 }
 
 .drawer-backdrop {

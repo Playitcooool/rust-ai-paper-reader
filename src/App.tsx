@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { NormalizedReader } from "./components/readers/NormalizedReader";
+import { PdfContinuousReader } from "./components/readers/PdfContinuousReader";
 import { PdfReader } from "./components/readers/PdfReader";
 import { isTauriRuntime } from "./lib/api";
 import type {
@@ -267,13 +268,18 @@ export default function App({ api }: { api: AppApi }) {
   );
   const activePaperMetadata = activePaper ? formatItemMetadata(activePaper) : null;
   const isPdfReader = readerView?.reader_kind === "pdf";
-  const textCapabilitiesEnabled = Boolean(
+  const attachmentAvailable = Boolean(
     activePaper &&
       activePaper.attachment_status !== "missing" &&
-      activePaper.attachment_status !== "citation_only" &&
-      readerView?.content_status === "ready",
+      activePaper.attachment_status !== "citation_only",
   );
-  const readyForAi = Boolean(activePaper && textCapabilitiesEnabled);
+  const aiCapabilitiesEnabled = Boolean(attachmentAvailable && readerView?.content_status === "ready");
+  const isPdfAttachment = Boolean(activePaper?.attachment_format === "pdf" || isPdfReader);
+  const pdfTextToolsEnabled = Boolean(
+    attachmentAvailable && isPdfAttachment,
+  );
+  const textToolsEnabled = Boolean(isPdfAttachment ? pdfTextToolsEnabled : aiCapabilitiesEnabled);
+  const readyForAi = Boolean(activePaper && aiCapabilitiesEnabled);
   const readerPageCount =
     activePaper?.id && isPdfReader ? pdfPageCounts[activePaper.id] ?? readerView?.page_count ?? 1 : 1;
   const visibleAnnotations = useMemo(() => {
@@ -443,13 +449,13 @@ export default function App({ api }: { api: AppApi }) {
   }, [activePaperId, readerPage, readerSearchQuery, readerView?.reader_kind]);
 
   useEffect(() => {
-    if (textCapabilitiesEnabled) return;
+    if (textToolsEnabled) return;
     setIsFindHudOpen(false);
     setReaderSearchQuery("");
     setReaderSearchMatchIndex(0);
     setReaderSearchMatchCount(0);
     setReportedActiveSearchMatchIndex(-1);
-  }, [textCapabilitiesEnabled]);
+  }, [textToolsEnabled]);
 
   useEffect(() => {
     if (!isFindHudOpen) return;
@@ -459,7 +465,7 @@ export default function App({ api }: { api: AppApi }) {
 
   useEffect(() => {
     function handleWindowKeydown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && textCapabilitiesEnabled) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && textToolsEnabled) {
         event.preventDefault();
         setIsFindHudOpen(true);
         return;
@@ -482,7 +488,7 @@ export default function App({ api }: { api: AppApi }) {
 
     window.addEventListener("keydown", handleWindowKeydown);
     return () => window.removeEventListener("keydown", handleWindowKeydown);
-  }, [isFindHudOpen, textCapabilitiesEnabled, workspaceMode]);
+  }, [isFindHudOpen, textToolsEnabled, workspaceMode]);
 
   const moveReaderSearchMatch = (direction: 1 | -1) => {
     if (readerSearchMatchCount <= 0) return;
@@ -753,7 +759,7 @@ export default function App({ api }: { api: AppApi }) {
   };
 
   const handleItemTask = async (kind: string) => {
-    if (!activePaper || !textCapabilitiesEnabled) return;
+    if (!activePaper || !aiCapabilitiesEnabled) return;
     const runtimeApi = await getApi();
     await runtimeApi.runItemTask({ item_id: activePaper.id, kind });
     const [artifact, taskRuns] = await Promise.all([
@@ -817,7 +823,7 @@ export default function App({ api }: { api: AppApi }) {
   };
 
   const handleCreatePdfHighlight = async () => {
-    if (!activePaper || !textCapabilitiesEnabled || !pdfSelection) return;
+    if (!activePaper || !pdfTextToolsEnabled || !pdfSelection) return;
     const runtimeApi = await getApi();
     const annotation = await runtimeApi.createAnnotation({
       item_id: activePaper.id,
@@ -846,9 +852,7 @@ export default function App({ api }: { api: AppApi }) {
   );
 
   const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
-  const showHighlightAction = Boolean(
-    activePaper && readerView?.reader_kind === "pdf" && textCapabilitiesEnabled,
-  );
+  const showHighlightAction = Boolean(activePaper && pdfTextToolsEnabled);
   const isCollectionDraftStale = Boolean(
     collectionArtifact &&
       collectionArtifact.collection_id === activeCollection?.id &&
@@ -1187,25 +1191,7 @@ export default function App({ api }: { api: AppApi }) {
 
         {workspaceMode === "pdf_focus" && activePaper?.attachment_format === "pdf" ? (
           <section className="reader-panel reader-panel-focus">
-            <div className="reader-meta-row reader-meta-row-focus">
-              <div className="reader-focus-heading">
-                <h2>{activePaper.title}</h2>
-                {activePaperMetadata ? (
-                  <p className="reader-focus-subtitle">{activePaperMetadata}</p>
-                ) : null}
-              </div>
-            </div>
             <div className="reader-toolbar reader-toolbar-focus" role="toolbar" aria-label="PDF focus toolbar">
-              <button
-                className="ghost-button focus-action-button"
-                type="button"
-                onClick={() => {
-                  setWorkspaceMode("workspace");
-                  setIsSidebarVisible(true);
-                }}
-              >
-                Back
-              </button>
               <div className="reader-control-group reader-control-group-page">
                 <button
                   aria-label="Previous Page"
@@ -1244,59 +1230,34 @@ export default function App({ api }: { api: AppApi }) {
                   Next
                 </button>
               </div>
-              <div className="reader-control-group reader-control-group-zoom">
-                <button
-                  aria-label="Zoom Out"
-                  className="ghost-button"
-                  type="button"
-                  onClick={() => setReaderZoom((current) => Math.max(70, current - 10))}
-                >
-                  -
-                </button>
-                <span className="reader-control-divider">{readerZoom}%</span>
-                <button
-                  aria-label="Zoom In"
-                  className="ghost-button"
-                  type="button"
-                  onClick={() => setReaderZoom((current) => Math.min(180, current + 10))}
-                >
-                  +
-                </button>
-              </div>
-              {showHighlightAction ? (
-                <button
-                  aria-label="Highlight selection"
-                  className="ghost-button focus-action-button"
-                  disabled={!pdfSelection}
-                  type="button"
-                  onClick={() => void handleCreatePdfHighlight()}
-                >
-                  Highlight
-                </button>
-              ) : null}
             </div>
 
             {readerView ? (
-                <PdfReader
-                  loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
-                  annotations={annotations}
-                  mode="focus"
-                  page={readerPage}
-                  searchQuery={readerSearchQuery}
-                  activeSearchMatchIndex={readerSearchMatchIndex}
-                  view={readerView}
-                  zoom={readerZoom}
-                  onSearchMatchesChange={({ total, activeIndex }) => {
-                    setReaderSearchMatchCount(total);
-                    setReportedActiveSearchMatchIndex(activeIndex);
-                  }}
-                  onSelectionChange={(selection) => setPdfSelection(selection)}
-                  onPageCountChange={(pageCount) => {
-                    if (!activePaper) return;
-                    setPdfPageCounts((current) =>
-                    current[activePaper.id] === pageCount
-                      ? current
-                      : { ...current, [activePaper.id]: pageCount },
+              <PdfContinuousReader
+                loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+                annotations={annotations}
+                page={readerPage}
+                searchQuery={readerSearchQuery}
+                activeSearchMatchIndex={readerSearchMatchIndex}
+                view={readerView}
+                zoom={readerZoom}
+                onSearchMatchesChange={({ total, activeIndex }) => {
+                  setReaderSearchMatchCount(total);
+                  setReportedActiveSearchMatchIndex(activeIndex);
+                }}
+                onSelectionChange={(selection) => setPdfSelection(selection)}
+                onActivePageChange={(pageIndex0) => {
+                  setReaderPage(pageIndex0);
+                  setReaderPageInput(String(pageIndex0 + 1));
+                }}
+                onNavigateToPage={(pageIndex0) => {
+                  setReaderPage(pageIndex0);
+                  setReaderPageInput(String(pageIndex0 + 1));
+                }}
+                onPageCountChange={(pageCount) => {
+                  if (!activePaper) return;
+                  setPdfPageCounts((current) =>
+                    current[activePaper.id] === pageCount ? current : { ...current, [activePaper.id]: pageCount },
                   );
                 }}
               />

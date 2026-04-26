@@ -1,91 +1,14 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { getLegacyDocumentMock } from "../../test/pdfjsLegacyMock";
 import { PdfReader } from "./PdfReader";
 import type { ReaderView } from "../../lib/contracts";
 
-const { getDocumentMock, getPageMock, renderMock } = vi.hoisted(() => ({
-  getDocumentMock: vi.fn(),
-  getPageMock: vi.fn(),
-  renderMock: vi.fn(),
-}));
-
-const { getLegacyDocumentMock, getLegacyPageMock, legacyRenderMock } = vi.hoisted(() => ({
+const { getLegacyPageMock, legacyRenderMock } = vi.hoisted(() => ({
   getLegacyDocumentMock: vi.fn(),
   getLegacyPageMock: vi.fn(),
   legacyRenderMock: vi.fn(),
-}));
-
-vi.mock("pdfjs-dist", () => ({
-  GlobalWorkerOptions: { workerSrc: "" },
-  getDocument: getDocumentMock,
-  TextLayer: class TextLayerMock {
-    textDivs: HTMLElement[] = [];
-    textContentItemsStr: string[] = [];
-    #container: HTMLElement;
-    #textContentSource: unknown;
-
-    constructor({
-      textContentSource,
-      container,
-    }: {
-      textContentSource: unknown;
-      container: HTMLElement;
-      viewport: unknown;
-    }) {
-      this.#container = container;
-      this.#textContentSource = textContentSource;
-    }
-
-    async render() {
-      const items = (this.#textContentSource as { items?: Array<{ str?: string }> }).items ?? [];
-      this.textContentItemsStr = items.map((item) => item.str ?? "");
-      this.textDivs = this.textContentItemsStr.map((text) => {
-        const span = document.createElement("span");
-        span.textContent = text;
-        this.#container.appendChild(span);
-        return span;
-      });
-    }
-
-    cancel() {}
-  },
-}));
-
-vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
-  GlobalWorkerOptions: { workerSrc: "" },
-  getDocument: getLegacyDocumentMock,
-  TextLayer: class TextLayerMock {
-    textDivs: HTMLElement[] = [];
-    textContentItemsStr: string[] = [];
-    #container: HTMLElement;
-    #textContentSource: unknown;
-
-    constructor({
-      textContentSource,
-      container,
-    }: {
-      textContentSource: unknown;
-      container: HTMLElement;
-      viewport: unknown;
-    }) {
-      this.#container = container;
-      this.#textContentSource = textContentSource;
-    }
-
-    async render() {
-      const items = (this.#textContentSource as { items?: Array<{ str?: string }> }).items ?? [];
-      this.textContentItemsStr = items.map((item) => item.str ?? "");
-      this.textDivs = this.textContentItemsStr.map((text) => {
-        const span = document.createElement("span");
-        span.textContent = text;
-        this.#container.appendChild(span);
-        return span;
-      });
-    }
-
-    cancel() {}
-  },
 }));
 
 const pdfView: ReaderView = {
@@ -119,9 +42,6 @@ describe("PdfReader", () => {
   });
 
   beforeEach(() => {
-    getDocumentMock.mockReset();
-    getPageMock.mockReset();
-    renderMock.mockReset();
     getLegacyDocumentMock.mockReset();
     getLegacyPageMock.mockReset();
     legacyRenderMock.mockReset();
@@ -678,6 +598,46 @@ describe("PdfReader", () => {
     });
   });
 
+  it("enables text selection only after the text layer render completes", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+
+    legacyRenderMock.mockReturnValue({ promise: Promise.resolve() });
+    getLegacyPageMock.mockResolvedValue({
+      getViewport: ({ scale }: { scale: number }) => ({
+        width: 800 * scale,
+        height: 1000 * scale,
+      }),
+      getTextContent: () =>
+        Promise.resolve({
+          items: [{ str: "Selectable text" }],
+          styles: {},
+        }),
+      render: legacyRenderMock,
+    });
+    getLegacyDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 1,
+        getPage: getLegacyPageMock,
+      }),
+    });
+
+    render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    const textLayer = await screen.findByLabelText("PDF text layer");
+    expect(textLayer).toHaveClass("pdf-text-layer");
+    await waitFor(() => {
+      expect(textLayer).toHaveStyle({ pointerEvents: "auto", userSelect: "text" });
+    });
+  });
+
   it("reports search match counts and honors activeSearchMatchIndex", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
@@ -797,7 +757,7 @@ describe("PdfReader", () => {
     });
   });
 
-  it("does not enable the text layer for partial/unavailable content", async () => {
+  it("renders PDF text highlights even when content_status is partial/unavailable", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
 
@@ -836,7 +796,8 @@ describe("PdfReader", () => {
       expect(legacyRenderMock).toHaveBeenCalled();
     });
 
-    expect(document.querySelector(".pdf-search-hit")).toBeFalsy();
-    expect(document.querySelector(".pdf-annotation-highlight")).toBeFalsy();
+    await waitFor(() => {
+      expect(document.querySelector(".pdf-search-hit")).toBeTruthy();
+    });
   });
 });

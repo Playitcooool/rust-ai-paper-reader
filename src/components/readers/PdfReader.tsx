@@ -8,6 +8,7 @@ import type {
   RenderTask,
 } from "pdfjs-dist/types/src/display/api";
 import type { TextLayer } from "pdfjs-dist/types/src/display/text_layer";
+import type { CSSProperties } from "react";
 
 type PdfTextAnchor = {
   type: "pdf_text";
@@ -74,13 +75,27 @@ export function PdfReader({
   const textLayerRef = useRef<TextLayer | null>(null);
   const textDivsRef = useRef<HTMLElement[]>([]);
   const textDivStringsRef = useRef<string[]>([]);
+  const [textLayerReady, setTextLayerReady] = useState(false);
   const onPageCountChangeRef = useRef(onPageCountChange);
   const [pageCount, setPageCount] = useState(view.page_count);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState("");
 
-  const textEnabled = view.content_status === "ready";
+  // PDF text selection/search/highlights are driven by pdf.js' TextLayer, not server-side content_status.
+  // If the TextLayer can't render (old WebKit, etc), we keep the canvas visible and disable tools.
+  const textEnabled = true;
   const loweredSearch = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
+  const pageShellStyleVars = useMemo((): CSSProperties => {
+    const scale = zoom / 100;
+    return {
+      // pdf.js layer sizing depends on these vars via setLayerDimensions().
+      ["--scale-factor" as never]: String(scale),
+      ["--user-unit" as never]: "1",
+      ["--scale-round-x" as never]: "1px",
+      ["--scale-round-y" as never]: "1px",
+      ["--total-scale-factor" as never]: "calc(var(--scale-factor) * var(--user-unit))",
+    } as unknown as CSSProperties;
+  }, [zoom]);
 
   const isCancellationError = (error: unknown) => {
     if (!(error instanceof Error)) return false;
@@ -102,6 +117,7 @@ export function PdfReader({
     activeTextLayer?.cancel();
     textDivsRef.current = [];
     textDivStringsRef.current = [];
+    setTextLayerReady(false);
     if (textLayerHostRef.current) {
       clearChildren(textLayerHostRef.current);
     }
@@ -223,6 +239,7 @@ export function PdfReader({
 
       setStatus("loading");
       setErrorMessage("");
+      setTextLayerReady(false);
 
       try {
         const pdfjsModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -275,6 +292,7 @@ export function PdfReader({
             textDivsRef.current.forEach((div, index) => {
               div.dataset.divIndex = String(index);
             });
+            setTextLayerReady(textDivsRef.current.length > 0);
           } catch (error) {
             if (cancelled) return;
             if (isCancellationError(error)) return;
@@ -282,6 +300,7 @@ export function PdfReader({
             textLayerRef.current = null;
             textDivsRef.current = [];
             textDivStringsRef.current = [];
+            setTextLayerReady(false);
             if (textLayerHostRef.current) clearChildren(textLayerHostRef.current);
             // Best effort logging for debugging old WebKit builds.
             // eslint-disable-next-line no-console
@@ -561,16 +580,33 @@ export function PdfReader({
         {status === "loading" ? <p>Loading PDF page...</p> : null}
         {status === "error" ? <p>Unable to load this PDF. {errorMessage}</p> : null}
 
-        <div style={{ position: "relative", display: status === "error" ? "none" : "block", maxWidth: "100%" }}>
+        <div
+          style={{
+            position: "relative",
+            display: status === "error" ? "none" : "block",
+            maxWidth: "100%",
+            ...pageShellStyleVars,
+          }}
+          onPointerDownCapture={() => {
+            textLayerHostRef.current?.classList.add("selecting");
+          }}
+          onPointerUpCapture={() => {
+            textLayerHostRef.current?.classList.remove("selecting");
+          }}
+          onPointerCancelCapture={() => {
+            textLayerHostRef.current?.classList.remove("selecting");
+          }}
+        >
           <canvas aria-label="PDF page canvas" ref={canvasRef} style={{ display: "block", maxWidth: "100%" }} />
           <div
             aria-label="PDF text layer"
+            className="pdf-text-layer"
             ref={textLayerHostRef}
             style={{
               position: "absolute",
               inset: 0,
-              pointerEvents: textEnabled && textDivsRef.current.length > 0 ? "auto" : "none",
-              userSelect: textEnabled && textDivsRef.current.length > 0 ? "text" : "none",
+              pointerEvents: textEnabled && textLayerReady ? "auto" : "none",
+              userSelect: textEnabled && textLayerReady ? "text" : "none",
             }}
           />
         </div>

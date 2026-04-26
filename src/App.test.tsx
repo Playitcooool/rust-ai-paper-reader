@@ -85,6 +85,58 @@ vi.mock("./components/readers/PdfReader", () => {
   return { PdfReader: MockPdfReader };
 });
 
+vi.mock("./components/readers/PdfContinuousReader", () => {
+  function MockPdfContinuousReader({
+    view,
+    page,
+    onPageCountChange,
+    onSelectionChange,
+    searchQuery,
+    activeSearchMatchIndex = 0,
+    onSearchMatchesChange,
+    onActivePageChange,
+    onNavigateToPage,
+  }: {
+    view: {
+      title: string;
+      page_count: number | null;
+    };
+    page: number;
+    onPageCountChange?: (pageCount: number) => void;
+    searchQuery?: string;
+    annotations?: unknown[];
+    onSelectionChange?: (selection: unknown) => void;
+    activeSearchMatchIndex?: number;
+    onSearchMatchesChange?: (state: { total: number; activeIndex: number }) => void;
+    onActivePageChange?: (pageIndex0: number) => void;
+    onNavigateToPage?: (pageIndex0: number) => void;
+  }) {
+    useEffect(() => {
+      onPageCountChange?.(view.page_count ?? 1);
+    }, [onPageCountChange, view.page_count]);
+
+    useEffect(() => {
+      onSelectionChange?.(null);
+    }, [onSelectionChange]);
+
+    useEffect(() => {
+      if (!(searchQuery ?? "").trim()) {
+        onSearchMatchesChange?.({ total: 0, activeIndex: -1 });
+        return;
+      }
+      onSearchMatchesChange?.({ total: 3, activeIndex: activeSearchMatchIndex % 3 });
+    }, [activeSearchMatchIndex, onSearchMatchesChange, searchQuery]);
+
+    return (
+      <section data-testid="pdf-reader">
+        <p>Mock PDF continuous reader page {page + 1}</p>
+      </section>
+    );
+  }
+
+  return { PdfContinuousReader: MockPdfContinuousReader };
+});
+
 import App from "./App";
 import { fakeApi, replaceFakeApiState, resetFakeApi } from "./test/fakeApi";
 
@@ -121,13 +173,14 @@ describe("App reading workspace", () => {
     await user.click(docxNode);
 
     expect(screen.getByRole("tab", { name: "Graph Neural Survey" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
 
     const pdfNode = await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i });
     await user.click(pdfNode);
 
     expect(screen.getByRole("tab", { name: "Transformer Scaling Laws" })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Reader page input" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Show sidebar" })).not.toBeInTheDocument();
     expect(screen.queryByText(/text capabilities/i)).not.toBeInTheDocument();
     expect(screen.getByTestId("pdf-reader")).toBeInTheDocument();
@@ -150,8 +203,8 @@ describe("App reading workspace", () => {
 
     await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
 
-    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
     expect(screen.getByRole("toolbar", { name: /pdf focus/i })).toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: /pdf focus/i })).toHaveAccessibleName("PDF focus toolbar");
     expect(screen.queryByTestId("pdf-reader")).not.toBeInTheDocument();
 
     const view = await fakeApi.getReaderView(1);
@@ -172,12 +225,12 @@ describe("App reading workspace", () => {
     expect(screen.getByRole("tab", { name: "Graph Neural Survey" })).toBeInTheDocument();
 
     await user.click(pdfNode);
-    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Graph Neural Survey" }));
 
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
     });
     expect(screen.getByTestId("normalized-reader")).toBeInTheDocument();
   });
@@ -188,11 +241,11 @@ describe("App reading workspace", () => {
     render(<App api={fakeApi} />);
 
     await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
-    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
     });
 
     await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
@@ -200,10 +253,10 @@ describe("App reading workspace", () => {
     const searchInput = await screen.findByRole("textbox", { name: "Find in document" });
     searchInput.focus();
     fireEvent.keyDown(searchInput, { key: "Escape" });
-    expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
   });
 
-  it("gates pdf text tools for partial and unavailable content while keeping page rendering", async () => {
+  it("keeps PDF text tools available for partial/unavailable PDFs while keeping AI gated on ready", async () => {
     replaceFakeApiState({
       items: [
         {
@@ -238,7 +291,7 @@ describe("App reading workspace", () => {
     expect(screen.queryByText(/text capabilities/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Find in document" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open AI Workspace" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Highlight" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Highlight/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Reader Content/i)).not.toBeInTheDocument();
   });
 
@@ -290,15 +343,18 @@ describe("App reading workspace", () => {
     render(<App api={fakeApi} />);
 
     await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
-    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
+    });
 
     await user.click(await screen.findByRole("treeitem", { name: /Second PDF/i }));
-    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Transformer Scaling Laws" }));
-    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
   });
 
   it("filters imported placeholder metadata in pdf focus", async () => {
@@ -330,7 +386,7 @@ describe("App reading workspace", () => {
     render(<App api={fakeApi} />);
 
     await user.click(await screen.findByRole("treeitem", { name: /Imported Placeholder PDF/i }));
-    expect(await screen.findByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
 
     expect(document.querySelector(".reader-focus-subtitle")).toBeNull();
     expect(screen.queryByText(/Imported Author/i)).not.toBeInTheDocument();
@@ -547,7 +603,7 @@ describe("App reading workspace", () => {
     });
   });
 
-  it("does not open the find HUD for partial PDFs", async () => {
+  it("opens the find HUD for partial PDFs", async () => {
     replaceFakeApiState({
       items: [
         {
@@ -579,7 +635,7 @@ describe("App reading workspace", () => {
     fireEvent.keyDown(window, { key: "f", metaKey: true });
 
     await waitFor(() => {
-      expect(screen.queryByRole("textbox", { name: "Find in document" })).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Find in document" })).toBeInTheDocument();
     });
   });
 });

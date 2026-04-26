@@ -5,6 +5,18 @@ import App from "./App";
 import { createTauriApi, isTauriRuntime } from "./lib/api";
 
 function installRuntimePolyfills() {
+  // pdf.js AnnotationLayer uses Element.prototype.replaceChildren.
+  if (
+    typeof Element !== "undefined" &&
+    typeof (Element.prototype as unknown as { replaceChildren?: unknown }).replaceChildren !== "function"
+  ) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element.prototype as any).replaceChildren = function replaceChildrenPolyfill(this: Element, ...nodes: Node[]) {
+      while (this.firstChild) this.removeChild(this.firstChild);
+      for (const node of nodes) this.appendChild(node);
+    };
+  }
+
   // pdfjs-dist 5.x uses URL.parse in some code paths; older WKWebView builds don't have it.
   if (typeof URL !== "undefined" && typeof (URL as unknown as { parse?: unknown }).parse !== "function") {
     (URL as unknown as { parse: (input: string, base?: string) => URL | null }).parse = (
@@ -30,6 +42,20 @@ function installRuntimePolyfills() {
           ),
         ),
       )) as typeof Promise.allSettled;
+  }
+
+  // pdfjs-dist 5.x TextLayer uses Promise.withResolvers; older WebKit/Tauri builds may miss it.
+  if (typeof Promise !== "undefined" && typeof (Promise as unknown as { withResolvers?: unknown }).withResolvers !== "function") {
+    (Promise as unknown as { withResolvers: <T>() => { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void; reject: (reason?: unknown) => void } }).withResolvers =
+      <T,>() => {
+        let resolve!: (value: T | PromiseLike<T>) => void;
+        let reject!: (reason?: unknown) => void;
+        const promise = new Promise<T>((res, rej) => {
+          resolve = res;
+          reject = rej;
+        });
+        return { promise, resolve, reject };
+      };
   }
 }
 
