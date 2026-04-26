@@ -87,6 +87,64 @@ pnpm test
 
 ---
 
+## Architecture | 架构
+
+```mermaid
+graph TB
+    subgraph Desktop Shell ["Desktop Shell (Tauri)"]
+        WebView["WebView<br/>(React Frontend)"]
+        Tauri["Tauri Commands<br/>(Rust)"]
+        Dialog["Native Dialog"]
+        FS["File System"]
+    end
+
+    subgraph Backend ["Backend (Rust)"]
+        AppCore["app-core crate"]
+        DB["Database"]
+        AI["AI Service"]
+        Parser["Document Parser<br/>(PDF/DOCX/EPUB)"]
+    end
+
+    subgraph Frontend ["Frontend (React)"]
+        App["App.tsx<br/>(State Management)"]
+        PdfReader["PdfReader"]
+        PdfContinuousReader["PdfContinuousReader"]
+        NormalizedReader["NormalizedReader"]
+        AIWorkspace["AI Workspace"]
+        LibraryPanel["Library Panel"]
+    end
+
+    WebView <-->|"invoke / events"| Tauri
+    Tauri <--> AppCore
+    AppCore <--> DB
+    AppCore <--> AI
+    AppCore <--> Parser
+    AppCore <--> FS
+    Dialog --> FS
+
+    App --> PdfReader
+    App --> PdfContinuousReader
+    App --> NormalizedReader
+    App --> LibraryPanel
+    App --> AIWorkspace
+```
+
+```mermaid
+flowchart LR
+    A[Import Files] --> B{Have Collection?}
+    B -->|No| C[Create Collection First]
+    B -->|Yes| D[Supported Format?]
+    D -->|PDF| E[Parse PDF]
+    D -->|DOCX| F[Parse DOCX]
+    D -->|EPUB| G[Parse EPUB]
+    D -->|Citation| H[Import Metadata]
+    E --> I[Store in Library]
+    F --> I
+    G --> I
+    H --> I
+    I --> J[Display in Collection]
+```
+
 ## Project Structure | 项目结构
 
 ```
