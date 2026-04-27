@@ -18,6 +18,7 @@ import {
   type PdfTextSelection,
 } from "./pdfSelection";
 import { installPdfJsTextLayerSelectionSupport } from "./pdfTextLayerSelectionSupport";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 
 const escapeHtml = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -73,6 +74,7 @@ export function PdfReader({
   const [errorMessage, setErrorMessage] = useState("");
   const [stageWidth, setStageWidth] = useState(0);
   const [pageWidthAtScale1, setPageWidthAtScale1] = useState<number | null>(null);
+  const readableStreamWarningShownRef = useRef(false);
 
   // PDF text selection/search/highlights are driven by pdf.js' TextLayer, not server-side content_status.
   // If the TextLayer can't render (old WebKit, etc), we keep the canvas visible and disable tools.
@@ -206,6 +208,15 @@ export function PdfReader({
       if (isCancellationError(error)) return;
       // eslint-disable-next-line no-console
       console.warn("Unable to resolve PDF destination:", error);
+    }
+  };
+
+  const isAllowedExternalUrl = (value: string) => {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
     }
   };
 
@@ -363,18 +374,46 @@ export function PdfReader({
           clearChildren(linkLayerHost);
           const annotations = await currentPage.getAnnotations({ intent: "display" });
           const linkAnnotations = (annotations as Array<unknown>)
-            .map((annotation) => annotation as Partial<{ subtype: unknown; rect: unknown; dest: unknown }>)
+            .map(
+              (annotation) =>
+                annotation as Partial<{
+                  subtype: unknown;
+                  rect: unknown;
+                  dest: unknown;
+                  url: unknown;
+                  unsafeUrl: unknown;
+                }>,
+            )
             .filter(
               (annotation) =>
                 annotation.subtype === "Link" &&
                 Array.isArray(annotation.rect) &&
                 annotation.rect.length === 4 &&
                 annotation.rect.every((value) => typeof value === "number" && Number.isFinite(value)) &&
-                annotation.dest !== undefined &&
-                annotation.dest !== null,
+                (annotation.dest !== undefined && annotation.dest !== null
+                  ? true
+                  : typeof annotation.url === "string"
+                    ? isAllowedExternalUrl(annotation.url)
+                    : typeof annotation.unsafeUrl === "string"
+                      ? isAllowedExternalUrl(annotation.unsafeUrl)
+                      : false),
             )
-            .map((annotation) => ({ rect: annotation.rect as number[], dest: annotation.dest as unknown }));
+            .map((annotation) => {
+              const rawUrl =
+                typeof annotation.url === "string"
+                  ? annotation.url
+                  : typeof annotation.unsafeUrl === "string"
+                    ? annotation.unsafeUrl
+                    : null;
+              return {
+                rect: annotation.rect as number[],
+                dest: annotation.dest as unknown,
+                url: rawUrl && isAllowedExternalUrl(rawUrl) ? rawUrl : null,
+              };
+            });
 
+          let internalIndex = 0;
+          let externalIndex = 0;
           for (let i = 0; i < linkAnnotations.length; i += 1) {
             const link = linkAnnotations[i];
             const rect =
@@ -392,7 +431,6 @@ export function PdfReader({
             const button = document.createElement("button");
             button.type = "button";
             button.className = "pdf-link-overlay";
-            if (i === 0) button.setAttribute("data-testid", "internal-link");
             button.style.position = "absolute";
             button.style.left = `${left}px`;
             button.style.top = `${top}px`;
@@ -404,12 +442,29 @@ export function PdfReader({
             button.style.margin = "0";
             button.style.cursor = "pointer";
             button.style.pointerEvents = "auto";
-            button.setAttribute("aria-label", "PDF internal link");
+            const isInternal = link.dest !== undefined && link.dest !== null;
+            if (isInternal) {
+              if (internalIndex === 0) button.setAttribute("data-testid", "internal-link");
+              internalIndex += 1;
+              button.setAttribute("aria-label", "PDF internal link");
+            } else if (link.url) {
+              if (externalIndex === 0) button.setAttribute("data-testid", "external-link");
+              externalIndex += 1;
+              button.setAttribute("aria-label", "PDF external link");
+            } else {
+              continue;
+            }
 
             button.addEventListener("click", (event) => {
               event.preventDefault();
               event.stopPropagation();
-              void navigateToDestination(currentDocument, link.dest);
+              if (isInternal) {
+                void navigateToDestination(currentDocument, link.dest);
+                return;
+              }
+              if (link.url) {
+                void openExternal(link.url).catch(() => {});
+              }
             });
 
             linkLayerHost.appendChild(button);
@@ -442,6 +497,18 @@ export function PdfReader({
             // Attach stable indices so we can serialize selections into anchors.
             textDivsRef.current = textLayer.textDivs as unknown as HTMLElement[];
             textDivStringsRef.current = textLayer.textContentItemsStr.slice();
+            const itemsLength = (textContent as unknown as { items?: unknown[] }).items?.length ?? 0;
+            if (
+              !readableStreamWarningShownRef.current &&
+              itemsLength > 0 &&
+              textDivsRef.current.length === 0
+            ) {
+              readableStreamWarningShownRef.current = true;
+              // eslint-disable-next-line no-console
+              console.warn(
+                "PDF text layer rendered zero spans despite non-empty textContent; ReadableStream polyfill may be incomplete.",
+              );
+            }
             textDivsRef.current.forEach((div, index) => {
               div.dataset.divIndex = String(index);
             });

@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default desktop capability for the Paper Reader app.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "shell:allow-open"]
 }

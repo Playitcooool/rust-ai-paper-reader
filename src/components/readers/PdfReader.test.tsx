@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { open } from "@tauri-apps/plugin-shell";
 
 import { getLegacyDocumentMock } from "../../test/pdfjsLegacyMock";
 import { PdfReader } from "./PdfReader";
@@ -38,6 +39,7 @@ const createDeferred = <T,>() => {
 describe("PdfReader", () => {
   afterEach(() => {
     cleanup();
+    vi.clearAllMocks();
     vi.restoreAllMocks();
   });
 
@@ -147,6 +149,46 @@ describe("PdfReader", () => {
 
     await waitFor(() => {
       expect(onNavigateToPage).toHaveBeenCalledWith(7);
+    });
+  });
+
+  it("renders an external link overlay and opens it via the Tauri shell (http/https only)", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+
+    getLegacyDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 1,
+        getPage: getLegacyPageMock,
+        destroy: vi.fn(),
+      }),
+      destroy: vi.fn(),
+    });
+
+    legacyRenderMock.mockReturnValue({ promise: Promise.resolve(), cancel: vi.fn() });
+    getLegacyPageMock.mockResolvedValue({
+      getViewport: ({ scale }: { scale: number }) => {
+        const width = 800 * scale;
+        const height = 1000 * scale;
+        return {
+          width,
+          height,
+          convertToViewportRectangle: (rect: number[]) => rect,
+        };
+      },
+      getAnnotations: () =>
+        Promise.resolve([{ subtype: "Link", url: "https://example.com/paper", rect: [10, 10, 110, 30] }]),
+      getTextContent: () => Promise.resolve({ items: [{ str: "External link page" }], styles: {} }),
+      render: legacyRenderMock,
+    });
+
+    render(<PdfReader loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes} page={0} view={pdfView} zoom={100} />);
+
+    const link = await screen.findByTestId("external-link");
+    fireEvent.click(link);
+
+    await waitFor(() => {
+      expect(open).toHaveBeenCalledWith("https://example.com/paper");
     });
   });
 

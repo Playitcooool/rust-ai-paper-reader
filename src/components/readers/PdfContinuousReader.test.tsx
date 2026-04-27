@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { open } from "@tauri-apps/plugin-shell";
 
 import { getLegacyDocumentMock } from "../../test/pdfjsLegacyMock";
 import { PdfContinuousReader } from "./PdfContinuousReader";
@@ -27,6 +28,7 @@ const pdfView: ReaderView = {
 describe("PdfContinuousReader", () => {
   afterEach(() => {
     cleanup();
+    vi.clearAllMocks();
     vi.restoreAllMocks();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (globalThis as any).IntersectionObserver;
@@ -147,6 +149,49 @@ describe("PdfContinuousReader", () => {
 
     await waitFor(() => {
       expect(scrolled[scrolled.length - 1]).toBe("2");
+    });
+  });
+
+  it("renders an external link overlay and opens it via the Tauri shell (http/https only)", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+
+    legacyRenderMock.mockReturnValue({ promise: Promise.resolve(), cancel: vi.fn() });
+    getLegacyPageMock.mockImplementation(async (pageNumber: number) => ({
+      getViewport: ({ scale }: { scale: number }) => {
+        const width = 800 * scale;
+        const height = 1000 * scale;
+        return {
+          width,
+          height,
+          convertToViewportRectangle: (rect: number[]) => rect,
+          clone: () => ({ width, height, clone: () => ({ width, height }) }),
+        };
+      },
+      getTextContent: () => Promise.resolve({ items: [{ str: `Page ${pageNumber}` }], styles: {} }),
+      getAnnotations: () =>
+        Promise.resolve([{ subtype: "Link", url: "https://example.com/continuous", rect: [10, 10, 110, 30] }]),
+      render: legacyRenderMock,
+    }));
+
+    getLegacyDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 1,
+        getPage: getLegacyPageMock,
+        destroy: vi.fn(),
+      }),
+      destroy: vi.fn(),
+    });
+
+    render(
+      <PdfContinuousReader loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes} page={0} view={pdfView} zoom={100} />,
+    );
+
+    const link = await screen.findByTestId("external-link");
+    fireEvent.click(link);
+
+    await waitFor(() => {
+      expect(open).toHaveBeenCalledWith("https://example.com/continuous");
     });
   });
 
