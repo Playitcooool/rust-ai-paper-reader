@@ -923,6 +923,19 @@ p {
   gap: 12px;
 }
 
+.pdf-text-layer-notice {
+  width: 100%;
+  max-width: min(920px, calc(100% - 24px));
+  margin: 0 12px 6px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.18);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .reader-shell-focus .pdf-reader-focus canvas {
   margin: 0;
   border-radius: 16px;

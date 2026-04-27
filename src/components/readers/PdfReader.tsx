@@ -19,6 +19,7 @@ import {
 } from "./pdfSelection";
 import { installPdfJsTextLayerSelectionSupport } from "./pdfTextLayerSelectionSupport";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { getRuntimePolyfillDiagnostics } from "../../lib/runtimePolyfills";
 
 const escapeHtml = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -75,6 +76,16 @@ export function PdfReader({
   const [stageWidth, setStageWidth] = useState(0);
   const [pageWidthAtScale1, setPageWidthAtScale1] = useState<number | null>(null);
   const readableStreamWarningShownRef = useRef(false);
+  const textLayerFailureShownRef = useRef(false);
+  const [textLayerFailureMessage, setTextLayerFailureMessage] = useState("");
+
+  const textLayerFailureMessageForRuntime = () => {
+    const diag = getRuntimePolyfillDiagnostics();
+    if (diag.readableStreamOverrideFailed) {
+      return "Text layer failed to load in this build. Text selection and search are disabled. Update Paper Reader to a newer desktop build to enable them.";
+    }
+    return "Text layer failed to load in this build. Text selection and search are disabled.";
+  };
 
   // PDF text selection/search/highlights are driven by pdf.js' TextLayer, not server-side content_status.
   // If the TextLayer can't render (old WebKit, etc), we keep the canvas visible and disable tools.
@@ -127,6 +138,8 @@ export function PdfReader({
     textDivsRef.current = [];
     textDivStringsRef.current = [];
     setTextLayerReady(false);
+    textLayerFailureShownRef.current = false;
+    setTextLayerFailureMessage("");
     if (textLayerHostRef.current) {
       clearChildren(textLayerHostRef.current);
     }
@@ -339,6 +352,8 @@ export function PdfReader({
       setStatus("loading");
       setErrorMessage("");
       setTextLayerReady(false);
+      textLayerFailureShownRef.current = false;
+      setTextLayerFailureMessage("");
 
       try {
         const pdfjsModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -478,9 +493,12 @@ export function PdfReader({
         // Text layer is optional. Some WKWebView builds are missing modern web APIs
         // that pdf.js uses internally; keep the page visible even if text fails.
         if (textEnabled) {
+          let itemsLengthForFailure = 0;
           try {
             clearChildren(textLayerHost);
             const textContent = await currentPage.getTextContent();
+            const itemsLength = (textContent as unknown as { items?: unknown[] }).items?.length ?? 0;
+            itemsLengthForFailure = itemsLength;
             if (cancelled) return;
 
             const textLayer = new pdfjsModule.TextLayer({
@@ -497,7 +515,6 @@ export function PdfReader({
             // Attach stable indices so we can serialize selections into anchors.
             textDivsRef.current = textLayer.textDivs as unknown as HTMLElement[];
             textDivStringsRef.current = textLayer.textContentItemsStr.slice();
-            const itemsLength = (textContent as unknown as { items?: unknown[] }).items?.length ?? 0;
             if (
               !readableStreamWarningShownRef.current &&
               itemsLength > 0 &&
@@ -508,6 +525,10 @@ export function PdfReader({
               console.warn(
                 "PDF text layer rendered zero spans despite non-empty textContent; ReadableStream polyfill may be incomplete.",
               );
+            }
+            if (itemsLength > 0 && textDivsRef.current.length === 0 && !textLayerFailureShownRef.current) {
+              textLayerFailureShownRef.current = true;
+              setTextLayerFailureMessage(textLayerFailureMessageForRuntime());
             }
             textDivsRef.current.forEach((div, index) => {
               div.dataset.divIndex = String(index);
@@ -521,6 +542,11 @@ export function PdfReader({
           } catch (error) {
             if (cancelled) return;
             if (isCancellationError(error)) return;
+            // Best effort: if the PDF is expected to have text, make the failure visible to users.
+            if (itemsLengthForFailure > 0 && !textLayerFailureShownRef.current) {
+              textLayerFailureShownRef.current = true;
+              setTextLayerFailureMessage(textLayerFailureMessageForRuntime());
+            }
             // Non-fatal: keep the canvas, just disable text/search/highlights.
             textLayerRef.current = null;
             textDivsRef.current = [];
@@ -792,6 +818,11 @@ export function PdfReader({
 
         {status === "loading" ? <p>Loading PDF page...</p> : null}
         {status === "error" ? <p>Unable to load this PDF. {errorMessage}</p> : null}
+        {status !== "error" && textLayerFailureMessage ? (
+          <p className="pdf-text-layer-notice" role="note">
+            {textLayerFailureMessage}
+          </p>
+        ) : null}
 
         <div
           style={{

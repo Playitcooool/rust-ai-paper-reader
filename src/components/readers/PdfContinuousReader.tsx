@@ -17,6 +17,7 @@ import {
 } from "./pdfSelection";
 import { installPdfJsTextLayerSelectionSupport } from "./pdfTextLayerSelectionSupport";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { getRuntimePolyfillDiagnostics } from "../../lib/runtimePolyfills";
 
 const escapeHtml = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -86,6 +87,16 @@ export function PdfContinuousReader({
   const [stageWidth, setStageWidth] = useState(0);
   const [pageWidthAtScale1, setPageWidthAtScale1] = useState<number | null>(null);
   const readableStreamWarningShownRef = useRef(false);
+  const textLayerFailureShownRef = useRef(false);
+  const [textLayerFailureMessage, setTextLayerFailureMessage] = useState("");
+
+  const textLayerFailureMessageForRuntime = () => {
+    const diag = getRuntimePolyfillDiagnostics();
+    if (diag.readableStreamOverrideFailed) {
+      return "Text layer failed to load in this build. Text selection and search are disabled. Update Paper Reader to a newer desktop build to enable them.";
+    }
+    return "Text layer failed to load in this build. Text selection and search are disabled.";
+  };
 
   // PDF text selection/search/highlights are driven by pdf.js' TextLayer, not server-side content_status.
   // If the TextLayer can't render, we keep canvas + annotation layers and disable text tools per page.
@@ -102,6 +113,10 @@ export function PdfContinuousReader({
       maxZoomPct: 180,
     });
   }, [fitMode, pageWidthAtScale1, stageWidth, zoom]);
+  const effectiveZoomRef = useRef(effectiveZoom);
+  useEffect(() => {
+    effectiveZoomRef.current = effectiveZoom;
+  }, [effectiveZoom]);
 
   const isCancellationError = (error: unknown) => {
     if (!(error instanceof Error)) return false;
@@ -157,6 +172,8 @@ export function PdfContinuousReader({
     textDivStringsByIndexRef.current.clear();
     setTextLayerReadyByPage({});
     setTextLayerEpoch((current) => current + 1);
+    textLayerFailureShownRef.current = false;
+    setTextLayerFailureMessage("");
 
     for (const cleanup of textLayerSelectionCleanupByIndexRef.current.values()) cleanup();
     textLayerSelectionCleanupByIndexRef.current.clear();
@@ -320,7 +337,8 @@ export function PdfContinuousReader({
     const doc = pdfDocumentRef.current;
     if (!doc) return;
     if (pdfDocument !== doc) return;
-    if (renderedAtZoomByIndexRef.current.get(pageIndex0) === effectiveZoom) return;
+    const currentZoom = effectiveZoomRef.current;
+    if (renderedAtZoomByIndexRef.current.get(pageIndex0) === currentZoom) return;
 
     const canvas = canvasByIndexRef.current.get(pageIndex0);
     const textHost = textLayerHostByIndexRef.current.get(pageIndex0);
@@ -328,7 +346,7 @@ export function PdfContinuousReader({
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx || !textHost || !linkHost) return;
 
-    const token = Symbol(`render-page-${pageIndex0}-${effectiveZoom}`);
+    const token = Symbol(`render-page-${pageIndex0}-${currentZoom}`);
     const previous = renderWorkByIndexRef.current.get(pageIndex0);
     previous?.renderTask?.cancel();
     previous?.textLayer?.cancel();
@@ -345,7 +363,7 @@ export function PdfContinuousReader({
     try {
       const pdfjsModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
       const pageProxy = await doc.getPage(pageIndex0 + 1);
-      const viewport = pageProxy.getViewport({ scale: effectiveZoom / 100 });
+      const viewport = pageProxy.getViewport({ scale: currentZoom / 100 });
 
       // Canvas render
       canvas.width = viewport.width;
@@ -358,12 +376,15 @@ export function PdfContinuousReader({
       if (!activeWork || activeWork.token !== token) return;
       renderWorkByIndexRef.current.set(pageIndex0, { renderTask: null, textLayer: null, token });
 
-      renderedAtZoomByIndexRef.current.set(pageIndex0, effectiveZoom);
+      renderedAtZoomByIndexRef.current.set(pageIndex0, currentZoom);
 
       // Text layer (optional)
       if (textEnabled) {
+        let itemsLengthForFailure = 0;
         try {
           const textContent = await pageProxy.getTextContent();
+          const itemsLength = (textContent as unknown as { items?: unknown[] }).items?.length ?? 0;
+          itemsLengthForFailure = itemsLength;
           const textLayer = new pdfjsModule.TextLayer({
             textContentSource: textContent,
             container: textHost,
@@ -378,13 +399,16 @@ export function PdfContinuousReader({
 
           const divs = textLayer.textDivs as unknown as HTMLElement[];
           const strings = textLayer.textContentItemsStr.slice();
-          const itemsLength = (textContent as unknown as { items?: unknown[] }).items?.length ?? 0;
           if (!readableStreamWarningShownRef.current && itemsLength > 0 && divs.length === 0) {
             readableStreamWarningShownRef.current = true;
             // eslint-disable-next-line no-console
             console.warn(
               "PDF text layer rendered zero spans despite non-empty textContent; ReadableStream polyfill may be incomplete.",
             );
+          }
+          if (itemsLength > 0 && divs.length === 0 && !textLayerFailureShownRef.current) {
+            textLayerFailureShownRef.current = true;
+            setTextLayerFailureMessage(textLayerFailureMessageForRuntime());
           }
           divs.forEach((div, index) => {
             div.dataset.divIndex = String(index);
@@ -401,6 +425,10 @@ export function PdfContinuousReader({
           }
         } catch (error) {
           if (isCancellationError(error)) return;
+          if (itemsLengthForFailure > 0 && !textLayerFailureShownRef.current) {
+            textLayerFailureShownRef.current = true;
+            setTextLayerFailureMessage(textLayerFailureMessageForRuntime());
+          }
           clearChildren(textHost);
           setTextLayerReadyByPage((current) => ({ ...current, [pageIndex0]: false }));
         }
@@ -586,29 +614,34 @@ export function PdfContinuousReader({
   const searchMatches = useMemo(() => {
     if (!textEnabled) return [];
     if (loweredSearch.length === 0) return [];
-    if (!textLayerReadyByPage[page]) return [];
+    const renderedPages = Object.keys(textLayerReadyByPage)
+      .map(Number)
+      .filter((p) => textLayerReadyByPage[p]);
+    if (renderedPages.length === 0) return [];
 
-    const divStrings = textDivStringsByIndexRef.current.get(page) ?? [];
-    const matches: Array<{ divIndex: number; start: number; end: number }> = [];
-    for (let divIndex = 0; divIndex < divStrings.length; divIndex += 1) {
-      const text = divStrings[divIndex] ?? "";
-      const lowered = text.toLowerCase();
-      let cursor = 0;
-      while (cursor < lowered.length) {
-        const index = lowered.indexOf(loweredSearch, cursor);
-        if (index === -1) break;
-        matches.push({ divIndex, start: index, end: index + loweredSearch.length });
-        cursor = index + Math.max(1, loweredSearch.length);
+    const matches: Array<{ pageIndex: number; divIndex: number; start: number; end: number }> = [];
+    for (const pageIndex of renderedPages) {
+      const divStrings = textDivStringsByIndexRef.current.get(pageIndex) ?? [];
+      for (let divIndex = 0; divIndex < divStrings.length; divIndex += 1) {
+        const text = divStrings[divIndex] ?? "";
+        const lowered = text.toLowerCase();
+        let cursor = 0;
+        while (cursor < lowered.length) {
+          const index = lowered.indexOf(loweredSearch, cursor);
+          if (index === -1) break;
+          matches.push({ pageIndex, divIndex, start: index, end: index + loweredSearch.length });
+          cursor = index + Math.max(1, loweredSearch.length);
+        }
       }
     }
     return matches;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loweredSearch, page, textEnabled, textLayerEpoch, effectiveZoom, view.primary_attachment_id]);
+  }, [loweredSearch, textEnabled, textLayerEpoch, effectiveZoom, view.primary_attachment_id]);
 
   useEffect(() => {
     const report = onSearchMatchesChangeRef.current;
     if (!report) return;
-    if (!textEnabled || loweredSearch.length === 0 || !textLayerReadyByPage[page]) {
+    if (!textEnabled || loweredSearch.length === 0 || searchMatches.length === 0) {
       report({ total: 0, activeIndex: -1 });
       return;
     }
@@ -618,166 +651,183 @@ export function PdfContinuousReader({
   }, [
     activeSearchMatchIndex,
     loweredSearch,
-    page,
     searchMatches.length,
     textEnabled,
-    textLayerReadyByPage,
   ]);
 
   const anchorsForActivePage = useMemo(() => {
     if (!textEnabled) return [];
-    const pageNumber = page + 1;
     return annotations
       .map((annotation) => ({ annotation, anchor: parsePdfTextAnchor(annotation.anchor) }))
-      .filter((entry) => entry.anchor && entry.anchor.page === pageNumber && entry.annotation.kind === "highlight")
+      .filter((entry) => entry.anchor && entry.annotation.kind === "highlight")
       .map((entry) => entry.anchor as PdfTextAnchor);
-  }, [annotations, page, textEnabled]);
+  }, [annotations, textEnabled]);
 
   useEffect(() => {
     if (!textEnabled) return;
-    if (!textLayerReadyByPage[page]) return;
 
-    const host = textLayerHostByIndexRef.current.get(page);
-    const divs = textDivsByIndexRef.current.get(page) ?? [];
-    const plain = textDivStringsByIndexRef.current.get(page) ?? [];
-    if (!host || divs.length === 0 || plain.length === 0) return;
-
-    // Paint per-character so overlapping highlights can still carry color without breaking segment cursors.
-    const annotationRangesByDiv = new Map<number, Array<{ start: number; end: number; color?: string }>>();
-    for (const anchor of anchorsForActivePage) {
-      const startDiv = Math.max(0, Math.min(anchor.startDivIndex, divs.length - 1));
-      const endDiv = Math.max(0, Math.min(anchor.endDivIndex, divs.length - 1));
-      const fromDiv = Math.min(startDiv, endDiv);
-      const toDiv = Math.max(startDiv, endDiv);
-
-      for (let divIndex = fromDiv; divIndex <= toDiv; divIndex += 1) {
-        const text = plain[divIndex] ?? "";
-        const len = text.length;
-        const start = divIndex === startDiv ? Math.max(0, Math.min(anchor.startOffset, len)) : 0;
-        const end = divIndex === endDiv ? Math.max(0, Math.min(anchor.endOffset, len)) : len;
-        if (end <= start) continue;
-        const current = annotationRangesByDiv.get(divIndex) ?? [];
-        current.push({ start, end, color: anchor.color });
-        annotationRangesByDiv.set(divIndex, current);
-      }
-    }
+    const renderedPages = Object.keys(textLayerReadyByPage)
+      .map(Number)
+      .filter((p) => textLayerReadyByPage[p]);
+    if (renderedPages.length === 0) return;
 
     const totalMatches = searchMatches.length;
     const normalizedActive =
       totalMatches > 0 ? ((activeSearchMatchIndex % totalMatches) + totalMatches) % totalMatches : -1;
+    let activeMatchPageIndex: number | null = null;
 
-    for (let divIndex = 0; divIndex < divs.length; divIndex += 1) {
-      const div = divs[divIndex];
-      const text = plain[divIndex] ?? "";
-      const paints = new Array<string | null>(text.length).fill(null);
-      for (const range of annotationRangesByDiv.get(divIndex) ?? []) {
-        const start = Math.max(0, Math.min(range.start, text.length));
-        const end = Math.max(0, Math.min(range.end, text.length));
-        for (let i = start; i < end; i += 1) {
-          paints[i] = range.color ?? "__default";
+    for (const pageIndex of renderedPages) {
+      const host = textLayerHostByIndexRef.current.get(pageIndex);
+      const divs = textDivsByIndexRef.current.get(pageIndex) ?? [];
+      const plain = textDivStringsByIndexRef.current.get(pageIndex) ?? [];
+      if (!host || divs.length === 0 || plain.length === 0) continue;
+
+      // Annotations for this page.
+      const annotationRangesByDiv = new Map<number, Array<{ start: number; end: number; color?: string }>>();
+      for (const anchor of anchorsForActivePage) {
+        const anchorPage = anchor.page - 1;
+        if (anchorPage !== pageIndex) continue;
+        const startDiv = Math.max(0, Math.min(anchor.startDivIndex, divs.length - 1));
+        const endDiv = Math.max(0, Math.min(anchor.endDivIndex, divs.length - 1));
+        const fromDiv = Math.min(startDiv, endDiv);
+        const toDiv = Math.max(startDiv, endDiv);
+        for (let divIndex = fromDiv; divIndex <= toDiv; divIndex += 1) {
+          const text = plain[divIndex] ?? "";
+          const len = text.length;
+          const start = divIndex === startDiv ? Math.max(0, Math.min(anchor.startOffset, len)) : 0;
+          const end = divIndex === endDiv ? Math.max(0, Math.min(anchor.endOffset, len)) : len;
+          if (end <= start) continue;
+          const current = annotationRangesByDiv.get(divIndex) ?? [];
+          current.push({ start, end, color: anchor.color });
+          annotationRangesByDiv.set(divIndex, current);
         }
       }
 
-      const annotationRanges: Array<{ start: number; end: number; color?: string }> = [];
-      let paintCursor = 0;
-      while (paintCursor < paints.length) {
-        const color = paints[paintCursor];
-        if (!color) {
-          paintCursor += 1;
-          continue;
-        }
-        let end = paintCursor + 1;
-        while (end < paints.length && paints[end] === color) end += 1;
-        annotationRanges.push({
-          start: paintCursor,
-          end,
-          color: color === "__default" ? undefined : color,
-        });
-        paintCursor = end;
-      }
+      // Search matches for this page.
+      const pageMatches = searchMatches.filter((m) => m.pageIndex === pageIndex);
 
-      const searchRanges: Array<{ start: number; end: number; hitIndex: number }> = [];
-      if (searchMatches.length > 0) {
-        for (let hitIndex = 0; hitIndex < searchMatches.length; hitIndex += 1) {
-          const match = searchMatches[hitIndex];
-          if (match.divIndex !== divIndex) continue;
-          const range = { start: match.start, end: match.end };
-          let overlapsAnnotation = false;
-          for (let i = Math.max(0, range.start); i < Math.min(text.length, range.end); i += 1) {
-            if (paints[i]) {
-              overlapsAnnotation = true;
-              break;
+      for (let divIndex = 0; divIndex < divs.length; divIndex += 1) {
+        const div = divs[divIndex];
+        const text = plain[divIndex] ?? "";
+        const paints = new Array<string | null>(text.length).fill(null);
+        for (const range of annotationRangesByDiv.get(divIndex) ?? []) {
+          const start = Math.max(0, Math.min(range.start, text.length));
+          const end = Math.max(0, Math.min(range.end, text.length));
+          for (let i = start; i < end; i += 1) {
+            paints[i] = range.color ?? "__default";
+          }
+        }
+
+        const annotationRanges: Array<{ start: number; end: number; color?: string }> = [];
+        let paintCursor = 0;
+        while (paintCursor < paints.length) {
+          const color = paints[paintCursor];
+          if (!color) {
+            paintCursor += 1;
+            continue;
+          }
+          let end = paintCursor + 1;
+          while (end < paints.length && paints[end] === color) end += 1;
+          annotationRanges.push({
+            start: paintCursor,
+            end,
+            color: color === "__default" ? undefined : color,
+          });
+          paintCursor = end;
+        }
+
+        const searchRanges: Array<{ start: number; end: number; hitIndex: number }> = [];
+        if (pageMatches.length > 0) {
+          for (const match of pageMatches) {
+            if (match.divIndex !== divIndex) continue;
+            const range = { start: match.start, end: match.end };
+            let overlapsAnnotation = false;
+            for (let i = Math.max(0, range.start); i < Math.min(text.length, range.end); i += 1) {
+              if (paints[i]) {
+                overlapsAnnotation = true;
+                break;
+              }
             }
+            if (overlapsAnnotation) continue;
+            // hitIndex here is the global index from searchMatches
+            const hitIndex = searchMatches.indexOf(match);
+            if (hitIndex === normalizedActive) activeMatchPageIndex = pageIndex;
+            searchRanges.push({ ...range, hitIndex });
           }
-          if (overlapsAnnotation) continue;
-          searchRanges.push({ ...range, hitIndex });
         }
-      }
 
-      const mergedSearch = [...searchRanges].sort((a, b) => a.start - b.start || a.end - b.end);
+        const mergedSearch = [...searchRanges].sort((a, b) => a.start - b.start || a.end - b.end);
 
-      const segments: Array<
-        | { kind: "text"; value: string }
-        | { kind: "annotation"; value: string; color?: string }
-        | { kind: "search"; value: string; hitIndex: number }
-      > = [];
+        const segments: Array<
+          | { kind: "text"; value: string }
+          | { kind: "annotation"; value: string; color?: string }
+          | { kind: "search"; value: string; hitIndex: number }
+        > = [];
 
-      const pushText = (value: string) => {
-        if (value.length > 0) segments.push({ kind: "text", value });
-      };
+        const pushText = (value: string) => {
+          if (value.length > 0) segments.push({ kind: "text", value });
+        };
 
-      const all = [
-        ...annotationRanges.map((range) => ({ ...range, kind: "annotation" as const })),
-        ...mergedSearch.map((range) => ({ ...range, kind: "search" as const })),
-      ].sort((a, b) => a.start - b.start || a.end - b.end);
+        const all = [
+          ...annotationRanges.map((range) => ({ ...range, kind: "annotation" as const })),
+          ...mergedSearch.map((range) => ({ ...range, kind: "search" as const })),
+        ].sort((a, b) => a.start - b.start || a.end - b.end);
 
-      let cursor = 0;
-      for (const range of all) {
-        if (range.start > cursor) pushText(text.slice(cursor, range.start));
-        const slice = text.slice(range.start, range.end);
-        if (slice.length === 0) continue;
-        if (range.kind === "annotation") {
-          segments.push({
-            kind: "annotation",
-            value: slice,
-            color: (range as { color?: string }).color,
-          });
-        } else {
-          segments.push({
-            kind: "search",
-            value: slice,
-            hitIndex: (range as { hitIndex: number }).hitIndex,
-          });
-        }
-        cursor = range.end;
-      }
-      if (cursor < text.length) pushText(text.slice(cursor));
-
-      div.innerHTML = segments
-        .map((segment) => {
-          if (segment.kind === "text") return escapeHtml(segment.value);
-          if (segment.kind === "annotation") {
-            const attr = segment.color ? ` data-color="${escapeHtml(segment.color)}"` : "";
-            return `<span class="pdf-annotation-highlight"${attr}>${escapeHtml(segment.value)}</span>`;
+        let cursor = 0;
+        for (const range of all) {
+          if (range.start > cursor) pushText(text.slice(cursor, range.start));
+          const slice = text.slice(range.start, range.end);
+          if (slice.length === 0) continue;
+          if (range.kind === "annotation") {
+            segments.push({
+              kind: "annotation",
+              value: slice,
+              color: (range as { color?: string }).color,
+            });
+          } else {
+            segments.push({
+              kind: "search",
+              value: slice,
+              hitIndex: (range as { hitIndex: number }).hitIndex,
+            });
           }
-          const active = segment.hitIndex === normalizedActive ? " pdf-search-hit-active" : "";
-          const attr = segment.hitIndex >= 0 ? ` data-hit-index="${segment.hitIndex}"` : "";
-          return `<span class="pdf-search-hit${active}"${attr}>${escapeHtml(segment.value)}</span>`;
-        })
-        .join("");
+          cursor = range.end;
+        }
+        if (cursor < text.length) pushText(text.slice(cursor));
+
+        div.innerHTML = segments
+          .map((segment) => {
+            if (segment.kind === "text") return escapeHtml(segment.value);
+            if (segment.kind === "annotation") {
+              const attr = segment.color ? ` data-color="${escapeHtml(segment.color)}"` : "";
+              return `<span class="pdf-annotation-highlight"${attr}>${escapeHtml(segment.value)}</span>`;
+            }
+            const active = segment.hitIndex === normalizedActive ? " pdf-search-hit-active" : "";
+            const attr = segment.hitIndex >= 0 ? ` data-hit-index="${segment.hitIndex}"` : "";
+            return `<span class="pdf-search-hit${active}"${attr}>${escapeHtml(segment.value)}</span>`;
+          })
+          .join("");
+      }
     }
 
-    if (normalizedActive >= 0) {
-      const active = host.querySelector(
-        `.pdf-search-hit[data-hit-index="${normalizedActive}"]`,
-      ) as HTMLElement | null;
-      if (active) safeScrollIntoView(active, { block: "center" });
+    if (normalizedActive >= 0 && activeMatchPageIndex !== null) {
+      const activeHost = textLayerHostByIndexRef.current.get(activeMatchPageIndex);
+      if (activeHost) {
+        const active = activeHost.querySelector(
+          `.pdf-search-hit-active`,
+        ) as HTMLElement | null;
+        if (active) {
+          safeScrollIntoView(active, { block: "center" });
+          if (activeMatchPageIndex !== dominantPageIndexRef.current) {
+            onActivePageChangeRef.current?.(activeMatchPageIndex);
+          }
+        }
+      }
     }
   }, [
     activeSearchMatchIndex,
     anchorsForActivePage,
     loweredSearch,
-    page,
     searchMatches,
     textEnabled,
     textLayerEpoch,
@@ -845,6 +895,11 @@ export function PdfContinuousReader({
       <div className="pdf-stage">
         {status === "loading" ? <p>Loading PDF...</p> : null}
         {status === "error" ? <p>Unable to load this PDF. {errorMessage}</p> : null}
+        {status !== "error" && textLayerFailureMessage ? (
+          <p className="pdf-text-layer-notice" role="note">
+            {textLayerFailureMessage}
+          </p>
+        ) : null}
 
         {Array.from({ length: Math.max(1, pageCount) }).map((_, index) => (
           <div

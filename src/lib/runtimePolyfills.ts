@@ -1,5 +1,21 @@
 type ReadResult<T> = { done: false; value: T } | { done: true; value: undefined };
 
+export type RuntimePolyfillDiagnostics = {
+  readableStreamHealthy: boolean;
+  readableStreamOverridden: boolean;
+  readableStreamOverrideFailed: boolean;
+};
+
+const diagnostics: RuntimePolyfillDiagnostics = {
+  readableStreamHealthy: true,
+  readableStreamOverridden: false,
+  readableStreamOverrideFailed: false,
+};
+
+export function getRuntimePolyfillDiagnostics(): RuntimePolyfillDiagnostics {
+  return { ...diagnostics };
+}
+
 class ReadableStreamControllerPolyfill<T> {
   #stream: ReadableStreamPolyfill<T>;
   constructor(stream: ReadableStreamPolyfill<T>) {
@@ -110,7 +126,84 @@ class ReadableStreamPolyfill<T = unknown> {
   }
 }
 
-export function installRuntimePolyfills() {
+// Tiny health check for the specific usage pdf.js TextLayer relies on:
+// `start(controller) -> enqueue(value) -> close() -> reader.read()` yields the first chunk.
+// Some older or partial Web Streams implementations in embedded WebViews can break this.
+async function isReadableStreamHealthy(ReadableStreamCtor: unknown): Promise<boolean> {
+  try {
+    if (typeof ReadableStreamCtor !== "function") return false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stream = new (ReadableStreamCtor as any)({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      start(controller: any) {
+        controller.enqueue("x");
+        controller.close();
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reader = (stream as any).getReader?.();
+    if (!reader || typeof reader.read !== "function") return false;
+    const first = (await reader.read()) as unknown;
+    const second = (await reader.read()) as unknown;
+    if (
+      typeof first !== "object" ||
+      !first ||
+      typeof second !== "object" ||
+      !second
+    ) {
+      return false;
+    }
+    return (
+      (first as { done?: unknown; value?: unknown }).done === false &&
+      (first as { value?: unknown }).value === "x" &&
+      (second as { done?: unknown; value?: unknown }).done === true &&
+      (second as { value?: unknown }).value === undefined
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function ensureReadableStreamPolyfillInstalled() {
+  diagnostics.readableStreamOverridden = false;
+  diagnostics.readableStreamOverrideFailed = false;
+
+  // Some pdf.js text-layer paths expect ReadableStream to exist even when the document is loaded from bytes.
+  // Older WKWebView builds may miss it entirely, or ship a partial implementation.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const current = (globalThis as any).ReadableStream;
+
+  if (typeof current !== "function") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ReadableStream = ReadableStreamPolyfill;
+    diagnostics.readableStreamOverridden = true;
+    diagnostics.readableStreamHealthy = true;
+    return;
+  }
+
+  const healthy = await isReadableStreamHealthy(current);
+  if (healthy) {
+    diagnostics.readableStreamHealthy = true;
+    return;
+  }
+
+  // Existing ReadableStream is present but unhealthy for our required path; try overriding.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ReadableStream = ReadableStreamPolyfill;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    diagnostics.readableStreamOverridden = (globalThis as any).ReadableStream === ReadableStreamPolyfill;
+    if (!diagnostics.readableStreamOverridden) diagnostics.readableStreamOverrideFailed = true;
+  } catch {
+    diagnostics.readableStreamOverrideFailed = true;
+  }
+
+  // Re-check after the attempted override so diagnostics reflect reality.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  diagnostics.readableStreamHealthy = await isReadableStreamHealthy((globalThis as any).ReadableStream);
+}
+
+export async function installRuntimePolyfills() {
   // pdf.js AnnotationLayer uses Element.prototype.replaceChildren.
   if (
     typeof Element !== "undefined" &&
@@ -174,12 +267,5 @@ export function installRuntimePolyfills() {
     };
   }
 
-  // Some pdf.js text-layer paths expect ReadableStream to exist even when the document is loaded from bytes.
-  // Older WKWebView builds may miss it entirely.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof (globalThis as any).ReadableStream !== "function") {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).ReadableStream = ReadableStreamPolyfill;
-  }
+  await ensureReadableStreamPolyfillInstalled();
 }
-

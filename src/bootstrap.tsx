@@ -27,7 +27,7 @@ export async function bootstrap(rootElement: HTMLElement) {
     return;
   }
 
-  installRuntimePolyfills();
+  await installRuntimePolyfills();
   const api = await createTauriApi();
   root.render(
     <React.StrictMode>
