@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getLegacyDocumentMock } from "../../test/pdfjsLegacyMock";
@@ -83,6 +83,9 @@ describe("PdfReader", () => {
       expect(legacyRenderMock).toHaveBeenCalledTimes(1);
     });
 
+    // Ensure we don't reintroduce CSS scaling (it breaks text-layer alignment / selection).
+    expect((screen.getByLabelText("PDF page canvas") as HTMLCanvasElement).style.maxWidth).toBe("");
+
     rerender(
       <PdfReader loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes} page={1} view={pdfView} zoom={100} />,
     );
@@ -93,6 +96,58 @@ describe("PdfReader", () => {
     });
 
     expect(screen.queryByText(/Unable to load this PDF/i)).not.toBeInTheDocument();
+  });
+
+  it("renders an internal link overlay and calls onNavigateToPage", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const loadPrimaryAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+    const onNavigateToPage = vi.fn();
+
+    const ref = { num: 9, gen: 0 };
+    getLegacyDocumentMock.mockReturnValue({
+      promise: Promise.resolve({
+        numPages: 1,
+        getPage: getLegacyPageMock,
+        getDestination: vi.fn(async () => [ref, { name: "XYZ" }, 0, 0, null]),
+        getPageIndex: vi.fn(async () => 7),
+        destroy: vi.fn(),
+      }),
+      destroy: vi.fn(),
+    });
+
+    legacyRenderMock.mockReturnValue({ promise: Promise.resolve(), cancel: vi.fn() });
+    getLegacyPageMock.mockResolvedValue({
+      getViewport: ({ scale }: { scale: number }) => {
+        const width = 800 * scale;
+        const height = 1000 * scale;
+        return {
+          width,
+          height,
+          convertToViewportRectangle: (rect: number[]) => rect,
+        };
+      },
+      getAnnotations: () =>
+        Promise.resolve([{ subtype: "Link", dest: "bib", rect: [10, 10, 110, 30] }]),
+      getTextContent: () => Promise.resolve({ items: [{ str: "Link page" }], styles: {} }),
+      render: legacyRenderMock,
+    });
+
+    render(
+      <PdfReader
+        loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+        page={0}
+        view={pdfView}
+        zoom={100}
+        onNavigateToPage={onNavigateToPage}
+      />,
+    );
+
+    const link = await screen.findByTestId("internal-link");
+    fireEvent.click(link);
+
+    await waitFor(() => {
+      expect(onNavigateToPage).toHaveBeenCalledWith(7);
+    });
   });
 
   it("does not reload the PDF document when paging", async () => {
@@ -298,7 +353,9 @@ describe("PdfReader", () => {
     });
 
     expect(screen.getByLabelText("PDF page canvas")).toBeInTheDocument();
-    expect(screen.getByLabelText("PDF text layer")).toBeInTheDocument();
+    const textLayer = screen.getByLabelText("PDF text layer");
+    expect(textLayer).toBeInTheDocument();
+    expect(textLayer.querySelector(".endOfContent")).toBeTruthy();
     expect(screen.getByText(/native-pdf-paper\.pdf/i)).toBeInTheDocument();
   });
 

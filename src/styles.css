@@ -935,7 +935,7 @@ p {
 /* Minimal pdf.js TextLayer + AnnotationLayer CSS (scoped).
    Avoid broad selectors like ".textLayer span" because we inject nested spans
    (search hits + highlight decorations) inside the pdf.js textDiv spans. */
-.pdf-reader .pdf-text-layer {
+.pdf-reader .textLayer {
   position: absolute;
   inset: 0;
   overflow: hidden;
@@ -948,7 +948,7 @@ p {
 }
 
 /* Target only pdf.js' own text layer nodes. Keep it narrow so we don't break nested highlight spans. */
-.pdf-reader .pdf-text-layer :is(span, br)[role="presentation"] {
+.pdf-reader .textLayer :is(span, br)[role="presentation"] {
   position: absolute;
   transform-origin: 0% 0%;
   white-space: pre;
@@ -957,7 +957,7 @@ p {
   user-select: text;
 }
 
-.pdf-reader .pdf-text-layer span[role="presentation"] {
+.pdf-reader .textLayer span[role="presentation"] {
   z-index: 1;
   --font-height: 0;
   font-size: calc(var(--text-scale-factor) * var(--font-height));
@@ -966,51 +966,140 @@ p {
   transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
 }
 
-.pdf-reader .pdf-text-layer .markedContent {
+.pdf-reader .textLayer .markedContent {
   display: contents;
 }
 
-.pdf-reader .pdf-text-layer ::selection {
+.pdf-reader .textLayer ::selection {
   background: rgba(102, 164, 212, 0.35);
 }
 
-.pdf-reader .pdf-text-layer .pdf-annotation-highlight {
+.pdf-reader .textLayer br::selection {
+  background: transparent;
+}
+
+.pdf-reader .textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+
+.pdf-reader .textLayer.selecting .endOfContent {
+  top: 0;
+}
+
+.pdf-reader .textLayer .pdf-annotation-highlight {
   background: rgba(226, 139, 83, 0.34);
   border-radius: 0.22em;
   box-shadow: inset 0 0 0 1px rgba(226, 139, 83, 0.26);
 }
 
-.pdf-reader .pdf-text-layer .pdf-search-hit {
+.pdf-reader .textLayer .pdf-annotation-highlight[data-color="yellow"] {
+  background: rgba(241, 213, 91, 0.36);
+  box-shadow: inset 0 0 0 1px rgba(241, 213, 91, 0.28);
+}
+
+.pdf-reader .textLayer .pdf-annotation-highlight[data-color="red"] {
+  background: rgba(235, 95, 88, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(235, 95, 88, 0.26);
+}
+
+.pdf-reader .textLayer .pdf-annotation-highlight[data-color="green"] {
+  background: rgba(96, 209, 145, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(96, 209, 145, 0.22);
+}
+
+.pdf-reader .textLayer .pdf-annotation-highlight[data-color="blue"] {
+  background: rgba(102, 164, 212, 0.30);
+  box-shadow: inset 0 0 0 1px rgba(102, 164, 212, 0.24);
+}
+
+.pdf-reader .textLayer .pdf-annotation-highlight[data-color="purple"] {
+  background: rgba(185, 126, 234, 0.30);
+  box-shadow: inset 0 0 0 1px rgba(185, 126, 234, 0.22);
+}
+
+.pdf-reader .textLayer .pdf-search-hit {
   background: rgba(102, 164, 212, 0.26);
   border-radius: 0.22em;
 }
 
-.pdf-reader .pdf-text-layer .pdf-search-hit-active {
+.pdf-focus-highlight-bar {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  background: rgba(7, 9, 12, 0.92);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.pdf-focus-highlight-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  box-shadow:
+    0 10px 18px rgba(0, 0, 0, 0.35),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.pdf-focus-highlight-swatch:hover {
+  transform: translateY(-1px);
+}
+
+.pdf-focus-highlight-swatch:active {
+  transform: translateY(0);
+}
+
+.pdf-focus-highlight-swatch[data-color="yellow"] {
+  background: rgba(241, 213, 91, 0.95);
+}
+
+.pdf-focus-highlight-swatch[data-color="red"] {
+  background: rgba(235, 95, 88, 0.95);
+}
+
+.pdf-focus-highlight-swatch[data-color="green"] {
+  background: rgba(96, 209, 145, 0.92);
+}
+
+.pdf-focus-highlight-swatch[data-color="blue"] {
+  background: rgba(102, 164, 212, 0.92);
+}
+
+.pdf-focus-highlight-swatch[data-color="purple"] {
+  background: rgba(185, 126, 234, 0.92);
+}
+
+.pdf-reader .textLayer .pdf-search-hit-active {
   background: rgba(102, 164, 212, 0.42);
   outline: 2px solid rgba(102, 164, 212, 0.42);
   outline-offset: 1px;
 }
 
-.annotationLayer {
-  pointer-events: none;
-}
-
-.annotationLayer a {
-  pointer-events: auto;
-}
-
-.pdf-reader .annotationLayer section {
-  position: absolute;
-  pointer-events: auto;
-}
-
-.pdf-reader .pdf-text-layer.selecting ~ .annotationLayer section {
-  pointer-events: none;
-}
-
-.pdf-reader .annotationLayer .linkAnnotation > a {
+.pdf-reader .pdf-link-layer {
   position: absolute;
   inset: 0;
+  pointer-events: none;
+}
+
+.pdf-reader .pdf-link-layer .pdf-link-overlay {
+  pointer-events: auto;
+}
+
+.pdf-reader .textLayer.selecting ~ .pdf-link-layer .pdf-link-overlay {
+  pointer-events: none;
 }
 
 .drawer-backdrop {

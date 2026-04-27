@@ -89,6 +89,7 @@ describe("PdfContinuousReader", () => {
         return {
           width,
           height,
+          convertToViewportRectangle: (rect: number[]) => rect,
           clone: () => ({ width, height, clone: () => ({ width, height }) }),
         };
       },
@@ -129,7 +130,11 @@ describe("PdfContinuousReader", () => {
       expect(document.querySelectorAll(".pdf-page-shell")).toHaveLength(3);
     });
 
-    expect(screen.getByLabelText("PDF page 1 text layer")).toHaveClass("pdf-text-layer");
+    const textLayer = screen.getByLabelText("PDF page 1 text layer");
+    expect(textLayer).toHaveClass("pdf-text-layer");
+    expect(textLayer).toHaveClass("textLayer");
+    expect(textLayer.querySelector(".endOfContent")).toBeTruthy();
+    expect((screen.getByLabelText("PDF page 1 canvas") as HTMLCanvasElement).style.maxWidth).toBe("");
 
     rerender(
       <PdfContinuousReader
@@ -170,11 +175,13 @@ describe("PdfContinuousReader", () => {
         return {
           width,
           height,
+          convertToViewportRectangle: (rect: number[]) => rect,
           clone: () => ({ width, height, clone: () => ({ width, height }) }),
         };
       },
       getTextContent: () => Promise.resolve({ items: [{ str: "Link page" }], styles: {} }),
-      getAnnotations: () => Promise.resolve([{ dest: "bib" }]),
+      getAnnotations: () =>
+        Promise.resolve([{ subtype: "Link", dest: "bib", rect: [10, 10, 110, 30] }]),
       render: legacyRenderMock,
     });
 
@@ -221,11 +228,13 @@ describe("PdfContinuousReader", () => {
         return {
           width,
           height,
+          convertToViewportRectangle: (rect: number[]) => rect,
           clone: () => ({ width, height, clone: () => ({ width, height }) }),
         };
       },
       getTextContent: () => Promise.resolve({ items: [{ str: "Numeric destination page" }], styles: {} }),
-      getAnnotations: () => Promise.resolve([{ dest: "numeric" }]),
+      getAnnotations: () =>
+        Promise.resolve([{ subtype: "Link", dest: "numeric", rect: [10, 10, 110, 30] }]),
       render: legacyRenderMock,
     });
 

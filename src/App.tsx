@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NormalizedReader } from "./components/readers/NormalizedReader";
 import { PdfContinuousReader } from "./components/readers/PdfContinuousReader";
 import { PdfReader } from "./components/readers/PdfReader";
+import type { PdfHighlightColor, PdfTextSelection } from "./components/readers/pdfSelection";
 import { isTauriRuntime } from "./lib/api";
 import type {
   AIArtifact,
@@ -222,7 +223,7 @@ export default function App({ api }: { api: AppApi }) {
   const [reportedActiveSearchMatchIndex, setReportedActiveSearchMatchIndex] = useState(-1);
   const [pdfPageCounts, setPdfPageCounts] = useState<Record<number, number>>({});
   const [annotationFilter, setAnnotationFilter] = useState<AnnotationFilter>("all");
-  const [pdfSelection, setPdfSelection] = useState<{ anchor: string; quote: string } | null>(null);
+  const [pdfSelection, setPdfSelection] = useState<PdfTextSelection | null>(null);
 
   const hasCollections = collections.length > 0;
 
@@ -835,6 +836,44 @@ export default function App({ api }: { api: AppApi }) {
     setStatusMessage("Created highlight.");
   };
 
+  const clearDomSelection = useCallback(() => {
+    try {
+      window.getSelection?.()?.removeAllRanges?.();
+    } catch {
+      // Ignore.
+    }
+  }, []);
+
+  const dismissPdfSelection = useCallback(() => {
+    setPdfSelection(null);
+    clearDomSelection();
+  }, [clearDomSelection]);
+
+  const addColorToPdfAnchor = useCallback((anchor: string, color: PdfHighlightColor) => {
+    try {
+      const parsed = JSON.parse(anchor) as { type?: string; color?: unknown };
+      if (!parsed || parsed.type !== "pdf_text") return anchor;
+      return JSON.stringify({ ...parsed, color });
+    } catch {
+      return anchor;
+    }
+  }, []);
+
+  const handleCreatePdfFocusHighlight = useCallback(async (color: PdfHighlightColor) => {
+    if (!activePaper || !pdfTextToolsEnabled || !pdfSelection) return;
+    if (workspaceMode !== "pdf_focus") return;
+    const runtimeApi = await getApi();
+    const annotation = await runtimeApi.createAnnotation({
+      item_id: activePaper.id,
+      anchor: addColorToPdfAnchor(pdfSelection.anchor, color),
+      kind: "highlight",
+      body: pdfSelection.quote,
+    });
+    setAnnotations((current) => [...current, annotation]);
+    setStatusMessage("Created highlight.");
+    dismissPdfSelection();
+  }, [activePaper, addColorToPdfAnchor, dismissPdfSelection, getApi, pdfSelection, pdfTextToolsEnabled, workspaceMode]);
+
   const handleReaderPageSubmit = () => {
     const parsed = Number(readerPageInput.trim());
     if (!Number.isFinite(parsed)) {
@@ -858,6 +897,58 @@ export default function App({ api }: { api: AppApi }) {
       collectionArtifact.collection_id === activeCollection?.id &&
       !scopeMatches(collectionArtifact.scope_item_ids, visibleScopeItemIds),
   );
+
+  const pdfFocusHighlightBarRef = useRef<HTMLDivElement | null>(null);
+  const showPdfFocusHighlightBar = Boolean(
+    workspaceMode === "pdf_focus" && activePaper?.attachment_format === "pdf" && pdfSelection,
+  );
+
+  const pdfFocusHighlightBarStyle = useMemo(() => {
+    if (!showPdfFocusHighlightBar || !pdfSelection) return {};
+
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+    // Approximate dimensions; keep logic simple and stable across renders.
+    const BAR_WIDTH_PX = 224;
+    const BAR_HEIGHT_PX = 44;
+    const GAP_PX = 10;
+    const PADDING_PX = 12;
+
+    const rect = pdfSelection.rect;
+    let left = rect.right + GAP_PX;
+    let top = rect.top - BAR_HEIGHT_PX - GAP_PX;
+    if (top < PADDING_PX) top = rect.bottom + GAP_PX;
+
+    left = clamp(left, PADDING_PX, window.innerWidth - BAR_WIDTH_PX - PADDING_PX);
+    top = clamp(top, PADDING_PX, window.innerHeight - BAR_HEIGHT_PX - PADDING_PX);
+
+    return { left: `${left}px`, top: `${top}px` } as const;
+  }, [pdfSelection, showPdfFocusHighlightBar]);
+
+  useEffect(() => {
+    if (!showPdfFocusHighlightBar) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      dismissPdfSelection();
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const bar = pdfFocusHighlightBarRef.current;
+      if (bar && bar.contains(target)) return;
+      dismissPdfSelection();
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [dismissPdfSelection, showPdfFocusHighlightBar]);
 
   const treeSearchFilter = useMemo(() => {
     const normalized = search.trim().toLowerCase();
@@ -1233,34 +1324,58 @@ export default function App({ api }: { api: AppApi }) {
             </div>
 
             {readerView ? (
-              <PdfContinuousReader
-                loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
-                annotations={annotations}
-                page={readerPage}
-                searchQuery={readerSearchQuery}
-                activeSearchMatchIndex={readerSearchMatchIndex}
-                view={readerView}
-                zoom={readerZoom}
-                onSearchMatchesChange={({ total, activeIndex }) => {
-                  setReaderSearchMatchCount(total);
-                  setReportedActiveSearchMatchIndex(activeIndex);
-                }}
-                onSelectionChange={(selection) => setPdfSelection(selection)}
-                onActivePageChange={(pageIndex0) => {
-                  setReaderPage(pageIndex0);
-                  setReaderPageInput(String(pageIndex0 + 1));
-                }}
-                onNavigateToPage={(pageIndex0) => {
-                  setReaderPage(pageIndex0);
-                  setReaderPageInput(String(pageIndex0 + 1));
-                }}
-                onPageCountChange={(pageCount) => {
-                  if (!activePaper) return;
-                  setPdfPageCounts((current) =>
-                    current[activePaper.id] === pageCount ? current : { ...current, [activePaper.id]: pageCount },
-                  );
-                }}
-              />
+              <>
+                <PdfContinuousReader
+                  fitMode="fit_width"
+                  loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+                  annotations={annotations}
+                  page={readerPage}
+                  searchQuery={readerSearchQuery}
+                  activeSearchMatchIndex={readerSearchMatchIndex}
+                  view={readerView}
+                  zoom={readerZoom}
+                  onSearchMatchesChange={({ total, activeIndex }) => {
+                    setReaderSearchMatchCount(total);
+                    setReportedActiveSearchMatchIndex(activeIndex);
+                  }}
+                  onSelectionChange={(selection) => setPdfSelection(selection)}
+                  onActivePageChange={(pageIndex0) => {
+                    setReaderPage(pageIndex0);
+                    setReaderPageInput(String(pageIndex0 + 1));
+                  }}
+                  onNavigateToPage={(pageIndex0) => {
+                    setReaderPage(pageIndex0);
+                    setReaderPageInput(String(pageIndex0 + 1));
+                  }}
+                  onPageCountChange={(pageCount) => {
+                    if (!activePaper) return;
+                    setPdfPageCounts((current) =>
+                      current[activePaper.id] === pageCount ? current : { ...current, [activePaper.id]: pageCount },
+                    );
+                  }}
+                />
+
+                {showPdfFocusHighlightBar ? (
+                  <div
+                    className="pdf-focus-highlight-bar"
+                    ref={pdfFocusHighlightBarRef}
+                    role="toolbar"
+                    aria-label="PDF highlight colors"
+                    style={pdfFocusHighlightBarStyle}
+                  >
+                    {(["yellow", "red", "green", "blue", "purple"] as const).map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        className="pdf-focus-highlight-swatch"
+                        data-color={color}
+                        aria-label={`Highlight ${color}`}
+                        onClick={() => void handleCreatePdfFocusHighlight(color)}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </>
             ) : (
               <div className="reader-focus-loading" role="status">
                 Loading PDF...
@@ -1340,6 +1455,7 @@ export default function App({ api }: { api: AppApi }) {
             {activePaper && readerView ? (
               readerView.reader_kind === "pdf" ? (
                 <PdfReader
+                  fitMode="fit_width"
                   loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
                   annotations={annotations}
                   page={readerPage}
@@ -1352,6 +1468,10 @@ export default function App({ api }: { api: AppApi }) {
                     setReportedActiveSearchMatchIndex(activeIndex);
                   }}
                   onSelectionChange={(selection) => setPdfSelection(selection)}
+                  onNavigateToPage={(pageIndex0) => {
+                    setReaderPage(pageIndex0);
+                    setReaderPageInput(String(pageIndex0 + 1));
+                  }}
                   onPageCountChange={(pageCount) => {
                     setPdfPageCounts((current) =>
                       current[activePaper.id] === pageCount

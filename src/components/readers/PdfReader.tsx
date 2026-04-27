@@ -10,46 +10,31 @@ import type {
 import type { TextLayer } from "pdfjs-dist/types/src/display/text_layer";
 import type { CSSProperties } from "react";
 
-type PdfTextAnchor = {
-  type: "pdf_text";
-  page: number; // 1-based
-  startDivIndex: number;
-  startOffset: number;
-  endDivIndex: number;
-  endOffset: number;
-  quote: string;
-};
+import { computeFitWidthZoomPct } from "./pdfFit";
+import {
+  buildPdfTextSelectionFromRange,
+  parsePdfTextAnchor,
+  type PdfTextAnchor,
+  type PdfTextSelection,
+} from "./pdfSelection";
+import { installPdfJsTextLayerSelectionSupport } from "./pdfTextLayerSelectionSupport";
 
 const escapeHtml = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-const parsePdfTextAnchor = (anchor: string): PdfTextAnchor | null => {
-  try {
-    const parsed = JSON.parse(anchor) as Partial<PdfTextAnchor>;
-    if (parsed.type !== "pdf_text") return null;
-    if (typeof parsed.page !== "number") return null;
-    if (typeof parsed.startDivIndex !== "number") return null;
-    if (typeof parsed.startOffset !== "number") return null;
-    if (typeof parsed.endDivIndex !== "number") return null;
-    if (typeof parsed.endOffset !== "number") return null;
-    if (typeof parsed.quote !== "string") return null;
-    return parsed as PdfTextAnchor;
-  } catch {
-    return null;
-  }
-};
 
 type PdfReaderProps = {
   view: ReaderView;
   page: number;
   zoom: number;
+  fitMode?: "manual" | "fit_width";
   mode?: "workspace" | "focus";
   loadPrimaryAttachmentBytes: (primaryAttachmentId: number) => Promise<Uint8Array>;
   onPageCountChange?: (pageCount: number) => void;
+  onNavigateToPage?: (pageIndex0: number) => void;
   searchQuery?: string;
   activeSearchMatchIndex?: number;
   annotations?: Annotation[];
-  onSelectionChange?: (selection: { anchor: string; quote: string } | null) => void;
+  onSelectionChange?: (selection: PdfTextSelection | null) => void;
   onSearchMatchesChange?: (state: { total: number; activeIndex: number }) => void;
 };
 
@@ -57,17 +42,21 @@ export function PdfReader({
   view,
   page,
   zoom,
+  fitMode = "fit_width",
   mode = "workspace",
   loadPrimaryAttachmentBytes,
   onPageCountChange,
+  onNavigateToPage,
   searchQuery = "",
   activeSearchMatchIndex = 0,
   annotations = [],
   onSelectionChange,
   onSearchMatchesChange,
 }: PdfReaderProps) {
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerHostRef = useRef<HTMLDivElement | null>(null);
+  const linkLayerHostRef = useRef<HTMLDivElement | null>(null);
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
   const pdfDocumentRef = useRef<PDFDocumentProxy | null>(null);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
@@ -75,18 +64,33 @@ export function PdfReader({
   const textLayerRef = useRef<TextLayer | null>(null);
   const textDivsRef = useRef<HTMLElement[]>([]);
   const textDivStringsRef = useRef<string[]>([]);
+  const textLayerSelectionCleanupRef = useRef<(() => void) | null>(null);
   const [textLayerReady, setTextLayerReady] = useState(false);
   const onPageCountChangeRef = useRef(onPageCountChange);
+  const onNavigateToPageRef = useRef(onNavigateToPage);
   const [pageCount, setPageCount] = useState(view.page_count);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState("");
+  const [stageWidth, setStageWidth] = useState(0);
+  const [pageWidthAtScale1, setPageWidthAtScale1] = useState<number | null>(null);
 
   // PDF text selection/search/highlights are driven by pdf.js' TextLayer, not server-side content_status.
   // If the TextLayer can't render (old WebKit, etc), we keep the canvas visible and disable tools.
   const textEnabled = true;
   const loweredSearch = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
+  const effectiveZoom = useMemo(() => {
+    if (fitMode !== "fit_width") return zoom;
+    if (!pageWidthAtScale1) return zoom;
+    return computeFitWidthZoomPct({
+      containerWidth: stageWidth,
+      pageWidthAtScale1,
+      marginPx: 40,
+      minZoomPct: 70,
+      maxZoomPct: 180,
+    });
+  }, [fitMode, pageWidthAtScale1, stageWidth, zoom]);
   const pageShellStyleVars = useMemo((): CSSProperties => {
-    const scale = zoom / 100;
+    const scale = effectiveZoom / 100;
     return {
       // pdf.js layer sizing depends on these vars via setLayerDimensions().
       ["--scale-factor" as never]: String(scale),
@@ -95,7 +99,7 @@ export function PdfReader({
       ["--scale-round-y" as never]: "1px",
       ["--total-scale-factor" as never]: "calc(var(--scale-factor) * var(--user-unit))",
     } as unknown as CSSProperties;
-  }, [zoom]);
+  }, [effectiveZoom]);
 
   const isCancellationError = (error: unknown) => {
     if (!(error instanceof Error)) return false;
@@ -112,6 +116,9 @@ export function PdfReader({
     renderTaskRef.current = null;
     activeRenderTask?.cancel();
 
+    textLayerSelectionCleanupRef.current?.();
+    textLayerSelectionCleanupRef.current = null;
+
     const activeTextLayer = textLayerRef.current;
     textLayerRef.current = null;
     activeTextLayer?.cancel();
@@ -121,11 +128,86 @@ export function PdfReader({
     if (textLayerHostRef.current) {
       clearChildren(textLayerHostRef.current);
     }
+    if (linkLayerHostRef.current) {
+      clearChildren(linkLayerHostRef.current);
+    }
   };
 
   useEffect(() => {
     onPageCountChangeRef.current = onPageCountChange;
   }, [onPageCountChange]);
+
+  useEffect(() => {
+    onNavigateToPageRef.current = onNavigateToPage;
+  }, [onNavigateToPage]);
+
+  useEffect(() => {
+    const element = stageRef.current;
+    if (!element) return;
+
+    const update = () => setStageWidth(element.getBoundingClientRect().width);
+    update();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => update());
+      ro.observe(element);
+      return () => ro.disconnect();
+    }
+
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  useEffect(() => {
+    if (!onSelectionChange) return;
+
+    const keyFor = (selection: PdfTextSelection | null) => {
+      if (!selection) return "";
+      const { left, top, right, bottom } = selection.rect;
+      return `${selection.anchor}|${selection.quote}|${left},${top},${right},${bottom}`;
+    };
+
+    let lastKey = "";
+    const onSelectionChangeEvent = () => {
+      const next = buildSelectionAnchor();
+      const nextKey = keyFor(next);
+      if (nextKey === lastKey) return;
+      lastKey = nextKey;
+      onSelectionChange(next);
+    };
+
+    document.addEventListener("selectionchange", onSelectionChangeEvent);
+    return () => document.removeEventListener("selectionchange", onSelectionChangeEvent);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onSelectionChange, page, status, textLayerReady, textEnabled, view.primary_attachment_id]);
+
+  const navigateToDestination = async (pdfDocument: PDFDocumentProxy, dest: unknown) => {
+    try {
+      const destArray =
+        typeof dest === "string"
+          ? await pdfDocument.getDestination(dest)
+          : Array.isArray(dest)
+            ? dest
+            : null;
+      if (!destArray || destArray.length === 0) return;
+      const target = destArray[0];
+      if (!target) return;
+
+      let pageIndex = -1;
+      if (typeof target === "number") {
+        // Per pdf.js semantics: a numeric explicitDest[0] is already a 0-based page index.
+        pageIndex = Math.max(0, target);
+      } else {
+        pageIndex = await pdfDocument.getPageIndex(target as never);
+      }
+      if (pageIndex < 0) return;
+      onNavigateToPageRef.current?.(pageIndex);
+    } catch (error) {
+      if (isCancellationError(error)) return;
+      // eslint-disable-next-line no-console
+      console.warn("Unable to resolve PDF destination:", error);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -223,6 +305,7 @@ export function PdfReader({
       const canvas = canvasRef.current;
       const context = canvas?.getContext("2d");
       const textLayerHost = textLayerHostRef.current;
+      const linkLayerHost = linkLayerHostRef.current;
       if (!canvas || !context) {
         setStatus("error");
         setErrorMessage("Unable to load this PDF because the canvas is unavailable.");
@@ -231,6 +314,11 @@ export function PdfReader({
       if (!textLayerHost) {
         setStatus("error");
         setErrorMessage("Unable to load this PDF because the text layer container is unavailable.");
+        return;
+      }
+      if (!linkLayerHost) {
+        setStatus("error");
+        setErrorMessage("Unable to load this PDF because the link layer container is unavailable.");
         return;
       }
 
@@ -248,7 +336,10 @@ export function PdfReader({
         const currentPage = await currentDocument.getPage(Math.min(page + 1, nextPageCount));
         if (cancelled) return;
 
-        const viewport = currentPage.getViewport({ scale: zoom / 100 });
+        const scale1Viewport = currentPage.getViewport({ scale: 1 });
+        setPageWidthAtScale1(scale1Viewport.width);
+
+        const viewport = currentPage.getViewport({ scale: effectiveZoom / 100 });
         canvas.width = viewport.width;
         canvas.height = viewport.height;
 
@@ -266,6 +357,68 @@ export function PdfReader({
         renderTaskRef.current = null;
 
         setStatus("ready");
+
+        // Internal link overlay (avoid pdf.js AnnotationLayer/linkService compatibility issues).
+        try {
+          clearChildren(linkLayerHost);
+          const annotations = await currentPage.getAnnotations({ intent: "display" });
+          const linkAnnotations = (annotations as Array<unknown>)
+            .map((annotation) => annotation as Partial<{ subtype: unknown; rect: unknown; dest: unknown }>)
+            .filter(
+              (annotation) =>
+                annotation.subtype === "Link" &&
+                Array.isArray(annotation.rect) &&
+                annotation.rect.length === 4 &&
+                annotation.rect.every((value) => typeof value === "number" && Number.isFinite(value)) &&
+                annotation.dest !== undefined &&
+                annotation.dest !== null,
+            )
+            .map((annotation) => ({ rect: annotation.rect as number[], dest: annotation.dest as unknown }));
+
+          for (let i = 0; i < linkAnnotations.length; i += 1) {
+            const link = linkAnnotations[i];
+            const rect =
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              typeof (viewport as any).convertToViewportRectangle === "function"
+                ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  ((viewport as any).convertToViewportRectangle(link.rect) as number[])
+                : link.rect;
+            const [x1, y1, x2, y2] = rect;
+            const left = Math.min(x1, x2);
+            const top = Math.min(y1, y2);
+            const width = Math.abs(x2 - x1);
+            const height = Math.abs(y2 - y1);
+
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "pdf-link-overlay";
+            if (i === 0) button.setAttribute("data-testid", "internal-link");
+            button.style.position = "absolute";
+            button.style.left = `${left}px`;
+            button.style.top = `${top}px`;
+            button.style.width = `${width}px`;
+            button.style.height = `${height}px`;
+            button.style.background = "transparent";
+            button.style.border = "none";
+            button.style.padding = "0";
+            button.style.margin = "0";
+            button.style.cursor = "pointer";
+            button.style.pointerEvents = "auto";
+            button.setAttribute("aria-label", "PDF internal link");
+
+            button.addEventListener("click", (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void navigateToDestination(currentDocument, link.dest);
+            });
+
+            linkLayerHost.appendChild(button);
+          }
+        } catch (error) {
+          if (cancelled) return;
+          if (isCancellationError(error)) return;
+          clearChildren(linkLayerHost);
+        }
 
         // Text layer is optional. Some WKWebView builds are missing modern web APIs
         // that pdf.js uses internally; keep the page visible even if text fails.
@@ -292,7 +445,12 @@ export function PdfReader({
             textDivsRef.current.forEach((div, index) => {
               div.dataset.divIndex = String(index);
             });
-            setTextLayerReady(textDivsRef.current.length > 0);
+            const ready = textDivsRef.current.length > 0;
+            setTextLayerReady(ready);
+            if (ready) {
+              textLayerSelectionCleanupRef.current =
+                installPdfJsTextLayerSelectionSupport(textLayerHost);
+            }
           } catch (error) {
             if (cancelled) return;
             if (isCancellationError(error)) return;
@@ -321,7 +479,7 @@ export function PdfReader({
       cancelled = true;
       cancelRenderWork();
     };
-  }, [page, pdfDocument, textEnabled, view.page_count, zoom]);
+  }, [effectiveZoom, page, pdfDocument, textEnabled, view.page_count]);
 
   const searchMatches = useMemo(() => {
     if (!textEnabled) return [];
@@ -340,7 +498,7 @@ export function PdfReader({
       }
     }
     return matches;
-  }, [loweredSearch, textEnabled, status, page, zoom, view.primary_attachment_id]);
+  }, [loweredSearch, textEnabled, status, page, effectiveZoom, view.primary_attachment_id]);
 
   useEffect(() => {
     if (!onSearchMatchesChange) return;
@@ -371,8 +529,9 @@ export function PdfReader({
     const plain = textDivStringsRef.current;
     if (divs.length === 0 || plain.length === 0) return;
 
-    // Build per-div highlight ranges for annotations.
-    const annotationRangesByDiv = new Map<number, Array<{ start: number; end: number }>>();
+    // Build per-div highlight ranges for annotations. We'll "paint" per character so overlapping
+    // highlights can still carry color without breaking cursor-based segment rendering.
+    const annotationRangesByDiv = new Map<number, Array<{ start: number; end: number; color?: string }>>();
     for (const anchor of anchorsForPage) {
       const startDiv = Math.max(0, Math.min(anchor.startDivIndex, divs.length - 1));
       const endDiv = Math.max(0, Math.min(anchor.endDivIndex, divs.length - 1));
@@ -386,27 +545,10 @@ export function PdfReader({
         const end = divIndex === endDiv ? Math.max(0, Math.min(anchor.endOffset, len)) : len;
         if (end <= start) continue;
         const current = annotationRangesByDiv.get(divIndex) ?? [];
-        current.push({ start, end });
+        current.push({ start, end, color: anchor.color });
         annotationRangesByDiv.set(divIndex, current);
       }
     }
-
-    const mergeRanges = (ranges: Array<{ start: number; end: number }>) => {
-      const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end);
-      const merged: Array<{ start: number; end: number }> = [];
-      for (const range of sorted) {
-        const last = merged[merged.length - 1];
-        if (!last || range.start > last.end) {
-          merged.push({ start: range.start, end: range.end });
-          continue;
-        }
-        last.end = Math.max(last.end, range.end);
-      }
-      return merged;
-    };
-
-    const overlaps = (range: { start: number; end: number }, block: { start: number; end: number }) =>
-      range.start < block.end && block.start < range.end;
 
     const totalMatches = searchMatches.length;
     const normalizedActive =
@@ -416,7 +558,32 @@ export function PdfReader({
     for (let divIndex = 0; divIndex < divs.length; divIndex += 1) {
       const div = divs[divIndex];
       const text = plain[divIndex] ?? "";
-      const annotationRanges = mergeRanges(annotationRangesByDiv.get(divIndex) ?? []);
+      const paints = new Array<string | null>(text.length).fill(null);
+      for (const range of annotationRangesByDiv.get(divIndex) ?? []) {
+        const start = Math.max(0, Math.min(range.start, text.length));
+        const end = Math.max(0, Math.min(range.end, text.length));
+        for (let i = start; i < end; i += 1) {
+          paints[i] = range.color ?? "__default";
+        }
+      }
+
+      const annotationRanges: Array<{ start: number; end: number; color?: string }> = [];
+      let paintCursor = 0;
+      while (paintCursor < paints.length) {
+        const color = paints[paintCursor];
+        if (!color) {
+          paintCursor += 1;
+          continue;
+        }
+        let end = paintCursor + 1;
+        while (end < paints.length && paints[end] === color) end += 1;
+        annotationRanges.push({
+          start: paintCursor,
+          end,
+          color: color === "__default" ? undefined : color,
+        });
+        paintCursor = end;
+      }
 
       const searchRanges: Array<{ start: number; end: number; hitIndex: number }> = [];
       if (searchMatches.length > 0) {
@@ -424,18 +591,22 @@ export function PdfReader({
           const match = searchMatches[hitIndex];
           if (match.divIndex !== divIndex) continue;
           const range = { start: match.start, end: match.end };
-          if (annotationRanges.some((block) => overlaps(range, block))) continue;
+          let overlapsAnnotation = false;
+          for (let i = Math.max(0, range.start); i < Math.min(text.length, range.end); i += 1) {
+            if (paints[i]) {
+              overlapsAnnotation = true;
+              break;
+            }
+          }
+          if (overlapsAnnotation) continue;
           searchRanges.push({ ...range, hitIndex });
         }
       }
-      const mergedSearch = mergeRanges(searchRanges).map((range) => {
-        const first = searchRanges.find((hit) => hit.start === range.start && hit.end === range.end);
-        return { ...range, hitIndex: first?.hitIndex ?? -1 };
-      });
+      const mergedSearch = [...searchRanges].sort((a, b) => a.start - b.start || a.end - b.end);
 
       const segments: Array<
         | { kind: "text"; value: string }
-        | { kind: "annotation"; value: string }
+        | { kind: "annotation"; value: string; color?: string }
         | { kind: "search"; value: string; hitIndex: number }
       > = [];
 
@@ -454,7 +625,11 @@ export function PdfReader({
         const slice = text.slice(range.start, range.end);
         if (slice.length === 0) continue;
         if (range.kind === "annotation") {
-          segments.push({ kind: "annotation", value: slice });
+          segments.push({
+            kind: "annotation",
+            value: slice,
+            color: (range as { color?: string }).color,
+          });
         } else {
           segments.push({
             kind: "search",
@@ -470,7 +645,8 @@ export function PdfReader({
         .map((segment) => {
           if (segment.kind === "text") return escapeHtml(segment.value);
           if (segment.kind === "annotation") {
-            return `<span class="pdf-annotation-highlight">${escapeHtml(segment.value)}</span>`;
+            const attr = segment.color ? ` data-color="${escapeHtml(segment.color)}"` : "";
+            return `<span class="pdf-annotation-highlight"${attr}>${escapeHtml(segment.value)}</span>`;
           }
           const active = segment.hitIndex === normalizedActive ? " pdf-search-hit-active" : "";
           const attr = segment.hitIndex >= 0 ? ` data-hit-index="${segment.hitIndex}"` : "";
@@ -495,23 +671,7 @@ export function PdfReader({
     textEnabled,
   ]);
 
-  const offsetWithinDiv = (div: HTMLElement, container: Node, offset: number) => {
-    if (!div.contains(container)) return 0;
-    if (container.nodeType === Node.TEXT_NODE) {
-      // Fast path: sum lengths of text nodes until we hit the container.
-      const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
-      let node: Node | null = walker.nextNode();
-      let length = 0;
-      while (node) {
-        if (node === container) return length + offset;
-        length += (node.nodeValue ?? "").length;
-        node = walker.nextNode();
-      }
-    }
-    return offset;
-  };
-
-  const buildSelectionAnchor = (): { anchor: string; quote: string } | null => {
+  const buildSelectionAnchor = (): PdfTextSelection | null => {
     if (!textEnabled) return null;
     const host = textLayerHostRef.current;
     if (!host) return null;
@@ -521,26 +681,13 @@ export function PdfReader({
     if (!quote || quote.trim().length === 0) return null;
 
     const range = selection.getRangeAt(0);
-    if (!host.contains(range.startContainer) || !host.contains(range.endContainer)) return null;
-
-    const divs = textDivsRef.current;
-    const startDivIndex = divs.findIndex((div) => div.contains(range.startContainer));
-    const endDivIndex = divs.findIndex((div) => div.contains(range.endContainer));
-    if (startDivIndex < 0 || endDivIndex < 0) return null;
-
-    const startOffset = offsetWithinDiv(divs[startDivIndex], range.startContainer, range.startOffset);
-    const endOffset = offsetWithinDiv(divs[endDivIndex], range.endContainer, range.endOffset);
-    const pageNumber = page + 1;
-    const anchor: PdfTextAnchor = {
-      type: "pdf_text",
-      page: pageNumber,
-      startDivIndex,
-      startOffset,
-      endDivIndex,
-      endOffset,
+    return buildPdfTextSelectionFromRange({
       quote,
-    };
-    return { anchor: JSON.stringify(anchor), quote };
+      range,
+      host,
+      divs: textDivsRef.current,
+      pageNumber1: page + 1,
+    });
   };
 
   const showChrome = mode === "workspace";
@@ -557,14 +704,13 @@ export function PdfReader({
               ? view.primary_attachment_path.split("/").pop()
               : "No attachment path"}
           </span>
-          {zoom !== 100 ? <span className="meta-count">Zoom {zoom}%</span> : null}
+          {effectiveZoom !== 100 ? <span className="meta-count">Zoom {effectiveZoom}%</span> : null}
         </div>
       ) : null}
 
       <div
         className={showChrome ? "citation-card" : "pdf-stage"}
-        onMouseUp={() => onSelectionChange?.(buildSelectionAnchor())}
-        onKeyUp={() => onSelectionChange?.(buildSelectionAnchor())}
+        ref={stageRef}
       >
         {showChrome ? (
           <>
@@ -584,23 +730,13 @@ export function PdfReader({
           style={{
             position: "relative",
             display: status === "error" ? "none" : "block",
-            maxWidth: "100%",
             ...pageShellStyleVars,
           }}
-          onPointerDownCapture={() => {
-            textLayerHostRef.current?.classList.add("selecting");
-          }}
-          onPointerUpCapture={() => {
-            textLayerHostRef.current?.classList.remove("selecting");
-          }}
-          onPointerCancelCapture={() => {
-            textLayerHostRef.current?.classList.remove("selecting");
-          }}
         >
-          <canvas aria-label="PDF page canvas" ref={canvasRef} style={{ display: "block", maxWidth: "100%" }} />
+          <canvas aria-label="PDF page canvas" ref={canvasRef} style={{ display: "block" }} />
           <div
             aria-label="PDF text layer"
-            className="pdf-text-layer"
+            className="pdf-text-layer textLayer"
             ref={textLayerHostRef}
             style={{
               position: "absolute",
@@ -608,6 +744,12 @@ export function PdfReader({
               pointerEvents: textEnabled && textLayerReady ? "auto" : "none",
               userSelect: textEnabled && textLayerReady ? "text" : "none",
             }}
+          />
+          <div
+            aria-label="PDF link layer"
+            className="pdf-link-layer"
+            ref={linkLayerHostRef}
+            style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
           />
         </div>
       </div>

@@ -64,7 +64,9 @@ vi.mock("./components/readers/PdfReader", () => {
 
     useEffect(() => {
       onSelectionChange?.(null);
-    }, [onSelectionChange]);
+      // Only clear once on mount; rerender-driven handler identity changes should not wipe test selections.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     useEffect(() => {
       if (!(searchQuery ?? "").trim()) {
@@ -117,7 +119,9 @@ vi.mock("./components/readers/PdfContinuousReader", () => {
 
     useEffect(() => {
       onSelectionChange?.(null);
-    }, [onSelectionChange]);
+      // Only clear once on mount; rerender-driven handler identity changes should not wipe test selections.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     useEffect(() => {
       if (!(searchQuery ?? "").trim()) {
@@ -130,6 +134,27 @@ vi.mock("./components/readers/PdfContinuousReader", () => {
     return (
       <section data-testid="pdf-reader">
         <p>Mock PDF continuous reader page {page + 1}</p>
+        <button
+          type="button"
+          aria-label="Mock select PDF text"
+          onClick={() =>
+            onSelectionChange?.({
+              anchor: JSON.stringify({
+                type: "pdf_text",
+                page: page + 1,
+                startDivIndex: 0,
+                startOffset: 0,
+                endDivIndex: 0,
+                endOffset: 5,
+                quote: "Hello",
+              }),
+              quote: "Hello",
+              rect: { left: 100, top: 120, right: 160, bottom: 140 },
+            })
+          }
+        >
+          Select
+        </button>
       </section>
     );
   }
@@ -211,6 +236,29 @@ describe("App reading workspace", () => {
     resolve(view);
 
     expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
+  });
+
+  it("shows a focus highlight color bar and persists color into the anchor", async () => {
+    const user = userEvent.setup();
+    const createAnnotationSpy = vi.spyOn(fakeApi, "createAnnotation");
+
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Mock select PDF text" }));
+    expect(await screen.findByRole("toolbar", { name: "PDF highlight colors" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Highlight yellow" }));
+
+    await waitFor(() => {
+      expect(createAnnotationSpy).toHaveBeenCalled();
+    });
+
+    const call = createAnnotationSpy.mock.calls[0]?.[0] as { anchor?: string } | undefined;
+    expect(call?.anchor).toContain("\"color\":\"yellow\"");
+    expect(screen.queryByRole("toolbar", { name: "PDF highlight colors" })).not.toBeInTheDocument();
   });
 
   it("leaves pdf focus when switching to a non-pdf tab", async () => {

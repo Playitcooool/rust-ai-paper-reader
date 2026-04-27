@@ -57,6 +57,26 @@ function installRuntimePolyfills() {
         return { promise, resolve, reject };
       };
   }
+
+  // Some pdf.js text-layer paths expect ReadableStream to exist even when the document is loaded from bytes.
+  // Provide a tiny stub for older WebKit builds so TextLayer doesn't fail hard.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof (globalThis as any).ReadableStream !== "function") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ReadableStream = class ReadableStreamPolyfill {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      constructor(_source?: any) {}
+      getReader() {
+        return {
+          read: async () => ({ done: true, value: undefined }),
+          releaseLock: () => {},
+        };
+      }
+      cancel() {
+        return Promise.resolve();
+      }
+    };
+  }
 }
 
 export function DesktopRuntimeRequired() {
