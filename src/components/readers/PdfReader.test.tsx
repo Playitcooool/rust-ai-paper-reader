@@ -27,6 +27,15 @@ const makeBundle = (text = "Hello world") => ({
   spans: [{ text, x0: 10, y0: 700, x1: 200, y1: 720 }],
 });
 
+const getPdfDocumentInfo = vi.fn().mockResolvedValue({
+  page_count: 3,
+  pages: [
+    { width_pt: 600, height_pt: 750 },
+    { width_pt: 600, height_pt: 750 },
+    { width_pt: 600, height_pt: 750 },
+  ],
+});
+
 describe("PdfReader", () => {
   beforeEach(() => {
     if (!("createObjectURL" in URL)) {
@@ -47,7 +56,15 @@ describe("PdfReader", () => {
   it("renders the Rust-backed page image and text layer", async () => {
     const getPdfPageBundle = vi.fn().mockResolvedValue(makeBundle());
 
-    render(<PdfReader getPdfPageBundle={getPdfPageBundle} page={0} view={pdfView} zoom={100} />);
+    render(
+      <PdfReader
+        getPdfDocumentInfo={getPdfDocumentInfo}
+        getPdfPageBundle={getPdfPageBundle}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
 
     await waitFor(() => {
       expect(getPdfPageBundle).toHaveBeenCalledWith({
@@ -70,6 +87,7 @@ describe("PdfReader", () => {
     render(
       <PdfReader
         getPdfPageBundle={getPdfPageBundle}
+        getPdfDocumentInfo={getPdfDocumentInfo}
         page={0}
         searchQuery="alpha"
         view={pdfView}
@@ -108,6 +126,7 @@ describe("PdfReader", () => {
             anchor: highlightAnchor,
           },
         ]}
+        getPdfDocumentInfo={getPdfDocumentInfo}
         getPdfPageBundle={getPdfPageBundle}
         page={0}
         view={pdfView}

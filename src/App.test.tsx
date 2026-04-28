@@ -238,6 +238,38 @@ describe("App reading workspace", () => {
     expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
   });
 
+  it("renders the reader view without waiting for annotations or artifacts", async () => {
+    let resolveAnnotations!: (value: unknown) => void;
+    let resolveArtifact!: (value: unknown) => void;
+    let resolveTaskRuns!: (value: unknown) => void;
+    const delayedAnnotations = new Promise((res) => {
+      resolveAnnotations = res;
+    });
+    const delayedArtifact = new Promise((res) => {
+      resolveArtifact = res;
+    });
+    const delayedTaskRuns = new Promise((res) => {
+      resolveTaskRuns = res;
+    });
+    const apiWithSlowAux = {
+      ...fakeApi,
+      listAnnotations: vi.fn(() => delayedAnnotations),
+      getArtifact: vi.fn(() => delayedArtifact),
+      listTaskRuns: vi.fn(() => delayedTaskRuns),
+    } as typeof fakeApi;
+
+    const user = userEvent.setup();
+    render(<App api={apiWithSlowAux} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+
+    expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
+
+    resolveAnnotations([]);
+    resolveArtifact(null);
+    resolveTaskRuns([]);
+  });
+
   it("shows a focus highlight color bar and persists color into the anchor", async () => {
     const user = userEvent.setup();
     const createAnnotationSpy = vi.spyOn(fakeApi, "createAnnotation");

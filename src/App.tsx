@@ -181,6 +181,7 @@ export default function App({ api }: { api: AppApi }) {
   const importDocumentsRef = useRef<() => void>(() => {});
   const importCitationsRef = useRef<() => void>(() => {});
   const importPathsRef = useRef<(paths: string[], sourceLabel: string) => void>(() => {});
+  const readerLoadRequestIdRef = useRef(0);
 
   const [collections, setCollections] = useState<Collection[]>([]);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
@@ -412,6 +413,7 @@ export default function App({ api }: { api: AppApi }) {
 
   useEffect(() => {
     if (!activePaperId) {
+      readerLoadRequestIdRef.current += 1;
       setReaderView(null);
       setAnnotations([]);
       setPaperArtifact(null);
@@ -421,28 +423,66 @@ export default function App({ api }: { api: AppApi }) {
 
     let cancelled = false;
     const itemId = activePaperId;
+    const requestId = readerLoadRequestIdRef.current + 1;
+    readerLoadRequestIdRef.current = requestId;
 
     async function loadReaderContext() {
-      const runtimeApi = await getApi();
-      const [view, itemAnnotations, artifact, taskRuns] = await Promise.all([
-        runtimeApi.getReaderView(itemId),
-        runtimeApi.listAnnotations(itemId),
-        runtimeApi.getArtifact({ item_id: itemId }),
-        runtimeApi.listTaskRuns({ item_id: itemId }),
-      ]);
-      if (cancelled) return;
-      setReaderView(view);
-      setAnnotations(itemAnnotations);
-      setPaperArtifact(artifact);
-      setPaperTaskRuns(taskRuns);
-      setReaderPage(0);
-      setReaderPageInput("1");
-      setReaderSearchQuery("");
-      setIsFindHudOpen(false);
-      setReaderSearchMatchIndex(0);
-      setReaderSearchMatchCount(0);
-      setReportedActiveSearchMatchIndex(-1);
-      setPdfSelection(null);
+      const startedAt = performance.now();
+      logEvent("reader_open_click", { itemId, requestId });
+      setReaderView(null);
+      setAnnotations([]);
+      setPaperArtifact(null);
+      setPaperTaskRuns([]);
+      try {
+        const runtimeApi = await getApi();
+        const view = await runtimeApi.getReaderView(itemId);
+        if (cancelled || readerLoadRequestIdRef.current !== requestId) return;
+        setReaderView(view);
+        setReaderPage(0);
+        setReaderPageInput("1");
+        setReaderSearchQuery("");
+        setIsFindHudOpen(false);
+        setReaderSearchMatchIndex(0);
+        setReaderSearchMatchCount(0);
+        setReportedActiveSearchMatchIndex(-1);
+        setPdfSelection(null);
+        logEvent("reader_view_loaded", {
+          itemId,
+          requestId,
+          durationMs: Math.round(performance.now() - startedAt),
+          readerKind: view.reader_kind,
+          attachmentFormat: view.attachment_format,
+        });
+
+        void (async () => {
+          const auxStartedAt = performance.now();
+          const [annotationsResult, artifactResult, taskRunsResult] = await Promise.allSettled([
+            runtimeApi.listAnnotations(itemId),
+            runtimeApi.getArtifact({ item_id: itemId }),
+            runtimeApi.listTaskRuns({ item_id: itemId }),
+          ]);
+          if (cancelled || readerLoadRequestIdRef.current !== requestId) return;
+          if (annotationsResult.status === "fulfilled") setAnnotations(annotationsResult.value);
+          if (artifactResult.status === "fulfilled") setPaperArtifact(artifactResult.value);
+          if (taskRunsResult.status === "fulfilled") setPaperTaskRuns(taskRunsResult.value);
+          logEvent("reader_aux_loaded", {
+            itemId,
+            requestId,
+            durationMs: Math.round(performance.now() - auxStartedAt),
+            annotationsOk: annotationsResult.status === "fulfilled",
+            artifactOk: artifactResult.status === "fulfilled",
+            taskRunsOk: taskRunsResult.status === "fulfilled",
+          });
+        })();
+      } catch (error) {
+        if (cancelled || readerLoadRequestIdRef.current !== requestId) return;
+        logEvent("reader_open_failed", {
+          itemId,
+          requestId,
+          durationMs: Math.round(performance.now() - startedAt),
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
     }
 
     void loadReaderContext();
@@ -586,6 +626,37 @@ export default function App({ api }: { api: AppApi }) {
     async (input: { primary_attachment_id: number; page_index0: number; target_width_px: number }) => {
       const runtimeApi = await getApi();
       return runtimeApi.pdfEngineGetPageBundle(input);
+    },
+    [api],
+  );
+
+  const getPdfDocumentInfo = useCallback(
+    async (primaryAttachmentId: number) => {
+      const runtimeApi = await getApi();
+      return runtimeApi.pdfEngineGetDocumentInfo({ primary_attachment_id: primaryAttachmentId });
+    },
+    [api],
+  );
+
+  const getPdfPageText = useCallback(
+    async (input: { primary_attachment_id: number; page_index0: number }) => {
+      const runtimeApi = await getApi();
+      return runtimeApi.pdfEngineGetPageText(input);
+    },
+    [api],
+  );
+
+  const ocrPdfPage = useCallback(
+    async (input: {
+      primary_attachment_id: number;
+      page_index0: number;
+      png_bytes: Uint8Array;
+      lang?: string;
+      config_version: string;
+      source_resolution?: number;
+    }) => {
+      const runtimeApi = await getApi();
+      return runtimeApi.ocrPdfPage(input);
     },
     [api],
   );
@@ -1394,7 +1465,10 @@ export default function App({ api }: { api: AppApi }) {
               <>
                 <PdfContinuousReader
                   fitMode="fit_width"
+                  getPdfDocumentInfo={getPdfDocumentInfo}
                   getPdfPageBundle={getPdfPageBundle}
+                  getPdfPageText={getPdfPageText}
+                  ocrPdfPage={ocrPdfPage}
                   annotations={annotations}
                   page={readerPage}
                   searchQuery={readerSearchQuery}
@@ -1524,6 +1598,7 @@ export default function App({ api }: { api: AppApi }) {
               readerView.reader_kind === "pdf" ? (
                 <PdfReader
                   fitMode="fit_width"
+                  getPdfDocumentInfo={getPdfDocumentInfo}
                   getPdfPageBundle={getPdfPageBundle}
                   annotations={annotations}
                   page={readerPage}

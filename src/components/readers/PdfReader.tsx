@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
-import type { Annotation, PdfEngineGetPageBundleInput, ReaderView } from "../../lib/contracts";
+import type {
+  Annotation,
+  PdfDocumentInfo,
+  PdfEngineGetPageBundleInput,
+  ReaderView,
+} from "../../lib/contracts";
 import { safeScrollIntoView } from "../../lib/dom";
 import { logEvent, textForLog } from "../../lib/clientEventLog";
 import { computeFitWidthZoomPct } from "./pdfFit";
@@ -29,6 +34,7 @@ type PdfReaderProps = {
   zoom: number;
   fitMode?: "manual" | "fit_width";
   mode?: "workspace" | "focus";
+  getPdfDocumentInfo: (primaryAttachmentId: number) => Promise<PdfDocumentInfo>;
   getPdfPageBundle: (input: PdfEngineGetPageBundleInput) => Promise<{
     png_bytes: Uint8Array;
     width_px: number;
@@ -52,6 +58,7 @@ export function PdfReader({
   zoom,
   fitMode = "fit_width",
   mode = "workspace",
+  getPdfDocumentInfo,
   getPdfPageBundle,
   onPageCountChange,
   onNavigateToPage: _onNavigateToPage,
@@ -102,6 +109,32 @@ export function PdfReader({
     setPageCount(nextCount);
     onPageCountChange?.(nextCount);
   }, [onPageCountChange, view.page_count]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const primaryAttachmentId = view.primary_attachment_id;
+    if (!primaryAttachmentId) return;
+
+    void (async () => {
+      try {
+        const info = await getPdfDocumentInfo(primaryAttachmentId);
+        if (cancelled) return;
+        const nextCount = Math.max(1, info.page_count || view.page_count || 1);
+        setPageCount(nextCount);
+        onPageCountChange?.(nextCount);
+        const firstPage = info.pages[0];
+        if (firstPage?.width_pt) {
+          setPageWidthAtScale1(pageWidthAtScale1FromPoints(firstPage.width_pt));
+        }
+      } catch {
+        // If metadata fetch fails, page bundle rendering still provides a fallback path.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [getPdfDocumentInfo, onPageCountChange, view.page_count, view.primary_attachment_id]);
 
   useEffect(() => {
     const element = stageRef.current;

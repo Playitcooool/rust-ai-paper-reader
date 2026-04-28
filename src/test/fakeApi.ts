@@ -10,8 +10,12 @@ import type {
   LibraryItem,
   OcrPageResult,
   OcrPdfPageInput,
+  PdfDocumentInfo,
+  PdfEngineGetDocumentInfoInput,
   PdfEngineGetPageBundleInput,
+  PdfEngineGetPageTextInput,
   PdfPageBundle,
+  PdfPageText,
   ReaderView,
   ResearchNote,
   Tag,
@@ -922,6 +926,16 @@ export const fakeApi: AppApi = {
     };
   },
 
+  async pdfEngineGetDocumentInfo(_input: PdfEngineGetDocumentInfoInput): Promise<PdfDocumentInfo> {
+    return {
+      page_count: 2,
+      pages: [
+        { width_pt: 612, height_pt: 792 },
+        { width_pt: 612, height_pt: 792 },
+      ],
+    };
+  },
+
   async pdfEngineGetPageBundle(_input: PdfEngineGetPageBundleInput): Promise<PdfPageBundle> {
     return {
       png_bytes: new Uint8Array([137, 80, 78, 71]),
@@ -929,6 +943,16 @@ export const fakeApi: AppApi = {
       height_px: 120,
       page_width_pt: 612,
       page_height_pt: 792,
+      spans: [
+        { text: "Hello", x0: 10, y0: 10, x1: 50, y1: 20 },
+        { text: "world", x0: 55, y0: 10, x1: 95, y1: 20 },
+      ],
+    };
+  },
+
+  async pdfEngineGetPageText(input: PdfEngineGetPageTextInput): Promise<PdfPageText> {
+    return {
+      page_index0: input.page_index0,
       spans: [
         { text: "Hello", x0: 10, y0: 10, x1: 50, y1: 20 },
         { text: "world", x0: 55, y0: 10, x1: 95, y1: 20 },

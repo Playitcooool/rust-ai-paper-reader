@@ -19,7 +19,11 @@ export function getRuntimePolyfillDiagnostics(): RuntimePolyfillDiagnostics {
 function installAtPolyfills() {
   // pdfjs-dist@5.x assumes modern JS builtins (notably `.at()`); older WKWebView builds can miss them.
 
-  if (typeof Array !== "undefined" && typeof Array.prototype.at !== "function") {
+  if (
+    typeof Array !== "undefined" &&
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    typeof (Array.prototype as any).at !== "function"
+  ) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (Array.prototype as any).at = function atPolyfill<T>(this: ArrayLike<T>, index: number): T | undefined {
       const len = this.length >>> 0;
@@ -33,7 +37,11 @@ function installAtPolyfills() {
     };
   }
 
-  if (typeof String !== "undefined" && typeof String.prototype.at !== "function") {
+  if (
+    typeof String !== "undefined" &&
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    typeof (String.prototype as any).at !== "function"
+  ) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (String.prototype as any).at = function atPolyfill(this: string, index: number): string | undefined {
       const str = String(this);

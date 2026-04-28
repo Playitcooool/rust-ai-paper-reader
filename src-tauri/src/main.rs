@@ -1,10 +1,11 @@
 use std::{
+    collections::{HashMap, VecDeque},
     ffi::CString,
     fs,
     fs::OpenOptions,
     io::Write,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use app_core::service::{
@@ -13,20 +14,27 @@ use app_core::service::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tauri::{menu::{MenuBuilder, SubmenuBuilder}, AppHandle, Emitter, Manager, State};
+use tauri::{
+    menu::{MenuBuilder, SubmenuBuilder},
+    AppHandle, Emitter, Manager, State,
+};
 use tokio::sync::Semaphore;
 
-use tesseract_ocr_static::{Config as TesseractConfig, Image as TessImage, PageSegmentationMode, TextRecognizer};
 use pdf_oxide::{
     document::PdfDocument as OxidePdfDocument,
     rendering::{render_page, ImageFormat, RenderOptions},
 };
+use tesseract_ocr_static::{
+    Config as TesseractConfig, Image as TessImage, PageSegmentationMode, TextRecognizer,
+};
 
 struct AppState {
     library_root: PathBuf,
+    pdf_cache: Arc<Mutex<PdfEngineCache>>,
 }
 
 static OCR_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static PDF_RENDER_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 #[derive(Deserialize)]
 struct ClientLogEvent {
@@ -219,6 +227,18 @@ struct PdfPageBundle {
     spans: Vec<PdfTextSpan>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PdfPageInfo {
+    width_pt: f32,
+    height_pt: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PdfDocumentInfo {
+    page_count: usize,
+    pages: Vec<PdfPageInfo>,
+}
+
 #[derive(Deserialize)]
 struct PdfEngineGetPageBundleInput {
     primary_attachment_id: i64,
@@ -226,8 +246,90 @@ struct PdfEngineGetPageBundleInput {
     target_width_px: u32,
 }
 
+#[derive(Deserialize)]
+struct PdfEngineGetDocumentInfoInput {
+    primary_attachment_id: i64,
+}
+
+#[derive(Deserialize)]
+struct PdfEngineGetPageTextInput {
+    primary_attachment_id: i64,
+    page_index0: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PdfPageText {
+    page_index0: i64,
+    spans: Vec<PdfTextSpan>,
+}
+
+#[derive(Default)]
+struct PdfEngineCache {
+    document_info_by_attachment: HashMap<i64, PdfDocumentInfo>,
+    text_spans_by_page: HashMap<(i64, i64), Vec<PdfTextSpan>>,
+    text_spans_order: VecDeque<(i64, i64)>,
+    bundle_by_key: HashMap<(i64, i64, u32), PdfPageBundle>,
+    bundle_order: VecDeque<(i64, i64, u32)>,
+    bundle_total_bytes: usize,
+}
+
+const PDF_TEXT_PAGE_CACHE_LIMIT: usize = 64;
+const PDF_BUNDLE_CACHE_ENTRY_LIMIT: usize = 24;
+const PDF_BUNDLE_CACHE_BYTES_LIMIT: usize = 96 * 1024 * 1024;
+
 fn service(state: &AppState) -> Result<LibraryService, String> {
     LibraryService::new(&state.library_root).map_err(|error| error.to_string())
+}
+
+fn service_for_root(library_root: &PathBuf) -> Result<LibraryService, String> {
+    LibraryService::new(library_root).map_err(|error| error.to_string())
+}
+
+fn remember_text_spans(cache: &mut PdfEngineCache, key: (i64, i64), spans: Vec<PdfTextSpan>) {
+    cache.text_spans_by_page.insert(key, spans);
+    cache.text_spans_order.retain(|existing| existing != &key);
+    cache.text_spans_order.push_back(key);
+    while cache.text_spans_order.len() > PDF_TEXT_PAGE_CACHE_LIMIT {
+        if let Some(oldest) = cache.text_spans_order.pop_front() {
+            cache.text_spans_by_page.remove(&oldest);
+        }
+    }
+}
+
+fn bundle_weight(bundle: &PdfPageBundle) -> usize {
+    let span_text_bytes = bundle
+        .spans
+        .iter()
+        .map(|span| span.text.len() + std::mem::size_of::<PdfTextSpan>())
+        .sum::<usize>();
+    bundle.png_bytes.len() + span_text_bytes
+}
+
+fn remember_page_bundle(cache: &mut PdfEngineCache, key: (i64, i64, u32), bundle: PdfPageBundle) {
+    if let Some(previous) = cache.bundle_by_key.remove(&key) {
+        cache.bundle_total_bytes = cache
+            .bundle_total_bytes
+            .saturating_sub(bundle_weight(&previous));
+        cache.bundle_order.retain(|existing| existing != &key);
+    }
+    cache.bundle_total_bytes = cache
+        .bundle_total_bytes
+        .saturating_add(bundle_weight(&bundle));
+    cache.bundle_by_key.insert(key, bundle);
+    cache.bundle_order.push_back(key);
+
+    while cache.bundle_order.len() > PDF_BUNDLE_CACHE_ENTRY_LIMIT
+        || cache.bundle_total_bytes > PDF_BUNDLE_CACHE_BYTES_LIMIT
+    {
+        let Some(oldest) = cache.bundle_order.pop_front() else {
+            break;
+        };
+        if let Some(removed) = cache.bundle_by_key.remove(&oldest) {
+            cache.bundle_total_bytes = cache
+                .bundle_total_bytes
+                .saturating_sub(bundle_weight(&removed));
+        }
+    }
 }
 
 fn root_dir(app: &AppHandle) -> PathBuf {
@@ -272,7 +374,11 @@ fn cache_path_for_ocr(state: &AppState, input: &OcrPdfPageInput, lang: &str) -> 
         .join(format!("{}.json", input.page_index0))
 }
 
-fn parse_tesseract_tsv_to_lines(tsv_str: &str, image_width: u32, image_height: u32) -> Vec<OcrLine> {
+fn parse_tesseract_tsv_to_lines(
+    tsv_str: &str,
+    image_width: u32,
+    image_height: u32,
+) -> Vec<OcrLine> {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct LineKey {
         block: i32,
@@ -321,26 +427,44 @@ fn parse_tesseract_tsv_to_lines(tsv_str: &str, image_width: u32, image_height: u
             cols.get(idx).copied()
         };
 
-        let Some(level_str) = get("level") else { continue };
-        let Ok(level) = level_str.parse::<i32>() else { continue };
+        let Some(level_str) = get("level") else {
+            continue;
+        };
+        let Ok(level) = level_str.parse::<i32>() else {
+            continue;
+        };
         // Only aggregate word-level rows.
         if level != 5 {
             continue;
         }
 
-        let block: i32 = get("block_num").and_then(|value| value.parse().ok()).unwrap_or(-1);
-        let para: i32 = get("par_num").and_then(|value| value.parse().ok()).unwrap_or(-1);
-        let line: i32 = get("line_num").and_then(|value| value.parse().ok()).unwrap_or(-1);
+        let block: i32 = get("block_num")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(-1);
+        let para: i32 = get("par_num")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(-1);
+        let line: i32 = get("line_num")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(-1);
         let key = LineKey { block, para, line };
 
-        let left: u32 = get("left").and_then(|value| value.parse().ok()).unwrap_or(0);
+        let left: u32 = get("left")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
         let top: u32 = get("top").and_then(|value| value.parse().ok()).unwrap_or(0);
-        let w: u32 = get("width").and_then(|value| value.parse().ok()).unwrap_or(0);
-        let h: u32 = get("height").and_then(|value| value.parse().ok()).unwrap_or(0);
+        let w: u32 = get("width")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let h: u32 = get("height")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
         let right = left.saturating_add(w);
         let bottom = top.saturating_add(h);
 
-        let conf: f32 = get("conf").and_then(|value| value.parse().ok()).unwrap_or(-1.0);
+        let conf: f32 = get("conf")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(-1.0);
         let word = get("text").unwrap_or("");
         if conf < 0.0 {
             continue;
@@ -495,7 +619,9 @@ fn rotate_client_log_if_needed(path: &PathBuf) -> Result<(), String> {
         return Ok(());
     }
 
-    let dir = path.parent().ok_or_else(|| "invalid log path".to_string())?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| "invalid log path".to_string())?;
     let base_name = path
         .file_name()
         .and_then(|v| v.to_str())
@@ -564,15 +690,23 @@ async fn ocr_pdf_page(
     state: State<'_, AppState>,
     input: OcrPdfPageInput,
 ) -> Result<OcrPageResult, String> {
-    let lang = input.lang.clone().unwrap_or_else(|| "eng+chi_sim".to_string());
+    let lang = input
+        .lang
+        .clone()
+        .unwrap_or_else(|| "eng+chi_sim".to_string());
     let cache_path = cache_path_for_ocr(&state, &input, &lang);
     if let Some(cached) = read_cached_ocr(&cache_path) {
         return Ok(cached);
     }
 
     // Avoid kicking off many OCR jobs at once when in continuous scroll.
-    let semaphore = OCR_SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(2))).clone();
-    let _permit = semaphore.acquire_owned().await.map_err(|_| "OCR queue closed")?;
+    let semaphore = OCR_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(2)))
+        .clone();
+    let _permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| "OCR queue closed")?;
 
     // Decode PNG -> RGBA
     let decoded = image::load_from_memory_with_format(&input.png_bytes, image::ImageFormat::Png)
@@ -584,13 +718,8 @@ async fn ocr_pdf_page(
 
     // Configure tesseract.
     let tessdata_dir = resolve_tessdata_dir(&app);
-    let data_dir = CString::new(
-        tessdata_dir
-            .to_string_lossy()
-            .as_ref()
-            .to_string(),
-    )
-    .map_err(|_| "invalid tessdata path")?;
+    let data_dir = CString::new(tessdata_dir.to_string_lossy().as_ref().to_string())
+        .map_err(|_| "invalid tessdata path")?;
     let languages = CString::new(lang.as_str()).map_err(|_| "invalid OCR language")?;
     let mut recognizer = TextRecognizer::with_config(TesseractConfig {
         data_dir: Some(data_dir.as_c_str()),
@@ -636,51 +765,18 @@ fn reveal_client_log_dir(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn pdf_engine_get_page_bundle(
-    state: State<'_, AppState>,
-    input: PdfEngineGetPageBundleInput,
-) -> Result<PdfPageBundle, String> {
-    if input.page_index0 < 0 {
-        return Err("invalid page index".to_string());
-    }
-    let target_width_px = input.target_width_px.max(1).min(8192);
+fn width_bucket(width_px: u32) -> u32 {
+    let bucket = 64;
+    ((width_px + bucket - 1) / bucket) * bucket
+}
 
-    let bytes = service(&state)?
-        .read_primary_attachment_bytes(input.primary_attachment_id)
-        .map_err(|error| error.to_string())?;
-
-    let mut doc = OxidePdfDocument::from_bytes(bytes).map_err(|error| error.to_string())?;
-    let page_index: usize = usize::try_from(input.page_index0).map_err(|_| "invalid page index")?;
-
-    let page_info = doc
-        .get_page_info(page_index)
-        .map_err(|error| error.to_string())?;
-
-    let page_width_pt = page_info.media_box.width;
-    let page_height_pt = page_info.media_box.height;
-    if !(page_width_pt.is_finite() && page_height_pt.is_finite() && page_width_pt > 0.0 && page_height_pt > 0.0) {
-        return Err("invalid page size".to_string());
-    }
-
-    // pdf_oxide renders at a given DPI. Convert target pixel width into DPI:
-    // pixels = (points / 72) * dpi => dpi = pixels * 72 / points
-    let dpi = ((target_width_px as f32) * 72.0 / page_width_pt)
-        .clamp(36.0, 600.0)
-        .round() as u32;
-    let opts = RenderOptions {
-        dpi,
-        format: ImageFormat::Png,
-        ..Default::default()
-    };
-    let rendered = render_page(&mut doc, page_index, &opts)
-        .map_err(|error| error.to_string())?;
-
-    // Extract spans with bounding boxes in page coordinates.
+fn spans_from_document(
+    doc: &OxidePdfDocument,
+    page_index: usize,
+) -> Result<Vec<PdfTextSpan>, String> {
     let spans_raw = doc
         .extract_spans(page_index)
         .map_err(|error| error.to_string())?;
-
     let mut spans: Vec<PdfTextSpan> = Vec::with_capacity(spans_raw.len());
     for span in spans_raw {
         let text = span.text;
@@ -691,17 +787,228 @@ fn pdf_engine_get_page_bundle(
         let y0 = span.bbox.y;
         let x1 = x0 + span.bbox.width;
         let y1 = y0 + span.bbox.height;
-        spans.push(PdfTextSpan { text, x0, y0, x1, y1 });
+        spans.push(PdfTextSpan {
+            text,
+            x0,
+            y0,
+            x1,
+            y1,
+        });
+    }
+    Ok(spans)
+}
+
+fn document_info_from_document(doc: &OxidePdfDocument) -> Result<PdfDocumentInfo, String> {
+    let page_count = doc.page_count().map_err(|error| error.to_string())?;
+    let mut pages = Vec::with_capacity(page_count.min(1));
+    for page_index in 0..page_count.min(1) {
+        let page_info = doc
+            .get_page_info(page_index)
+            .map_err(|error| error.to_string())?;
+        pages.push(PdfPageInfo {
+            width_pt: page_info.media_box.width,
+            height_pt: page_info.media_box.height,
+        });
+    }
+    Ok(PdfDocumentInfo { page_count, pages })
+}
+
+#[tauri::command]
+async fn pdf_engine_get_document_info(
+    state: State<'_, AppState>,
+    input: PdfEngineGetDocumentInfoInput,
+) -> Result<PdfDocumentInfo, String> {
+    if let Some(cached) = state
+        .pdf_cache
+        .lock()
+        .map_err(|_| "pdf cache poisoned".to_string())?
+        .document_info_by_attachment
+        .get(&input.primary_attachment_id)
+        .cloned()
+    {
+        return Ok(cached);
     }
 
-    Ok(PdfPageBundle {
-        png_bytes: rendered.data,
-        width_px: rendered.width,
-        height_px: rendered.height,
-        page_width_pt,
-        page_height_pt,
-        spans,
+    let library_root = state.library_root.clone();
+    let pdf_cache = state.pdf_cache.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = service_for_root(&library_root)?
+            .read_primary_attachment_bytes(input.primary_attachment_id)
+            .map_err(|error| error.to_string())?;
+        let doc = OxidePdfDocument::from_bytes(bytes).map_err(|error| error.to_string())?;
+        let info = document_info_from_document(&doc)?;
+        pdf_cache
+            .lock()
+            .map_err(|_| "pdf cache poisoned".to_string())?
+            .document_info_by_attachment
+            .insert(input.primary_attachment_id, info.clone());
+        Ok(info)
     })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn pdf_engine_get_page_text(
+    state: State<'_, AppState>,
+    input: PdfEngineGetPageTextInput,
+) -> Result<PdfPageText, String> {
+    if input.page_index0 < 0 {
+        return Err("invalid page index".to_string());
+    }
+    if let Some(cached) = state
+        .pdf_cache
+        .lock()
+        .map_err(|_| "pdf cache poisoned".to_string())?
+        .text_spans_by_page
+        .get(&(input.primary_attachment_id, input.page_index0))
+        .cloned()
+    {
+        return Ok(PdfPageText {
+            page_index0: input.page_index0,
+            spans: cached,
+        });
+    }
+
+    let library_root = state.library_root.clone();
+    let pdf_cache = state.pdf_cache.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = service_for_root(&library_root)?
+            .read_primary_attachment_bytes(input.primary_attachment_id)
+            .map_err(|error| error.to_string())?;
+        let doc = OxidePdfDocument::from_bytes(bytes).map_err(|error| error.to_string())?;
+        let page_index: usize =
+            usize::try_from(input.page_index0).map_err(|_| "invalid page index")?;
+        let spans = spans_from_document(&doc, page_index)?;
+        let mut cache = pdf_cache
+            .lock()
+            .map_err(|_| "pdf cache poisoned".to_string())?;
+        remember_text_spans(
+            &mut cache,
+            (input.primary_attachment_id, input.page_index0),
+            spans.clone(),
+        );
+        Ok(PdfPageText {
+            page_index0: input.page_index0,
+            spans,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn pdf_engine_get_page_bundle(
+    state: State<'_, AppState>,
+    input: PdfEngineGetPageBundleInput,
+) -> Result<PdfPageBundle, String> {
+    if input.page_index0 < 0 {
+        return Err("invalid page index".to_string());
+    }
+    let target_width_px = input.target_width_px.max(1).min(8192);
+    let bucketed_width = width_bucket(target_width_px);
+    if let Some(cached) = state
+        .pdf_cache
+        .lock()
+        .map_err(|_| "pdf cache poisoned".to_string())?
+        .bundle_by_key
+        .get(&(
+            input.primary_attachment_id,
+            input.page_index0,
+            bucketed_width,
+        ))
+        .cloned()
+    {
+        return Ok(cached);
+    }
+
+    let semaphore = PDF_RENDER_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(2)))
+        .clone();
+    let permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|error| error.to_string())?;
+    let library_root = state.library_root.clone();
+    let pdf_cache = state.pdf_cache.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let bytes = service_for_root(&library_root)?
+            .read_primary_attachment_bytes(input.primary_attachment_id)
+            .map_err(|error| error.to_string())?;
+
+        let mut doc = OxidePdfDocument::from_bytes(bytes).map_err(|error| error.to_string())?;
+        let page_index: usize =
+            usize::try_from(input.page_index0).map_err(|_| "invalid page index")?;
+
+        let page_info = doc
+            .get_page_info(page_index)
+            .map_err(|error| error.to_string())?;
+
+        let page_width_pt = page_info.media_box.width;
+        let page_height_pt = page_info.media_box.height;
+        if !(page_width_pt.is_finite()
+            && page_height_pt.is_finite()
+            && page_width_pt > 0.0
+            && page_height_pt > 0.0)
+        {
+            return Err("invalid page size".to_string());
+        }
+
+        let dpi = ((bucketed_width as f32) * 72.0 / page_width_pt)
+            .clamp(36.0, 600.0)
+            .round() as u32;
+        let opts = RenderOptions {
+            dpi,
+            format: ImageFormat::Png,
+            ..Default::default()
+        };
+        let rendered =
+            render_page(&mut doc, page_index, &opts).map_err(|error| error.to_string())?;
+
+        let spans = if let Some(cached) = pdf_cache
+            .lock()
+            .map_err(|_| "pdf cache poisoned".to_string())?
+            .text_spans_by_page
+            .get(&(input.primary_attachment_id, input.page_index0))
+            .cloned()
+        {
+            cached
+        } else {
+            spans_from_document(&doc, page_index)?
+        };
+
+        let bundle = PdfPageBundle {
+            png_bytes: rendered.data,
+            width_px: rendered.width,
+            height_px: rendered.height,
+            page_width_pt,
+            page_height_pt,
+            spans: spans.clone(),
+        };
+
+        let mut cache = pdf_cache
+            .lock()
+            .map_err(|_| "pdf cache poisoned".to_string())?;
+        remember_text_spans(
+            &mut cache,
+            (input.primary_attachment_id, input.page_index0),
+            spans,
+        );
+        remember_page_bundle(
+            &mut cache,
+            (
+                input.primary_attachment_id,
+                input.page_index0,
+                bucketed_width,
+            ),
+            bundle.clone(),
+        );
+        Ok(bundle)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -743,6 +1050,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let state = AppState {
             library_root: dir.path().to_path_buf(),
+            pdf_cache: Arc::new(Mutex::new(PdfEngineCache::default())),
         };
 
         let now_ms = SystemTime::now()
@@ -780,6 +1088,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let state = AppState {
             library_root: dir.path().to_path_buf(),
+            pdf_cache: Arc::new(Mutex::new(PdfEngineCache::default())),
         };
         let logs_dir = client_logs_dir(&state);
         fs::create_dir_all(&logs_dir).unwrap();
@@ -805,6 +1114,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let state = AppState {
             library_root: dir.path().to_path_buf(),
+            pdf_cache: Arc::new(Mutex::new(PdfEngineCache::default())),
         };
 
         let logs_dir = client_logs_dir(&state);
@@ -813,6 +1123,43 @@ mod tests {
         let created = ensure_client_logs_dir(&state).expect("ensure_client_logs_dir");
         assert_eq!(created, logs_dir);
         assert!(logs_dir.exists());
+    }
+
+    #[test]
+    fn pdf_cache_enforces_text_and_bundle_limits() {
+        let mut cache = PdfEngineCache::default();
+        for page_index0 in 0..(PDF_TEXT_PAGE_CACHE_LIMIT as i64 + 3) {
+            remember_text_spans(
+                &mut cache,
+                (7, page_index0),
+                vec![PdfTextSpan {
+                    text: format!("page-{page_index0}"),
+                    x0: 0.0,
+                    y0: 0.0,
+                    x1: 1.0,
+                    y1: 1.0,
+                }],
+            );
+        }
+        assert_eq!(cache.text_spans_by_page.len(), PDF_TEXT_PAGE_CACHE_LIMIT);
+        assert!(!cache.text_spans_by_page.contains_key(&(7, 0)));
+
+        for page_index0 in 0..(PDF_BUNDLE_CACHE_ENTRY_LIMIT as i64 + 3) {
+            remember_page_bundle(
+                &mut cache,
+                (7, page_index0, 640),
+                PdfPageBundle {
+                    png_bytes: vec![0; 1024],
+                    width_px: 640,
+                    height_px: 800,
+                    page_width_pt: 600.0,
+                    page_height_pt: 750.0,
+                    spans: vec![],
+                },
+            );
+        }
+        assert!(cache.bundle_by_key.len() <= PDF_BUNDLE_CACHE_ENTRY_LIMIT);
+        assert!(!cache.bundle_by_key.contains_key(&(7, 0, 640)));
     }
 }
 
@@ -834,10 +1181,7 @@ fn create_collection(
 }
 
 #[tauri::command]
-fn move_collection(
-    state: State<'_, AppState>,
-    input: MoveCollectionInput,
-) -> Result<(), String> {
+fn move_collection(state: State<'_, AppState>, input: MoveCollectionInput) -> Result<(), String> {
     service(&state)?
         .move_collection(input.collection_id, input.parent_id)
         .map_err(|error| error.to_string())
@@ -909,7 +1253,11 @@ fn import_files(
     state: State<'_, AppState>,
     input: ImportFilesInput,
 ) -> Result<ImportBatchResult, String> {
-    let paths = input.paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let paths = input
+        .paths
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
     service(&state)?
         .import_files(input.collection_id, &paths, ImportMode::ManagedCopy)
         .map_err(|error| error.to_string())
@@ -920,7 +1268,11 @@ fn import_citations(
     state: State<'_, AppState>,
     input: ImportCitationsInput,
 ) -> Result<ImportBatchResult, String> {
-    let paths = input.paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let paths = input
+        .paths
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
     service(&state)?
         .import_citations(input.collection_id, &paths)
         .map_err(|error| error.to_string())
@@ -977,9 +1329,16 @@ fn move_item(state: State<'_, AppState>, input: MoveItemInput) -> Result<(), Str
 #[tauri::command]
 fn get_reader_view(state: State<'_, AppState>, item_id: i64) -> Result<ReaderView, String> {
     let svc = service(&state)?;
-    // Lazy self-heal: opening a PDF upgrades legacy extracted content + search index if needed.
-    let _ = svc.repair_item_content_if_needed(item_id);
-    svc.get_reader_view(item_id).map_err(|error| error.to_string())
+    let view = svc
+        .get_reader_view(item_id)
+        .map_err(|error| error.to_string())?;
+    let library_root = state.library_root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(service) = LibraryService::new(&library_root) {
+            let _ = service.repair_item_content_if_needed(item_id);
+        }
+    });
+    Ok(view)
 }
 
 #[tauri::command]
@@ -1132,13 +1491,9 @@ fn main() {
         .setup(|app| {
             let library_root = root_dir(app.handle());
             fs::create_dir_all(&library_root)?;
-            // Startup backfill (non-blocking): upgrade legacy PDF extraction results in the background.
-            let background_root = library_root.clone();
-            app.manage(AppState { library_root });
-            tauri::async_runtime::spawn_blocking(move || {
-                if let Ok(service) = LibraryService::new(&background_root) {
-                    let _ = service.repair_library_content_if_needed();
-                }
+            app.manage(AppState {
+                library_root,
+                pdf_cache: Arc::new(Mutex::new(PdfEngineCache::default())),
             });
 
             // Native menu: all imports flow through the same Managed Copy import path on the frontend.
@@ -1196,7 +1551,9 @@ fn main() {
             export_citation,
             write_export_file,
             ocr_pdf_page,
+            pdf_engine_get_document_info,
             pdf_engine_get_page_bundle,
+            pdf_engine_get_page_text,
             get_client_log_dir,
             reveal_client_log_dir,
             append_client_event_log

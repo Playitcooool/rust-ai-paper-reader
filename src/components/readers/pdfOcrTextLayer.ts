@@ -9,6 +9,7 @@ export function buildOcrTextLayer(input: {
   lines: OcrLine[];
 }): { divs: HTMLElement[]; strings: string[] } {
   const { host, viewportWidth, viewportHeight, lines } = input;
+  host.replaceChildren();
 
   const divs: HTMLElement[] = [];
   const strings: string[] = [];
@@ -27,6 +28,7 @@ export function buildOcrTextLayer(input: {
     span.setAttribute("role", "presentation");
     span.dataset.divIndex = String(divs.length);
     span.textContent = text;
+    span.style.position = "absolute";
     span.style.left = `${left}px`;
     span.style.top = `${top}px`;
 
@@ -54,6 +56,10 @@ export function buildOcrTextLayer(input: {
     divs.push(span);
     strings.push(text);
   }
+
+  const end = document.createElement("div");
+  end.className = "endOfContent";
+  host.appendChild(end);
 
   return { divs, strings };
 }

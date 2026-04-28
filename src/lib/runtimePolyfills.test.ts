@@ -4,7 +4,8 @@ import { getRuntimePolyfillDiagnostics, installRuntimePolyfills } from "./runtim
 
 describe("installRuntimePolyfills", () => {
   it("polyfills Array.prototype.at with correct negative indexing semantics", async () => {
-    const original = Array.prototype.at;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const original = (Array.prototype as any).at;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       delete (Array.prototype as any).at;
@@ -12,11 +13,16 @@ describe("installRuntimePolyfills", () => {
       expect(([] as any).at).toBeUndefined();
 
       await installRuntimePolyfills();
-      expect(typeof Array.prototype.at).toBe("function");
-      expect([10, 20, 30].at(0)).toBe(10);
-      expect([10, 20, 30].at(-1)).toBe(30);
-      expect([10, 20, 30].at(-3)).toBe(10);
-      expect([10, 20, 30].at(-4)).toBeUndefined();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(typeof (Array.prototype as any).at).toBe("function");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(([10, 20, 30] as any).at(0)).toBe(10);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(([10, 20, 30] as any).at(-1)).toBe(30);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(([10, 20, 30] as any).at(-3)).toBe(10);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(([10, 20, 30] as any).at(-4)).toBeUndefined();
     } finally {
       // Restore the environment for other tests.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

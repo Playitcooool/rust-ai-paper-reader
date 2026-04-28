@@ -32,5 +32,6 @@ describe("buildOcrTextLayer", () => {
     expect(spans[1]?.dataset.divIndex).toBe("1");
     expect(spans[0]?.textContent).toBe("Hello world");
     expect(spans[1]?.textContent).toBe("Second line");
+    expect(host.querySelector(".endOfContent")).toBeTruthy();
   });
 });

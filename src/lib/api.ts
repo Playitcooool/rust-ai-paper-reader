@@ -45,6 +45,46 @@ export async function createTauriApi(): Promise<AppApi> {
     };
   };
 
+  const toPdfSpans = (value: unknown) =>
+    Array.isArray(value)
+      ? value.map((span) => {
+          const s = span && typeof span === "object" ? (span as Record<string, unknown>) : {};
+          return {
+            text: typeof s.text === "string" ? s.text : "",
+            x0: Number(s.x0),
+            y0: Number(s.y0),
+            x1: Number(s.x1),
+            y1: Number(s.y1),
+          };
+        })
+      : [];
+
+  const toPdfDocumentInfo = (value: unknown) => {
+    if (!value || typeof value !== "object") throw new Error("Unexpected PDF document info response.");
+    const obj = value as Record<string, unknown>;
+    return {
+      page_count: Number(obj.page_count),
+      pages: Array.isArray(obj.pages)
+        ? obj.pages.map((page) => {
+            const p = page && typeof page === "object" ? (page as Record<string, unknown>) : {};
+            return {
+              width_pt: Number(p.width_pt),
+              height_pt: Number(p.height_pt),
+            };
+          })
+        : [],
+    };
+  };
+
+  const toPdfPageText = (value: unknown) => {
+    if (!value || typeof value !== "object") throw new Error("Unexpected PDF page text response.");
+    const obj = value as Record<string, unknown>;
+    return {
+      page_index0: Number(obj.page_index0),
+      spans: toPdfSpans(obj.spans),
+    };
+  };
+
   return {
     listCollections: () => invoke("list_collections"),
     createCollection: (input) => invoke("create_collection", { input }),
@@ -134,9 +174,21 @@ export async function createTauriApi(): Promise<AppApi> {
     },
     writeExportFile: (input) => invoke("write_export_file", { input }),
     ocrPdfPage: (input) => invoke("ocr_pdf_page", { input }),
+    pdfEngineGetDocumentInfo: async (input) =>
+      toPdfDocumentInfo(
+        await invoke("pdf_engine_get_document_info", {
+          input,
+        }),
+      ),
     pdfEngineGetPageBundle: async (input) =>
       toPdfPageBundle(
         await invoke("pdf_engine_get_page_bundle", {
+          input,
+        }),
+      ),
+    pdfEngineGetPageText: async (input) =>
+      toPdfPageText(
+        await invoke("pdf_engine_get_page_text", {
           input,
         }),
       ),

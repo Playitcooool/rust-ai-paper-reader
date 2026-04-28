@@ -147,10 +147,34 @@ export type PdfPageBundle = {
   spans: PdfTextSpan[];
 };
 
+export type PdfPageInfo = {
+  width_pt: number;
+  height_pt: number;
+};
+
+export type PdfDocumentInfo = {
+  page_count: number;
+  pages: PdfPageInfo[];
+};
+
 export type PdfEngineGetPageBundleInput = {
   primary_attachment_id: number;
   page_index0: number;
   target_width_px: number;
+};
+
+export type PdfEngineGetDocumentInfoInput = {
+  primary_attachment_id: number;
+};
+
+export type PdfEngineGetPageTextInput = {
+  primary_attachment_id: number;
+  page_index0: number;
+};
+
+export type PdfPageText = {
+  page_index0: number;
+  spans: PdfTextSpan[];
 };
 
 export type ClientLogEvent = {
@@ -227,7 +251,9 @@ export type AppApi = {
   }) => Promise<string | null>;
   writeExportFile: (input: { path: string; contents: string }) => Promise<void>;
   ocrPdfPage: (input: OcrPdfPageInput) => Promise<OcrPageResult>;
+  pdfEngineGetDocumentInfo: (input: PdfEngineGetDocumentInfoInput) => Promise<PdfDocumentInfo>;
   pdfEngineGetPageBundle: (input: PdfEngineGetPageBundleInput) => Promise<PdfPageBundle>;
+  pdfEngineGetPageText: (input: PdfEngineGetPageTextInput) => Promise<PdfPageText>;
   getClientLogDir: () => Promise<string>;
   revealClientLogDir: () => Promise<void>;
   appendClientEventLog: (input: AppendClientEventLogInput) => Promise<void>;
