@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { Annotation, ReaderView } from "../../lib/contracts";
+import type { Annotation, OcrPdfPageInput, OcrPageResult, ReaderView } from "../../lib/contracts";
 import { clearChildren, safeScrollIntoView } from "../../lib/dom";
 import type {
   PDFDocumentLoadingTask,
@@ -18,8 +18,11 @@ import {
   type PdfTextSelection,
 } from "./pdfSelection";
 import { installPdfJsTextLayerSelectionSupport } from "./pdfTextLayerSelectionSupport";
+import { buildOcrTextLayer } from "./pdfOcrTextLayer";
+import { OCR_CONFIG_VERSION } from "./pdfOcrConfig";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { getRuntimePolyfillDiagnostics } from "../../lib/runtimePolyfills";
+import { logEvent, textForLog } from "../../lib/clientEventLog";
 
 const escapeHtml = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -31,6 +34,7 @@ type PdfReaderProps = {
   fitMode?: "manual" | "fit_width";
   mode?: "workspace" | "focus";
   loadPrimaryAttachmentBytes: (primaryAttachmentId: number) => Promise<Uint8Array>;
+  ocrPdfPage?: (input: OcrPdfPageInput) => Promise<OcrPageResult>;
   onPageCountChange?: (pageCount: number) => void;
   onNavigateToPage?: (pageIndex0: number) => void;
   searchQuery?: string;
@@ -47,6 +51,7 @@ export function PdfReader({
   fitMode = "fit_width",
   mode = "workspace",
   loadPrimaryAttachmentBytes,
+  ocrPdfPage,
   onPageCountChange,
   onNavigateToPage,
   searchQuery = "",
@@ -68,6 +73,7 @@ export function PdfReader({
   const textDivStringsRef = useRef<string[]>([]);
   const textLayerSelectionCleanupRef = useRef<(() => void) | null>(null);
   const [textLayerReady, setTextLayerReady] = useState(false);
+  const [textLayerEpoch, setTextLayerEpoch] = useState(0);
   const onPageCountChangeRef = useRef(onPageCountChange);
   const onNavigateToPageRef = useRef(onNavigateToPage);
   const [pageCount, setPageCount] = useState(view.page_count);
@@ -78,6 +84,7 @@ export function PdfReader({
   const readableStreamWarningShownRef = useRef(false);
   const textLayerFailureShownRef = useRef(false);
   const [textLayerFailureMessage, setTextLayerFailureMessage] = useState("");
+  const [ocrNotice, setOcrNotice] = useState("");
 
   const textLayerFailureMessageForRuntime = () => {
     const diag = getRuntimePolyfillDiagnostics();
@@ -138,8 +145,10 @@ export function PdfReader({
     textDivsRef.current = [];
     textDivStringsRef.current = [];
     setTextLayerReady(false);
+    setTextLayerEpoch((current) => current + 1);
     textLayerFailureShownRef.current = false;
     setTextLayerFailureMessage("");
+    setOcrNotice("");
     if (textLayerHostRef.current) {
       clearChildren(textLayerHostRef.current);
     }
@@ -188,13 +197,78 @@ export function PdfReader({
       const nextKey = keyFor(next);
       if (nextKey === lastKey) return;
       lastKey = nextKey;
+
+      const selection = window.getSelection?.();
+      const rangeCount = selection?.rangeCount ?? 0;
+      const quote = selection?.toString?.() ?? "";
+      const quoteMeta = textForLog(quote) ?? { text_len: 0, text_snippet: "" };
+      let insideTextLayer = false;
+      let nearestDivIndex: string | null = null;
+      try {
+        if (selection && selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0);
+          const host = textLayerHostRef.current;
+          insideTextLayer = host ? host.contains(range.commonAncestorContainer) : false;
+          const element =
+            range.startContainer.nodeType === Node.ELEMENT_NODE
+              ? (range.startContainer as Element)
+              : range.startContainer.parentElement;
+          const nearest = element?.closest?.("[data-div-index]") as HTMLElement | null;
+          nearestDivIndex = nearest?.dataset.divIndex ?? null;
+        }
+      } catch {
+        // ignore
+      }
+      logEvent("selection_change", {
+        pageIndex0: page,
+        rangeCount,
+        insideTextLayer,
+        nearestDivIndex,
+        ...quoteMeta,
+      });
       onSelectionChange(next);
     };
 
     document.addEventListener("selectionchange", onSelectionChangeEvent);
     return () => document.removeEventListener("selectionchange", onSelectionChangeEvent);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onSelectionChange, page, status, textLayerReady, textEnabled, view.primary_attachment_id]);
+  }, [onSelectionChange, page, status, textLayerReady, textEnabled, textLayerEpoch, view.primary_attachment_id]);
+
+  useEffect(() => {
+    const host = textLayerHostRef.current;
+    if (!host) return;
+
+    const onPointerDownCapture = (event: PointerEvent) => {
+      const el = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+      logEvent("pdf_pointerdown", {
+        pageIndex0: page,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        element: el
+          ? {
+              tag: el.tagName.toLowerCase(),
+              className: el.className || "",
+              ariaLabel: el.getAttribute("aria-label") || "",
+            }
+          : null,
+      });
+    };
+
+    host.addEventListener("pointerdown", onPointerDownCapture, true);
+    return () => host.removeEventListener("pointerdown", onPointerDownCapture, true);
+  }, [page, textLayerEpoch]);
+
+  const lastTextLayerReadyRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (lastTextLayerReadyRef.current === textLayerReady) return;
+    lastTextLayerReadyRef.current = textLayerReady;
+    logEvent("textlayer_ready_state", {
+      pageIndex0: page,
+      ready: textLayerReady,
+      divCount: textDivsRef.current.length,
+      stringsCount: textDivStringsRef.current.length,
+    });
+  }, [page, textLayerReady, textLayerEpoch]);
 
   const navigateToDestination = async (pdfDocument: PDFDocumentProxy, dest: unknown) => {
     try {
@@ -322,6 +396,7 @@ export function PdfReader({
     let cancelled = false;
 
     async function renderPage() {
+      const renderStart = performance.now();
       const currentDocument = pdfDocumentRef.current;
       if (!currentDocument) return;
       if (pdfDocument !== currentDocument) return;
@@ -366,13 +441,24 @@ export function PdfReader({
         setPageWidthAtScale1(scale1Viewport.width);
 
         const viewport = currentPage.getViewport({ scale: effectiveZoom / 100 });
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
+        const outputScale = Math.min(2, window.devicePixelRatio || 1);
+        logEvent("pdf_render_start", {
+          pageIndex0: page,
+          zoomPct: effectiveZoom,
+          devicePixelRatio: window.devicePixelRatio || 1,
+          outputScale,
+          viewport: { width: viewport.width, height: viewport.height },
+        });
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
 
         const renderTask = currentPage.render({
           canvas,
           canvasContext: context,
           viewport,
+          transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined,
         });
         renderTaskRef.current = renderTask;
 
@@ -383,6 +469,11 @@ export function PdfReader({
         renderTaskRef.current = null;
 
         setStatus("ready");
+        logEvent("pdf_render_done", {
+          pageIndex0: page,
+          zoomPct: effectiveZoom,
+          durationMs: Math.round(performance.now() - renderStart),
+        });
 
         // Internal link overlay (avoid pdf.js AnnotationLayer/linkService compatibility issues).
         try {
@@ -494,13 +585,19 @@ export function PdfReader({
         // that pdf.js uses internally; keep the page visible even if text fails.
         if (textEnabled) {
           let itemsLengthForFailure = 0;
+          let attemptedOcr = false;
           try {
             clearChildren(textLayerHost);
+            const textLayerStart = performance.now();
             const textContent = await currentPage.getTextContent();
             const itemsLength = (textContent as unknown as { items?: unknown[] }).items?.length ?? 0;
             itemsLengthForFailure = itemsLength;
             if (cancelled) return;
 
+            logEvent("textlayer_render_start", {
+              pageIndex0: page,
+              itemsLength,
+            });
             const textLayer = new pdfjsModule.TextLayer({
               textContentSource: textContent,
               container: textLayerHost,
@@ -535,13 +632,119 @@ export function PdfReader({
             });
             const ready = textDivsRef.current.length > 0;
             setTextLayerReady(ready);
+            logEvent("textlayer_render_done", {
+              pageIndex0: page,
+              itemsLength,
+              divCount: textDivsRef.current.length,
+              durationMs: Math.round(performance.now() - textLayerStart),
+              ready,
+            });
             if (ready) {
               textLayerSelectionCleanupRef.current =
                 installPdfJsTextLayerSelectionSupport(textLayerHost);
+              setOcrNotice("");
+            }
+
+            // OCR fallback: scanned/image-only PDFs often have empty textContent/items.
+            if (!ready && (itemsLength === 0 || textDivsRef.current.length === 0)) {
+              if (!ocrPdfPage) {
+                setOcrNotice("No text layer found. OCR is unavailable in this build.");
+                return;
+              }
+              attemptedOcr = true;
+              setOcrNotice("No text layer found; running OCR...");
+
+              const primaryAttachmentId = view.primary_attachment_id;
+              if (!primaryAttachmentId) return;
+              const ocrToken = Symbol(`ocr-${primaryAttachmentId}-${page}-${effectiveZoom}`);
+              const offscreen = document.createElement("canvas");
+              const offscreenCtx = offscreen.getContext("2d");
+              if (!offscreenCtx) throw new Error("OCR canvas unavailable");
+
+              const scale1 = currentPage.getViewport({ scale: 1 });
+              const targetWidthPx = 2400;
+              const ocrScale = Math.max(1, Math.min(4, targetWidthPx / Math.max(1, scale1.width)));
+              const ocrViewport = currentPage.getViewport({ scale: ocrScale });
+              offscreen.width = Math.floor(ocrViewport.width);
+              offscreen.height = Math.floor(ocrViewport.height);
+              logEvent("ocr_start", {
+                pageIndex0: page,
+                ocrScale,
+                offscreen: { width: offscreen.width, height: offscreen.height },
+              });
+
+              const ocrRender = currentPage.render({
+                canvas: offscreen,
+                canvasContext: offscreenCtx,
+                viewport: ocrViewport,
+              });
+              await ocrRender.promise;
+              if (cancelled) return;
+              void ocrToken; // keep token for potential future expansion
+
+              const pngBlob: Blob | null = await new Promise((resolve) =>
+                offscreen.toBlob((blob) => resolve(blob), "image/png"),
+              );
+              if (!pngBlob) throw new Error("Unable to rasterize page for OCR");
+              const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+              logEvent("ocr_rasterized", { pageIndex0: page, pngBytesLength: pngBytes.length });
+
+              let result: OcrPageResult;
+              try {
+                result = await ocrPdfPage({
+                  primary_attachment_id: primaryAttachmentId,
+                  page_index0: page,
+                  png_bytes: pngBytes,
+                  lang: "eng+chi_sim",
+                  config_version: OCR_CONFIG_VERSION,
+                  source_resolution: 300,
+                });
+              } catch (error) {
+                setOcrNotice(`OCR failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+                logEvent("ocr_error", {
+                  pageIndex0: page,
+                  error: error instanceof Error ? error.message : "unknown",
+                });
+                return;
+              }
+              if (cancelled) return;
+              if (result.page_index0 !== page) return;
+
+              const line0 = result.lines[0]?.text ?? "";
+              const lineMeta = textForLog(line0) ?? { text_len: 0, text_snippet: "" };
+              logEvent("ocr_done", {
+                pageIndex0: page,
+                linesCount: result.lines.length,
+                sample: lineMeta,
+              });
+              clearChildren(textLayerHost);
+              const built = buildOcrTextLayer({
+                host: textLayerHost,
+                viewportWidth: viewport.width,
+                viewportHeight: viewport.height,
+                lines: result.lines,
+              });
+              textDivsRef.current = built.divs;
+              textDivStringsRef.current = built.strings;
+              const ocrReady = built.divs.length > 0;
+              setTextLayerReady(ocrReady);
+              setTextLayerEpoch((current) => current + 1);
+              if (ocrReady) {
+                textLayerSelectionCleanupRef.current =
+                  installPdfJsTextLayerSelectionSupport(textLayerHost);
+                setOcrNotice("");
+              } else {
+                setOcrNotice("OCR completed but no text was recognized.");
+                logEvent("ocr_empty", { pageIndex0: page });
+              }
             }
           } catch (error) {
             if (cancelled) return;
             if (isCancellationError(error)) return;
+            logEvent("textlayer_error", {
+              pageIndex0: page,
+              error: error instanceof Error ? error.message : "unknown",
+            });
             // Best effort: if the PDF is expected to have text, make the failure visible to users.
             if (itemsLengthForFailure > 0 && !textLayerFailureShownRef.current) {
               textLayerFailureShownRef.current = true;
@@ -552,10 +755,101 @@ export function PdfReader({
             textDivsRef.current = [];
             textDivStringsRef.current = [];
             setTextLayerReady(false);
+            setTextLayerEpoch((current) => current + 1);
             if (textLayerHostRef.current) clearChildren(textLayerHostRef.current);
             // Best effort logging for debugging old WebKit builds.
             // eslint-disable-next-line no-console
             console.warn("PDF text layer unavailable:", error);
+
+            // If pdf.js fails to render text spans, try OCR as a last resort.
+            if (!attemptedOcr && view.primary_attachment_id && ocrPdfPage) {
+              try {
+                setOcrNotice("Text layer failed; running OCR...");
+                const primaryAttachmentId = view.primary_attachment_id;
+                if (!primaryAttachmentId) return;
+                const offscreen = document.createElement("canvas");
+                const offscreenCtx = offscreen.getContext("2d");
+                if (!offscreenCtx) return;
+
+                const scale1 = currentPage.getViewport({ scale: 1 });
+                const targetWidthPx = 2400;
+                const ocrScale = Math.max(1, Math.min(4, targetWidthPx / Math.max(1, scale1.width)));
+                const ocrViewport = currentPage.getViewport({ scale: ocrScale });
+                offscreen.width = Math.floor(ocrViewport.width);
+                offscreen.height = Math.floor(ocrViewport.height);
+                logEvent("ocr_start", {
+                  pageIndex0: page,
+                  ocrScale,
+                  offscreen: { width: offscreen.width, height: offscreen.height },
+                  fallback: "textlayer_error",
+                });
+                const ocrRender = currentPage.render({
+                  canvas: offscreen,
+                  canvasContext: offscreenCtx,
+                  viewport: ocrViewport,
+                });
+                await ocrRender.promise;
+                if (cancelled) return;
+
+                const pngBlob: Blob | null = await new Promise((resolve) =>
+                  offscreen.toBlob((blob) => resolve(blob), "image/png"),
+                );
+                if (!pngBlob) return;
+                const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+                let result: OcrPageResult;
+                try {
+                  result = await ocrPdfPage({
+                    primary_attachment_id: primaryAttachmentId,
+                    page_index0: page,
+                    png_bytes: pngBytes,
+                    lang: "eng+chi_sim",
+                    config_version: OCR_CONFIG_VERSION,
+                    source_resolution: 300,
+                  });
+                } catch (error) {
+                  setOcrNotice(`OCR failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+                  logEvent("ocr_error", {
+                    pageIndex0: page,
+                    error: error instanceof Error ? error.message : "unknown",
+                  });
+                  return;
+                }
+                if (cancelled) return;
+                if (result.page_index0 !== page) return;
+                const line0 = result.lines[0]?.text ?? "";
+                const lineMeta = textForLog(line0) ?? { text_len: 0, text_snippet: "" };
+                logEvent("ocr_done", {
+                  pageIndex0: page,
+                  linesCount: result.lines.length,
+                  sample: lineMeta,
+                });
+                clearChildren(textLayerHost);
+                const built = buildOcrTextLayer({
+                  host: textLayerHost,
+                  viewportWidth: viewport.width,
+                  viewportHeight: viewport.height,
+                  lines: result.lines,
+                });
+                textDivsRef.current = built.divs;
+                textDivStringsRef.current = built.strings;
+                const ocrReady = built.divs.length > 0;
+                setTextLayerReady(ocrReady);
+                setTextLayerEpoch((current) => current + 1);
+                if (ocrReady) {
+                  textLayerSelectionCleanupRef.current =
+                    installPdfJsTextLayerSelectionSupport(textLayerHost);
+                  setOcrNotice("");
+                } else {
+                  logEvent("ocr_empty", { pageIndex0: page });
+                }
+              } catch (error) {
+                setOcrNotice(`OCR failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+                logEvent("ocr_error", {
+                  pageIndex0: page,
+                  error: error instanceof Error ? error.message : "unknown",
+                });
+              }
+            }
           }
         }
       } catch (error) {
@@ -563,6 +857,10 @@ export function PdfReader({
         if (isCancellationError(error)) return;
         setStatus("error");
         setErrorMessage(error instanceof Error ? error.message : "Unknown PDF rendering error.");
+        logEvent("pdf_render_error", {
+          pageIndex0: page,
+          error: error instanceof Error ? error.message : "unknown",
+        });
       }
     }
 
@@ -572,7 +870,7 @@ export function PdfReader({
       cancelled = true;
       cancelRenderWork();
     };
-  }, [effectiveZoom, page, pdfDocument, textEnabled, view.page_count]);
+  }, [effectiveZoom, ocrPdfPage, page, pdfDocument, textEnabled, view.page_count, view.primary_attachment_id]);
 
   const searchMatches = useMemo(() => {
     if (!textEnabled) return [];
@@ -591,7 +889,7 @@ export function PdfReader({
       }
     }
     return matches;
-  }, [loweredSearch, textEnabled, status, page, effectiveZoom, view.primary_attachment_id]);
+  }, [loweredSearch, textEnabled, textLayerEpoch, status, page, effectiveZoom, view.primary_attachment_id]);
 
   useEffect(() => {
     if (!onSearchMatchesChange) return;
@@ -762,6 +1060,7 @@ export function PdfReader({
     searchMatches,
     status,
     textEnabled,
+    textLayerEpoch,
   ]);
 
   const buildSelectionAnchor = (): PdfTextSelection | null => {
@@ -821,6 +1120,11 @@ export function PdfReader({
         {status !== "error" && textLayerFailureMessage ? (
           <p className="pdf-text-layer-notice" role="note">
             {textLayerFailureMessage}
+          </p>
+        ) : null}
+        {status !== "error" && ocrNotice ? (
+          <p className="pdf-text-layer-notice" role="note">
+            {ocrNotice}
           </p>
         ) : null}
 

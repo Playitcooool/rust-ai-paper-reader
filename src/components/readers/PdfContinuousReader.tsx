@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import type { Annotation, ReaderView } from "../../lib/contracts";
+import type { Annotation, OcrPdfPageInput, OcrPageResult, ReaderView } from "../../lib/contracts";
 import { clearChildren, safeScrollIntoView } from "../../lib/dom";
 import type {
   PDFDocumentLoadingTask,
@@ -16,8 +16,11 @@ import {
   type PdfTextSelection,
 } from "./pdfSelection";
 import { installPdfJsTextLayerSelectionSupport } from "./pdfTextLayerSelectionSupport";
+import { buildOcrTextLayer } from "./pdfOcrTextLayer";
+import { OCR_CONFIG_VERSION } from "./pdfOcrConfig";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { getRuntimePolyfillDiagnostics } from "../../lib/runtimePolyfills";
+import { logEvent, textForLog } from "../../lib/clientEventLog";
 
 const escapeHtml = (value: string) =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -28,6 +31,7 @@ type PdfContinuousReaderProps = {
   zoom: number;
   fitMode?: "manual" | "fit_width";
   loadPrimaryAttachmentBytes: (primaryAttachmentId: number) => Promise<Uint8Array>;
+  ocrPdfPage?: (input: OcrPdfPageInput) => Promise<OcrPageResult>;
   onPageCountChange?: (pageCount: number) => void;
   searchQuery?: string;
   activeSearchMatchIndex?: number;
@@ -50,6 +54,7 @@ export function PdfContinuousReader({
   zoom,
   fitMode = "fit_width",
   loadPrimaryAttachmentBytes,
+  ocrPdfPage,
   onPageCountChange,
   searchQuery = "",
   activeSearchMatchIndex = 0,
@@ -366,11 +371,32 @@ export function PdfContinuousReader({
       const viewport = pageProxy.getViewport({ scale: currentZoom / 100 });
 
       // Canvas render
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const renderTask = pageProxy.render({ canvasContext: ctx, canvas, viewport });
+      const outputScale = Math.min(2, window.devicePixelRatio || 1);
+      const renderStart = performance.now();
+      logEvent("pdf_render_start", {
+        pageIndex0,
+        zoomPct: currentZoom,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        outputScale,
+        viewport: { width: viewport.width, height: viewport.height },
+      });
+      canvas.width = Math.floor(viewport.width * outputScale);
+      canvas.height = Math.floor(viewport.height * outputScale);
+      canvas.style.width = `${viewport.width}px`;
+      canvas.style.height = `${viewport.height}px`;
+      const renderTask = pageProxy.render({
+        canvasContext: ctx,
+        canvas,
+        viewport,
+        transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined,
+      });
       renderWorkByIndexRef.current.set(pageIndex0, { renderTask, textLayer: null, token });
       await renderTask.promise;
+      logEvent("pdf_render_done", {
+        pageIndex0,
+        zoomPct: currentZoom,
+        durationMs: Math.round(performance.now() - renderStart),
+      });
 
       const activeWork = renderWorkByIndexRef.current.get(pageIndex0);
       if (!activeWork || activeWork.token !== token) return;
@@ -382,9 +408,11 @@ export function PdfContinuousReader({
       if (textEnabled) {
         let itemsLengthForFailure = 0;
         try {
+          const textLayerStart = performance.now();
           const textContent = await pageProxy.getTextContent();
           const itemsLength = (textContent as unknown as { items?: unknown[] }).items?.length ?? 0;
           itemsLengthForFailure = itemsLength;
+          logEvent("textlayer_render_start", { pageIndex0, itemsLength });
           const textLayer = new pdfjsModule.TextLayer({
             textContentSource: textContent,
             container: textHost,
@@ -415,22 +443,120 @@ export function PdfContinuousReader({
           });
           textDivsByIndexRef.current.set(pageIndex0, divs);
           textDivStringsByIndexRef.current.set(pageIndex0, strings);
-          setTextLayerReadyByPage((current) => ({ ...current, [pageIndex0]: divs.length > 0 }));
+          const ready = divs.length > 0;
+          setTextLayerReadyByPage((current) => ({ ...current, [pageIndex0]: ready }));
           setTextLayerEpoch((current) => current + 1);
+          logEvent("textlayer_render_done", {
+            pageIndex0,
+            itemsLength,
+            divCount: divs.length,
+            durationMs: Math.round(performance.now() - textLayerStart),
+            ready,
+          });
           if (divs.length > 0) {
             textLayerSelectionCleanupByIndexRef.current.set(
               pageIndex0,
               installPdfJsTextLayerSelectionSupport(textHost),
             );
           }
+
+          // OCR fallback for scanned/image-only PDFs.
+          if (
+            !ready &&
+            (itemsLength === 0 || divs.length === 0) &&
+            view.primary_attachment_id &&
+            ocrPdfPage
+          ) {
+            try {
+              const offscreen = document.createElement("canvas");
+              const offscreenCtx = offscreen.getContext("2d");
+              if (!offscreenCtx) return;
+              const scale1 = pageProxy.getViewport({ scale: 1 });
+              const targetWidthPx = 2400;
+              const ocrScale = Math.max(1, Math.min(4, targetWidthPx / Math.max(1, scale1.width)));
+              const ocrViewport = pageProxy.getViewport({ scale: ocrScale });
+              offscreen.width = Math.floor(ocrViewport.width);
+              offscreen.height = Math.floor(ocrViewport.height);
+              logEvent("ocr_start", {
+                pageIndex0,
+                ocrScale,
+                offscreen: { width: offscreen.width, height: offscreen.height },
+              });
+              const ocrRender = pageProxy.render({
+                canvas: offscreen,
+                canvasContext: offscreenCtx,
+                viewport: ocrViewport,
+              });
+              await ocrRender.promise;
+
+              const latest2 = renderWorkByIndexRef.current.get(pageIndex0);
+              if (!latest2 || latest2.token !== token) return;
+
+              const pngBlob: Blob | null = await new Promise((resolve) =>
+                offscreen.toBlob((blob) => resolve(blob), "image/png"),
+              );
+              if (!pngBlob) return;
+              const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+              logEvent("ocr_rasterized", { pageIndex0, pngBytesLength: pngBytes.length });
+              const result = await ocrPdfPage({
+                primary_attachment_id: view.primary_attachment_id,
+                page_index0: pageIndex0,
+                png_bytes: pngBytes,
+                lang: "eng+chi_sim",
+                config_version: OCR_CONFIG_VERSION,
+                source_resolution: 300,
+              });
+
+              const latest3 = renderWorkByIndexRef.current.get(pageIndex0);
+              if (!latest3 || latest3.token !== token) return;
+
+              clearChildren(textHost);
+              const line0 = result.lines[0]?.text ?? "";
+              const lineMeta = textForLog(line0) ?? { text_len: 0, text_snippet: "" };
+              logEvent("ocr_done", {
+                pageIndex0,
+                linesCount: result.lines.length,
+                sample: lineMeta,
+              });
+              const built = buildOcrTextLayer({
+                host: textHost,
+                viewportWidth: viewport.width,
+                viewportHeight: viewport.height,
+                lines: result.lines,
+              });
+              textDivsByIndexRef.current.set(pageIndex0, built.divs);
+              textDivStringsByIndexRef.current.set(pageIndex0, built.strings);
+              const ocrReady = built.divs.length > 0;
+              setTextLayerReadyByPage((current) => ({ ...current, [pageIndex0]: ocrReady }));
+              setTextLayerEpoch((current) => current + 1);
+              textLayerSelectionCleanupByIndexRef.current.get(pageIndex0)?.();
+              textLayerSelectionCleanupByIndexRef.current.delete(pageIndex0);
+              if (ocrReady) {
+                textLayerSelectionCleanupByIndexRef.current.set(
+                  pageIndex0,
+                  installPdfJsTextLayerSelectionSupport(textHost),
+                );
+              } else {
+                logEvent("ocr_empty", { pageIndex0 });
+              }
+            } catch {
+              // Ignore OCR failures.
+              logEvent("ocr_error", { pageIndex0, error: "ocr_failed" });
+            }
+          }
         } catch (error) {
           if (isCancellationError(error)) return;
+          logEvent("textlayer_error", {
+            pageIndex0,
+            error: error instanceof Error ? error.message : "unknown",
+          });
           if (itemsLengthForFailure > 0 && !textLayerFailureShownRef.current) {
             textLayerFailureShownRef.current = true;
             setTextLayerFailureMessage(textLayerFailureMessageForRuntime());
           }
           clearChildren(textHost);
           setTextLayerReadyByPage((current) => ({ ...current, [pageIndex0]: false }));
+          setTextLayerEpoch((current) => current + 1);
         }
       }
 
@@ -542,6 +668,10 @@ export function PdfContinuousReader({
       if (isCancellationError(error)) return;
       // eslint-disable-next-line no-console
       console.warn("Unable to render PDF page:", error);
+      logEvent("pdf_render_error", {
+        pageIndex0,
+        error: error instanceof Error ? error.message : "unknown",
+      });
     }
   };
 
@@ -882,6 +1012,38 @@ export function PdfContinuousReader({
       const nextKey = keyFor(next);
       if (nextKey === lastKey) return;
       lastKey = nextKey;
+      const selection = window.getSelection?.();
+      const rangeCount = selection?.rangeCount ?? 0;
+      const quote = selection?.toString?.() ?? "";
+      const quoteMeta = textForLog(quote) ?? { text_len: 0, text_snippet: "" };
+      let insideTextLayer = false;
+      let nearestDivIndex: string | null = null;
+      let pageIndex0: number | null = null;
+      try {
+        if (selection && selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0);
+          pageIndex0 = closestPageIndex(range.startContainer);
+          if (pageIndex0 !== null) {
+            const host = textLayerHostByIndexRef.current.get(pageIndex0);
+            insideTextLayer = host ? host.contains(range.commonAncestorContainer) : false;
+          }
+          const element =
+            range.startContainer.nodeType === Node.ELEMENT_NODE
+              ? (range.startContainer as Element)
+              : range.startContainer.parentElement;
+          const nearest = element?.closest?.("[data-div-index]") as HTMLElement | null;
+          nearestDivIndex = nearest?.dataset.divIndex ?? null;
+        }
+      } catch {
+        // ignore
+      }
+      logEvent("selection_change", {
+        pageIndex0,
+        rangeCount,
+        insideTextLayer,
+        nearestDivIndex,
+        ...quoteMeta,
+      });
       onSelectionChange(next);
     };
 
@@ -889,6 +1051,33 @@ export function PdfContinuousReader({
     return () => document.removeEventListener("selectionchange", onSelectionChangeEvent);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onSelectionChange, page, status, textEnabled, view.primary_attachment_id, textLayerEpoch]);
+
+  useEffect(() => {
+    const root = scrollRootRef.current;
+    if (!root) return;
+
+    const onPointerDownCapture = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const shell = target?.closest?.("[data-page-index]") as HTMLElement | null;
+      const pageIndex0 = shell?.dataset.pageIndex ? Number(shell.dataset.pageIndex) : null;
+      const el = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+      logEvent("pdf_pointerdown", {
+        pageIndex0: Number.isFinite(pageIndex0 as number) ? pageIndex0 : null,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        element: el
+          ? {
+              tag: el.tagName.toLowerCase(),
+              className: el.className || "",
+              ariaLabel: el.getAttribute("aria-label") || "",
+            }
+          : null,
+      });
+    };
+
+    root.addEventListener("pointerdown", onPointerDownCapture, true);
+    return () => root.removeEventListener("pointerdown", onPointerDownCapture, true);
+  }, []);
 
   return (
     <section className="pdf-reader pdf-reader-focus" data-testid="pdf-reader" ref={scrollRootRef}>

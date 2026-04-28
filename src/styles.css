@@ -533,6 +533,7 @@ p {
   width: 100%;
   margin: 0;
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -682,10 +683,13 @@ p {
 
 .reader-panel-focus .reader-toolbar {
   padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.035);
-  backdrop-filter: blur(12px);
+  background: rgba(10, 11, 14, 0.78);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(14px);
 }
 
 .reader-panel-focus .reader-toolbar {
@@ -696,6 +700,9 @@ p {
 
 .reader-toolbar-focus {
   justify-content: flex-start;
+  position: sticky;
+  top: 46px;
+  z-index: 50;
 }
 
 .reader-focus-loading {
@@ -879,6 +886,7 @@ p {
   background:
     radial-gradient(circle at top, rgba(255, 255, 255, 0.02), transparent 30%),
     linear-gradient(180deg, rgba(14, 16, 20, 0.96), rgba(10, 11, 14, 0.98));
+  --focus-tabs-sticky-top: 0px;
 }
 
 .reader-shell-focus::before {
@@ -899,6 +907,13 @@ p {
   flex-wrap: nowrap;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  position: sticky;
+  top: var(--focus-tabs-sticky-top);
+  z-index: 60;
+  background: rgba(10, 11, 14, 0.92);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
 }
 
 .reader-tabs-focus .reader-tab-shell {
@@ -911,6 +926,7 @@ p {
   max-width: none;
   margin: 0;
   display: flex;
+  min-height: 0;
 }
 
 .reader-shell-focus .pdf-reader-focus .pdf-stage {

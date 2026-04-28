@@ -5,6 +5,8 @@ import { PdfContinuousReader } from "./components/readers/PdfContinuousReader";
 import { PdfReader } from "./components/readers/PdfReader";
 import type { PdfHighlightColor, PdfTextSelection } from "./components/readers/pdfSelection";
 import { isTauriRuntime } from "./lib/api";
+import { logEvent, startClientEventLog, textForLog } from "./lib/clientEventLog";
+import { getRuntimePolyfillDiagnostics } from "./lib/runtimePolyfills";
 import type {
   AIArtifact,
   AITask,
@@ -14,6 +16,7 @@ import type {
   Collection,
   ImportBatchResult,
   LibraryItem,
+  OcrPdfPageInput,
   ReaderView,
   ResearchNote,
   Tag,
@@ -224,6 +227,33 @@ export default function App({ api }: { api: AppApi }) {
   const [pdfPageCounts, setPdfPageCounts] = useState<Record<number, number>>({});
   const [annotationFilter, setAnnotationFilter] = useState<AnnotationFilter>("all");
   const [pdfSelection, setPdfSelection] = useState<PdfTextSelection | null>(null);
+
+  // Client-side debug logging (append-only JSONL on disk).
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const sessionId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const stop = startClientEventLog({
+      sessionId,
+      appendFn: (input) => api.appendClientEventLog(input),
+    });
+    logEvent("app_start", { session_id: sessionId });
+    logEvent("runtime_feature_probe", {
+      // Avoid requiring TS lib upgrades for `.at()`; we polyfill at runtime when missing.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      hasArrayAt: typeof (Array.prototype as any).at === "function",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      hasStringAt: typeof (String.prototype as any).at === "function",
+      hasPromiseWithResolvers:
+        typeof Promise !== "undefined" &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        typeof (Promise as any).withResolvers === "function",
+      hasReadableStreamHealthy: getRuntimePolyfillDiagnostics().readableStreamHealthy,
+    });
+    return stop;
+  }, [api]);
 
   const hasCollections = collections.length > 0;
 
@@ -469,6 +499,7 @@ export default function App({ api }: { api: AppApi }) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && textToolsEnabled) {
         event.preventDefault();
         setIsFindHudOpen(true);
+        logEvent("find_open", { source: "keydown" });
         return;
       }
       if (event.key === "Escape" && isFindHudOpen) {
@@ -478,6 +509,7 @@ export default function App({ api }: { api: AppApi }) {
         setReaderSearchMatchIndex(0);
         setReaderSearchMatchCount(0);
         setReportedActiveSearchMatchIndex(-1);
+        logEvent("find_close", { source: "escape" });
         return;
       }
       if (workspaceMode !== "pdf_focus") return;
@@ -491,8 +523,23 @@ export default function App({ api }: { api: AppApi }) {
     return () => window.removeEventListener("keydown", handleWindowKeydown);
   }, [isFindHudOpen, textToolsEnabled, workspaceMode]);
 
-  const moveReaderSearchMatch = (direction: 1 | -1) => {
+  useEffect(() => {
+    if (!isFindHudOpen) return;
+    const handle = window.setTimeout(() => {
+      const meta = textForLog(readerSearchQuery) ?? { text_len: 0, text_snippet: "" };
+      logEvent("find_query_change", meta);
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [isFindHudOpen, readerSearchQuery]);
+
+  const moveReaderSearchMatch = (direction: 1 | -1, source: "button" | "enter") => {
     if (readerSearchMatchCount <= 0) return;
+    logEvent("find_nav", {
+      source,
+      direction: direction === 1 ? "next" : "prev",
+      total: readerSearchMatchCount,
+      activeIndex: reportedActiveSearchMatchIndex,
+    });
     setReaderSearchMatchIndex((current) => {
       const base = ((current % readerSearchMatchCount) + readerSearchMatchCount) % readerSearchMatchCount;
       return (base + direction + readerSearchMatchCount) % readerSearchMatchCount;
@@ -540,6 +587,14 @@ export default function App({ api }: { api: AppApi }) {
     async (primaryAttachmentId: number) => {
       const runtimeApi = await getApi();
       return runtimeApi.readPrimaryAttachmentBytes(primaryAttachmentId);
+    },
+    [api],
+  );
+
+  const ocrPdfPage = useCallback(
+    async (input: OcrPdfPageInput) => {
+      const runtimeApi = await getApi();
+      return runtimeApi.ocrPdfPage(input);
     },
     [api],
   );
@@ -1321,6 +1376,27 @@ export default function App({ api }: { api: AppApi }) {
                   Next
                 </button>
               </div>
+
+              <div className="reader-control-group reader-control-group-logs">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={async () => {
+                    logEvent("open_logs_dir_click", {});
+                    try {
+                      await api.revealClientLogDir();
+                      logEvent("open_logs_dir_result", { ok: true });
+                    } catch (error) {
+                      logEvent("open_logs_dir_result", {
+                        ok: false,
+                        error: error instanceof Error ? error.message : String(error),
+                      });
+                    }
+                  }}
+                >
+                  Logs
+                </button>
+              </div>
             </div>
 
             {readerView ? (
@@ -1328,6 +1404,7 @@ export default function App({ api }: { api: AppApi }) {
                 <PdfContinuousReader
                   fitMode="fit_width"
                   loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+                  ocrPdfPage={ocrPdfPage}
                   annotations={annotations}
                   page={readerPage}
                   searchQuery={readerSearchQuery}
@@ -1337,6 +1414,7 @@ export default function App({ api }: { api: AppApi }) {
                   onSearchMatchesChange={({ total, activeIndex }) => {
                     setReaderSearchMatchCount(total);
                     setReportedActiveSearchMatchIndex(activeIndex);
+                    logEvent("find_matches_update", { total, activeIndex, reader: "pdf_continuous" });
                   }}
                   onSelectionChange={(selection) => setPdfSelection(selection)}
                   onActivePageChange={(pageIndex0) => {
@@ -1457,6 +1535,7 @@ export default function App({ api }: { api: AppApi }) {
                 <PdfReader
                   fitMode="fit_width"
                   loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
+                  ocrPdfPage={ocrPdfPage}
                   annotations={annotations}
                   page={readerPage}
                   searchQuery={readerSearchQuery}
@@ -1466,6 +1545,7 @@ export default function App({ api }: { api: AppApi }) {
                   onSearchMatchesChange={({ total, activeIndex }) => {
                     setReaderSearchMatchCount(total);
                     setReportedActiveSearchMatchIndex(activeIndex);
+                    logEvent("find_matches_update", { total, activeIndex, reader: "pdf_single" });
                   }}
                   onSelectionChange={(selection) => setPdfSelection(selection)}
                   onNavigateToPage={(pageIndex0) => {
@@ -1488,6 +1568,7 @@ export default function App({ api }: { api: AppApi }) {
                   onSearchMatchesChange={({ total, activeIndex }) => {
                     setReaderSearchMatchCount(total);
                     setReportedActiveSearchMatchIndex(activeIndex);
+                    logEvent("find_matches_update", { total, activeIndex, reader: "normalized" });
                   }}
                   zoom={readerZoom}
                 />
@@ -1549,7 +1630,7 @@ export default function App({ api }: { api: AppApi }) {
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  moveReaderSearchMatch(event.shiftKey ? -1 : 1);
+                  moveReaderSearchMatch(event.shiftKey ? -1 : 1, "enter");
                 }
                 if (event.key === "Escape") {
                   event.preventDefault();
@@ -1558,6 +1639,7 @@ export default function App({ api }: { api: AppApi }) {
                   setReaderSearchMatchIndex(0);
                   setReaderSearchMatchCount(0);
                   setReportedActiveSearchMatchIndex(-1);
+                  logEvent("find_close", { source: "escape" });
                 }
               }}
             />
@@ -1570,7 +1652,7 @@ export default function App({ api }: { api: AppApi }) {
               aria-label="Previous match"
               className="ghost-button"
               type="button"
-              onClick={() => moveReaderSearchMatch(-1)}
+              onClick={() => moveReaderSearchMatch(-1, "button")}
             >
               Prev
             </button>
@@ -1578,7 +1660,7 @@ export default function App({ api }: { api: AppApi }) {
               aria-label="Next match"
               className="ghost-button"
               type="button"
-              onClick={() => moveReaderSearchMatch(1)}
+              onClick={() => moveReaderSearchMatch(1, "button")}
             >
               Next
             </button>
@@ -1592,6 +1674,7 @@ export default function App({ api }: { api: AppApi }) {
                 setReaderSearchMatchIndex(0);
                 setReaderSearchMatchCount(0);
                 setReportedActiveSearchMatchIndex(-1);
+                logEvent("find_close", { source: "button" });
               }}
             >
               Close
