@@ -70,7 +70,7 @@ export const selectionRectFromRange = (range: Range): PdfSelectionRect => {
   };
 };
 
-export const offsetWithinDiv = (div: HTMLElement, container: Node, offset: number) => {
+const offsetWithinDiv = (div: HTMLElement, container: Node, offset: number) => {
   if (!div.contains(container)) return 0;
   if (container.nodeType === Node.TEXT_NODE) {
     const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);

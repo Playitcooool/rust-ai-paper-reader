@@ -20,7 +20,7 @@ type ClientEventLogState = {
 
 let state: ClientEventLogState | null = null;
 
-export function normalizeTextSnippet(value: string, maxLen = 120): string {
+function normalizeTextSnippet(value: string, maxLen = 120): string {
   // Collapse whitespace to keep logs compact and safe to view in terminals.
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLen) return normalized;
