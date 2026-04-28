@@ -887,6 +887,11 @@ p {
     radial-gradient(circle at top, rgba(255, 255, 255, 0.02), transparent 30%),
     linear-gradient(180deg, rgba(14, 16, 20, 0.96), rgba(10, 11, 14, 0.98));
   --focus-tabs-sticky-top: 0px;
+  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .reader-shell-focus::before {
@@ -922,7 +927,8 @@ p {
 
 .reader-shell-focus .pdf-reader-focus {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   max-width: none;
   margin: 0;
   display: flex;
@@ -937,6 +943,36 @@ p {
   justify-items: center;
   align-content: start;
   gap: 12px;
+}
+
+.pdf-reader-loading {
+  width: 100%;
+  max-width: min(920px, calc(100% - 24px));
+  margin: 0 12px 2px;
+  color: rgba(244, 239, 230, 0.7);
+}
+
+.pdf-page-skeleton {
+  display: block;
+  border-radius: 16px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04)),
+    rgba(255, 255, 255, 0.03);
+  background-size: 220% 100%;
+  animation: pdf-page-skeleton-shimmer 1.4s linear infinite;
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.28),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+@keyframes pdf-page-skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -40% 0;
+  }
 }
 
 .pdf-text-layer-notice {
@@ -1005,6 +1041,10 @@ p {
   background: rgba(102, 164, 212, 0.35);
 }
 
+.pdf-reader .textLayer .pdf-annotation-highlight::selection {
+  background: rgba(255, 255, 255, 0.16);
+}
+
 .pdf-reader .textLayer br::selection {
   background: transparent;
 }
@@ -1026,6 +1066,11 @@ p {
   background: rgba(226, 139, 83, 0.34);
   border-radius: 0.22em;
   box-shadow: inset 0 0 0 1px rgba(226, 139, 83, 0.26);
+}
+
+.pdf-reader .textLayer.selecting .pdf-annotation-highlight {
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 .pdf-reader .textLayer .pdf-annotation-highlight[data-color="yellow"] {
