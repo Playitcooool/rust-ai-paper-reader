@@ -17,6 +17,10 @@ use tauri::{menu::{MenuBuilder, SubmenuBuilder}, AppHandle, Emitter, Manager, St
 use tokio::sync::Semaphore;
 
 use tesseract_ocr_static::{Config as TesseractConfig, Image as TessImage, PageSegmentationMode, TextRecognizer};
+use pdf_oxide::{
+    document::PdfDocument as OxidePdfDocument,
+    rendering::{render_page, ImageFormat, RenderOptions},
+};
 
 struct AppState {
     library_root: PathBuf,
@@ -193,6 +197,33 @@ struct OcrPageResult {
     lang: String,
     config_version: String,
     lines: Vec<OcrLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PdfTextSpan {
+    text: String,
+    // PDF points, origin at bottom-left. We keep this stable and convert in the frontend.
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PdfPageBundle {
+    png_bytes: Vec<u8>,
+    width_px: u32,
+    height_px: u32,
+    page_width_pt: f32,
+    page_height_pt: f32,
+    spans: Vec<PdfTextSpan>,
+}
+
+#[derive(Deserialize)]
+struct PdfEngineGetPageBundleInput {
+    primary_attachment_id: i64,
+    page_index0: i64,
+    target_width_px: u32,
 }
 
 fn service(state: &AppState) -> Result<LibraryService, String> {
@@ -603,6 +634,74 @@ fn reveal_client_log_dir(state: State<'_, AppState>) -> Result<(), String> {
     let dir = ensure_client_logs_dir(&state)?;
     reveal_dir_in_file_manager(&dir)?;
     Ok(())
+}
+
+#[tauri::command]
+fn pdf_engine_get_page_bundle(
+    state: State<'_, AppState>,
+    input: PdfEngineGetPageBundleInput,
+) -> Result<PdfPageBundle, String> {
+    if input.page_index0 < 0 {
+        return Err("invalid page index".to_string());
+    }
+    let target_width_px = input.target_width_px.max(1).min(8192);
+
+    let bytes = service(&state)?
+        .read_primary_attachment_bytes(input.primary_attachment_id)
+        .map_err(|error| error.to_string())?;
+
+    let mut doc = OxidePdfDocument::from_bytes(bytes).map_err(|error| error.to_string())?;
+    let page_index: usize = usize::try_from(input.page_index0).map_err(|_| "invalid page index")?;
+
+    let page_info = doc
+        .get_page_info(page_index)
+        .map_err(|error| error.to_string())?;
+
+    let page_width_pt = page_info.media_box.width;
+    let page_height_pt = page_info.media_box.height;
+    if !(page_width_pt.is_finite() && page_height_pt.is_finite() && page_width_pt > 0.0 && page_height_pt > 0.0) {
+        return Err("invalid page size".to_string());
+    }
+
+    // pdf_oxide renders at a given DPI. Convert target pixel width into DPI:
+    // pixels = (points / 72) * dpi => dpi = pixels * 72 / points
+    let dpi = ((target_width_px as f32) * 72.0 / page_width_pt)
+        .clamp(36.0, 600.0)
+        .round() as u32;
+    let opts = RenderOptions {
+        dpi,
+        format: ImageFormat::Png,
+        ..Default::default()
+    };
+    let rendered = render_page(&mut doc, page_index, &opts)
+        .map_err(|error| error.to_string())?;
+
+    // Extract spans with bounding boxes in page coordinates.
+    let spans_raw = doc
+        .extract_spans(page_index)
+        .map_err(|error| error.to_string())?;
+
+    let mut spans: Vec<PdfTextSpan> = Vec::with_capacity(spans_raw.len());
+    for span in spans_raw {
+        let text = span.text;
+        if text.trim().is_empty() {
+            continue;
+        }
+        let x0 = span.bbox.x;
+        let y0 = span.bbox.y;
+        let x1 = x0 + span.bbox.width;
+        let y1 = y0 + span.bbox.height;
+        spans.push(PdfTextSpan { text, x0, y0, x1, y1 });
+    }
+
+    Ok(PdfPageBundle {
+        png_bytes: rendered.data,
+        width_px: rendered.width,
+        height_px: rendered.height,
+        page_width_pt,
+        page_height_pt,
+        spans,
+    })
 }
 
 #[tauri::command]
@@ -1097,6 +1196,7 @@ fn main() {
             export_citation,
             write_export_file,
             ocr_pdf_page,
+            pdf_engine_get_page_bundle,
             get_client_log_dir,
             reveal_client_log_dir,
             append_client_event_log

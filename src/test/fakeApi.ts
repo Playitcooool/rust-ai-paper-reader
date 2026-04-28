@@ -10,6 +10,8 @@ import type {
   LibraryItem,
   OcrPageResult,
   OcrPdfPageInput,
+  PdfEngineGetPageBundleInput,
+  PdfPageBundle,
   ReaderView,
   ResearchNote,
   Tag,
@@ -917,6 +919,20 @@ export const fakeApi: AppApi = {
       lang: input.lang ?? "eng+chi_sim",
       config_version: input.config_version,
       lines: [],
+    };
+  },
+
+  async pdfEngineGetPageBundle(_input: PdfEngineGetPageBundleInput): Promise<PdfPageBundle> {
+    return {
+      png_bytes: new Uint8Array([137, 80, 78, 71]),
+      width_px: 100,
+      height_px: 120,
+      page_width_pt: 612,
+      page_height_pt: 792,
+      spans: [
+        { text: "Hello", x0: 10, y0: 10, x1: 50, y1: 20 },
+        { text: "world", x0: 55, y0: 10, x1: 95, y1: 20 },
+      ],
     };
   },
 

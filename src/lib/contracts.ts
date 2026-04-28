@@ -129,6 +129,30 @@ export type OcrPdfPageInput = {
   source_resolution?: number;
 };
 
+export type PdfTextSpan = {
+  text: string;
+  // PDF points (origin bottom-left). Converted to CSS pixels in the frontend.
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+};
+
+export type PdfPageBundle = {
+  png_bytes: Uint8Array;
+  width_px: number;
+  height_px: number;
+  page_width_pt: number;
+  page_height_pt: number;
+  spans: PdfTextSpan[];
+};
+
+export type PdfEngineGetPageBundleInput = {
+  primary_attachment_id: number;
+  page_index0: number;
+  target_width_px: number;
+};
+
 export type ClientLogEvent = {
   ts_ms: number;
   kind: string;
@@ -203,6 +227,7 @@ export type AppApi = {
   }) => Promise<string | null>;
   writeExportFile: (input: { path: string; contents: string }) => Promise<void>;
   ocrPdfPage: (input: OcrPdfPageInput) => Promise<OcrPageResult>;
+  pdfEngineGetPageBundle: (input: PdfEngineGetPageBundleInput) => Promise<PdfPageBundle>;
   getClientLogDir: () => Promise<string>;
   revealClientLogDir: () => Promise<void>;
   appendClientEventLog: (input: AppendClientEventLogInput) => Promise<void>;

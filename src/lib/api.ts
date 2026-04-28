@@ -21,6 +21,30 @@ export async function createTauriApi(): Promise<AppApi> {
     throw new Error("Unexpected attachment byte response.");
   };
 
+  const toPdfPageBundle = (value: unknown) => {
+    if (!value || typeof value !== "object") throw new Error("Unexpected PDF page bundle response.");
+    const obj = value as Record<string, unknown>;
+    return {
+      png_bytes: toUint8Array(obj.png_bytes),
+      width_px: Number(obj.width_px),
+      height_px: Number(obj.height_px),
+      page_width_pt: Number(obj.page_width_pt),
+      page_height_pt: Number(obj.page_height_pt),
+      spans: Array.isArray(obj.spans)
+        ? (obj.spans as unknown[]).map((span) => {
+            const s = span && typeof span === "object" ? (span as Record<string, unknown>) : {};
+            return {
+              text: typeof s.text === "string" ? s.text : "",
+              x0: Number(s.x0),
+              y0: Number(s.y0),
+              x1: Number(s.x1),
+              y1: Number(s.y1),
+            };
+          })
+        : [],
+    };
+  };
+
   return {
     listCollections: () => invoke("list_collections"),
     createCollection: (input) => invoke("create_collection", { input }),
@@ -110,6 +134,12 @@ export async function createTauriApi(): Promise<AppApi> {
     },
     writeExportFile: (input) => invoke("write_export_file", { input }),
     ocrPdfPage: (input) => invoke("ocr_pdf_page", { input }),
+    pdfEngineGetPageBundle: async (input) =>
+      toPdfPageBundle(
+        await invoke("pdf_engine_get_page_bundle", {
+          input,
+        }),
+      ),
     getClientLogDir: () => invoke("get_client_log_dir"),
     revealClientLogDir: () => invoke("reveal_client_log_dir"),
     appendClientEventLog: (input) => invoke("append_client_event_log", { input }),
