@@ -99,6 +99,47 @@ export type ResearchNote = {
   markdown: string;
 };
 
+export type OcrBbox = {
+  left: number; // normalized [0..1] relative to OCR raster width
+  top: number; // normalized [0..1] relative to OCR raster height
+  width: number; // normalized [0..1]
+  height: number; // normalized [0..1]
+};
+
+export type OcrLine = {
+  text: string;
+  bbox: OcrBbox;
+  confidence: number;
+};
+
+export type OcrPageResult = {
+  primary_attachment_id: number;
+  page_index0: number;
+  lang: string;
+  config_version: string;
+  lines: OcrLine[];
+};
+
+export type OcrPdfPageInput = {
+  primary_attachment_id: number;
+  page_index0: number;
+  png_bytes: Uint8Array;
+  lang?: string;
+  config_version: string;
+  source_resolution?: number;
+};
+
+export type ClientLogEvent = {
+  ts_ms: number;
+  kind: string;
+  data: unknown;
+};
+
+export type AppendClientEventLogInput = {
+  session_id: string;
+  events: ClientLogEvent[];
+};
+
 export type AppApi = {
   listCollections: () => Promise<Collection[]>;
   createCollection: (input: { name: string; parent_id?: number | null }) => Promise<Collection>;
@@ -161,4 +202,8 @@ export type AppApi = {
     filters?: Array<{ name: string; extensions: string[] }>;
   }) => Promise<string | null>;
   writeExportFile: (input: { path: string; contents: string }) => Promise<void>;
+  ocrPdfPage: (input: OcrPdfPageInput) => Promise<OcrPageResult>;
+  getClientLogDir: () => Promise<string>;
+  revealClientLogDir: () => Promise<void>;
+  appendClientEventLog: (input: AppendClientEventLogInput) => Promise<void>;
 };

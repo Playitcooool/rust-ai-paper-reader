@@ -8,6 +8,8 @@ import type {
   Collection,
   ImportBatchResult,
   LibraryItem,
+  OcrPageResult,
+  OcrPdfPageInput,
   ReaderView,
   ResearchNote,
   Tag,
@@ -906,5 +908,27 @@ export const fakeApi: AppApi = {
 
   async writeExportFile(input) {
     exportWrites.push(input);
+  },
+
+  async ocrPdfPage(input: OcrPdfPageInput): Promise<OcrPageResult> {
+    return {
+      primary_attachment_id: input.primary_attachment_id,
+      page_index0: input.page_index0,
+      lang: input.lang ?? "eng+chi_sim",
+      config_version: input.config_version,
+      lines: [],
+    };
+  },
+
+  async getClientLogDir() {
+    return "/mock/library_root/client_logs";
+  },
+
+  async revealClientLogDir() {
+    // No-op in unit tests.
+  },
+
+  async appendClientEventLog() {
+    // No-op in unit tests.
   },
 };

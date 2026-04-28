@@ -109,5 +109,9 @@ export async function createTauriApi(): Promise<AppApi> {
       return selection;
     },
     writeExportFile: (input) => invoke("write_export_file", { input }),
+    ocrPdfPage: (input) => invoke("ocr_pdf_page", { input }),
+    getClientLogDir: () => invoke("get_client_log_dir"),
+    revealClientLogDir: () => invoke("reveal_client_log_dir"),
+    appendClientEventLog: (input) => invoke("append_client_event_log", { input }),
   };
 }
