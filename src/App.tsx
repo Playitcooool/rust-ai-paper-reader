@@ -16,7 +16,6 @@ import type {
   Collection,
   ImportBatchResult,
   LibraryItem,
-  OcrPdfPageInput,
   ReaderView,
   ResearchNote,
   Tag,
@@ -583,18 +582,10 @@ export default function App({ api }: { api: AppApi }) {
     });
   };
 
-  const loadPrimaryAttachmentBytes = useCallback(
-    async (primaryAttachmentId: number) => {
+  const getPdfPageBundle = useCallback(
+    async (input: { primary_attachment_id: number; page_index0: number; target_width_px: number }) => {
       const runtimeApi = await getApi();
-      return runtimeApi.readPrimaryAttachmentBytes(primaryAttachmentId);
-    },
-    [api],
-  );
-
-  const ocrPdfPage = useCallback(
-    async (input: OcrPdfPageInput) => {
-      const runtimeApi = await getApi();
-      return runtimeApi.ocrPdfPage(input);
+      return runtimeApi.pdfEngineGetPageBundle(input);
     },
     [api],
   );
@@ -1403,8 +1394,7 @@ export default function App({ api }: { api: AppApi }) {
               <>
                 <PdfContinuousReader
                   fitMode="fit_width"
-                  loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
-                  ocrPdfPage={ocrPdfPage}
+                  getPdfPageBundle={getPdfPageBundle}
                   annotations={annotations}
                   page={readerPage}
                   searchQuery={readerSearchQuery}
@@ -1534,8 +1524,7 @@ export default function App({ api }: { api: AppApi }) {
               readerView.reader_kind === "pdf" ? (
                 <PdfReader
                   fitMode="fit_width"
-                  loadPrimaryAttachmentBytes={loadPrimaryAttachmentBytes}
-                  ocrPdfPage={ocrPdfPage}
+                  getPdfPageBundle={getPdfPageBundle}
                   annotations={annotations}
                   page={readerPage}
                   searchQuery={readerSearchQuery}

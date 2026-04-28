@@ -977,12 +977,14 @@ p {
 }
 
 /* Target only pdf.js' own text layer nodes. Keep it narrow so we don't break nested highlight spans. */
-.pdf-reader .textLayer :is(span, br)[role="presentation"] {
+.pdf-reader .textLayer span[role="presentation"],
+.pdf-reader .textLayer br[role="presentation"] {
   position: absolute;
   transform-origin: 0% 0%;
   white-space: pre;
   cursor: text;
   color: transparent;
+  -webkit-user-select: text;
   user-select: text;
 }
 
