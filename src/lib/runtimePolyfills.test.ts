@@ -3,6 +3,27 @@ import { describe, expect, it } from "vitest";
 import { getRuntimePolyfillDiagnostics, installRuntimePolyfills } from "./runtimePolyfills";
 
 describe("installRuntimePolyfills", () => {
+  it("polyfills Array.prototype.at with correct negative indexing semantics", async () => {
+    const original = Array.prototype.at;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (Array.prototype as any).at;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(([] as any).at).toBeUndefined();
+
+      await installRuntimePolyfills();
+      expect(typeof Array.prototype.at).toBe("function");
+      expect([10, 20, 30].at(0)).toBe(10);
+      expect([10, 20, 30].at(-1)).toBe(30);
+      expect([10, 20, 30].at(-3)).toBe(10);
+      expect([10, 20, 30].at(-4)).toBeUndefined();
+    } finally {
+      // Restore the environment for other tests.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (Array.prototype as any).at = original;
+    }
+  });
+
   it("installs a minimal ReadableStream polyfill that supports start/enqueue/close + reader.read()", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const original = (globalThis as any).ReadableStream;

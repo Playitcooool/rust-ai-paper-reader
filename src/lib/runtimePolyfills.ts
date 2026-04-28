@@ -16,6 +16,87 @@ export function getRuntimePolyfillDiagnostics(): RuntimePolyfillDiagnostics {
   return { ...diagnostics };
 }
 
+function installAtPolyfills() {
+  // pdfjs-dist@5.x assumes modern JS builtins (notably `.at()`); older WKWebView builds can miss them.
+
+  if (typeof Array !== "undefined" && typeof Array.prototype.at !== "function") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Array.prototype as any).at = function atPolyfill<T>(this: ArrayLike<T>, index: number): T | undefined {
+      const len = this.length >>> 0;
+      const n = Number(index);
+      if (!Number.isFinite(n)) return undefined;
+      let k = Math.trunc(n);
+      if (k < 0) k = len + k;
+      if (k < 0 || k >= len) return undefined;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (this as any)[k] as T;
+    };
+  }
+
+  if (typeof String !== "undefined" && typeof String.prototype.at !== "function") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (String.prototype as any).at = function atPolyfill(this: string, index: number): string | undefined {
+      const str = String(this);
+      const len = str.length;
+      const n = Number(index);
+      if (!Number.isFinite(n)) return undefined;
+      let k = Math.trunc(n);
+      if (k < 0) k = len + k;
+      if (k < 0 || k >= len) return undefined;
+      // String.prototype.at matches index-based access (1 UTF-16 code unit), unlike `codePointAt`.
+      return str.charAt(k);
+    };
+  }
+
+  const typedArrayCtors: unknown[] = [
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Int8Array,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Uint8Array,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Uint8ClampedArray,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Int16Array,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Uint16Array,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Int32Array,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Uint32Array,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Float32Array,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Float64Array,
+    // BigInt typed arrays are not present everywhere.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).BigInt64Array,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).BigUint64Array,
+  ];
+
+  for (const ctor of typedArrayCtors) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const C = ctor as any;
+    if (!C || !C.prototype) continue;
+    if (typeof C.prototype.at === "function") continue;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (C.prototype as any).at = function atPolyfill(this: { length: number }, index: number) {
+        const len = this.length >>> 0;
+        const n = Number(index);
+        if (!Number.isFinite(n)) return undefined;
+        let k = Math.trunc(n);
+        if (k < 0) k = len + k;
+        if (k < 0 || k >= len) return undefined;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (this as any)[k];
+      };
+    } catch {
+      // Best-effort: some exotic environments might make typed array prototypes non-writable.
+    }
+  }
+}
+
 class ReadableStreamControllerPolyfill<T> {
   #stream: ReadableStreamPolyfill<T>;
   constructor(stream: ReadableStreamPolyfill<T>) {
@@ -204,6 +285,8 @@ async function ensureReadableStreamPolyfillInstalled() {
 }
 
 export async function installRuntimePolyfills() {
+  installAtPolyfills();
+
   // pdf.js AnnotationLayer uses Element.prototype.replaceChildren.
   if (
     typeof Element !== "undefined" &&
