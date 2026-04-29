@@ -83,6 +83,7 @@ pub struct AITask {
     pub item_id: Option<i64>,
     pub collection_id: Option<i64>,
     pub scope_item_ids: Option<Vec<i64>>,
+    pub input_prompt: Option<String>,
     pub kind: String,
     pub status: String,
     pub output_markdown: String,
@@ -1056,7 +1057,7 @@ impl LibraryService {
         fs::read(&attachment_path).map_err(|_| anyhow!("failed to read primary attachment bytes"))
     }
 
-    pub fn run_item_task(&self, item_id: i64, kind: &str) -> Result<AITask> {
+    pub fn run_item_task(&self, item_id: i64, kind: &str, prompt: Option<&str>) -> Result<AITask> {
         let mut conn = self.connect()?;
         let (collection_id, title, excerpt) = conn.query_row(
             "
@@ -1080,6 +1081,7 @@ impl LibraryService {
             |row| row.get(0),
         )?;
         let first_line = excerpt.lines().next().unwrap_or("No content extracted.");
+        let prompt_text = prompt.map(str::trim).filter(|value| !value.is_empty());
         let output = match kind {
             "item.summarize" => format!(
                 "# Summary: {title}\n\nCollection: {collection_name}\n\n{first_line}"
@@ -1091,16 +1093,17 @@ impl LibraryService {
                 "# Terminology Notes: {title}\n\n## Key Terms\n- Scaling law: {first_line}\n\n## Reading Tip\nUse this note to clarify repeated technical vocabulary."
             ),
             "item.ask" => format!(
-                "# Reading Q&A: {title}\n\n## Answer\n{first_line}\n\n## Evidence\nCollection: {collection_name}"
+                "# Reading Q&A: {title}\n\n## Question\n{}\n\n## Answer\n{first_line}\n\n## Evidence\nCollection: {collection_name}",
+                prompt_text.unwrap_or("No question provided.")
             ),
             _ => return Err(anyhow!("unsupported item task kind")),
         };
 
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO ai_tasks(item_id, collection_id, kind, status, output_markdown)
-             VALUES (?1, ?2, ?3, 'succeeded', ?4)",
-            params![item_id, collection_id, kind, output],
+            "INSERT INTO ai_tasks(item_id, collection_id, kind, status, output_markdown, input_prompt)
+             VALUES (?1, ?2, ?3, 'succeeded', ?4, ?5)",
+            params![item_id, collection_id, kind, output, prompt_text],
         )?;
         let task_id = tx.last_insert_rowid();
         tx.execute(
@@ -1115,6 +1118,7 @@ impl LibraryService {
             item_id: Some(item_id),
             collection_id: Some(collection_id),
             scope_item_ids: None,
+            input_prompt: prompt_text.map(str::to_owned),
             kind: kind.into(),
             status: "succeeded".into(),
             output_markdown: output,
@@ -1122,7 +1126,7 @@ impl LibraryService {
     }
 
     pub fn run_item_summary(&self, item_id: i64) -> Result<AITask> {
-        self.run_item_task(item_id, "item.summarize")
+        self.run_item_task(item_id, "item.summarize", None)
     }
 
     pub fn create_note_from_artifact(&self, artifact_id: i64) -> Result<ResearchNote> {
@@ -1157,6 +1161,7 @@ impl LibraryService {
         collection_id: i64,
         kind: &str,
         scope_item_ids: &[i64],
+        prompt: Option<&str>,
     ) -> Result<AITask> {
         if scope_item_ids.is_empty() {
             return Err(anyhow!("collection has no readable items"));
@@ -1194,6 +1199,7 @@ impl LibraryService {
         };
 
         let evidence_map = sections.join("\n");
+        let prompt_text = prompt.map(str::trim).filter(|value| !value.is_empty());
         let markdown = match kind {
             "collection.bulk_summarize" => format!(
                 "# Bulk Summary: {collection_name}\n\n## Paper Capsules\n{evidence_map}\n\n## Synthesis\nBulk summary across {} visible papers.",
@@ -1210,15 +1216,24 @@ impl LibraryService {
             "collection.review_draft" => format!(
                 "# Review Draft: {collection_name}\n\n## Evidence Map\n{evidence_map}\n\n## Narrative\nThis draft groups the imported papers into a concise literature review scaffold ready for editing."
             ),
+            "collection.ask" => format!(
+                "# Collection Q&A: {collection_name}\n\n## Question\n{}\n\n## Answer\n{}\n\n## Scope\n{} papers in the current collection view.",
+                prompt_text.unwrap_or("No question provided."),
+                sections
+                    .first()
+                    .map(|section| section.replace("- **", "").replace("**: ", ": "))
+                    .unwrap_or_else(|| "No readable evidence was available.".into()),
+                sections.len()
+            ),
             _ => return Err(anyhow!("unsupported collection task kind")),
         };
 
         let tx = conn.transaction()?;
         let scope_json = serde_json::to_string(scope_item_ids)?;
         tx.execute(
-            "INSERT INTO ai_tasks(collection_id, kind, status, output_markdown, scope_item_ids)
-             VALUES (?1, ?2, 'succeeded', ?3, ?4)",
-            params![collection_id, kind, markdown, scope_json],
+            "INSERT INTO ai_tasks(collection_id, kind, status, output_markdown, scope_item_ids, input_prompt)
+             VALUES (?1, ?2, 'succeeded', ?3, ?4, ?5)",
+            params![collection_id, kind, markdown, scope_json, prompt_text],
         )?;
         let task_id = tx.last_insert_rowid();
         tx.execute(
@@ -1233,6 +1248,7 @@ impl LibraryService {
             item_id: None,
             collection_id: Some(collection_id),
             scope_item_ids: Some(scope_item_ids.to_vec()),
+            input_prompt: prompt_text.map(str::to_owned),
             kind: kind.into(),
             status: "succeeded".into(),
             output_markdown: markdown,
@@ -1245,7 +1261,7 @@ impl LibraryService {
             .into_iter()
             .map(|item| item.id)
             .collect::<Vec<_>>();
-        self.run_collection_task(collection_id, "collection.review_draft", &item_ids)
+        self.run_collection_task(collection_id, "collection.review_draft", &item_ids, None)
     }
 
     pub fn list_notes(&self, collection_id: Option<i64>) -> Result<Vec<ResearchNote>> {
@@ -1329,7 +1345,7 @@ impl LibraryService {
     ) -> Result<Vec<AITask>> {
         let conn = self.connect()?;
         let mut query =
-            "SELECT id, item_id, collection_id, scope_item_ids, kind, status, output_markdown FROM ai_tasks"
+            "SELECT id, item_id, collection_id, scope_item_ids, input_prompt, kind, status, output_markdown FROM ai_tasks"
                 .to_string();
         match (item_id, collection_id) {
             (Some(_), Some(_)) => query.push_str(" WHERE item_id = ?1 AND collection_id = ?2"),
@@ -1526,6 +1542,7 @@ impl LibraryService {
                 status TEXT NOT NULL,
                 output_markdown TEXT NOT NULL,
                 scope_item_ids TEXT NULL
+                ,input_prompt TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS ai_artifacts(
@@ -1571,6 +1588,7 @@ impl LibraryService {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         ensure_column(&conn, "ai_tasks", "scope_item_ids", "TEXT NULL")?;
+        ensure_column(&conn, "ai_tasks", "input_prompt", "TEXT NULL")?;
         ensure_column(&conn, "ai_artifacts", "scope_item_ids", "TEXT NULL")?;
         Ok(())
     }
@@ -1633,9 +1651,10 @@ fn map_ai_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AITask> {
         item_id: row.get(1)?,
         collection_id: row.get(2)?,
         scope_item_ids,
-        kind: row.get(4)?,
-        status: row.get(5)?,
-        output_markdown: row.get(6)?,
+        input_prompt: row.get(4)?,
+        kind: row.get(5)?,
+        status: row.get(6)?,
+        output_markdown: row.get(7)?,
     })
 }
 

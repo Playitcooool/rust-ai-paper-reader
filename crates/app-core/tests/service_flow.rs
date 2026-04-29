@@ -547,3 +547,79 @@ fn removing_items_deletes_managed_copy_but_preserves_linked_source() {
     service.remove_item(linked_result.imported[0].id).unwrap();
     assert!(linked.exists());
 }
+
+#[test]
+fn item_ask_persists_input_prompt() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "ask-item.pdf");
+    write_pdf_fixture(&pdf);
+
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+    let item_id = result.imported[0].id;
+
+    let task = service
+        .run_item_task(item_id, "item.ask", Some("What is the core claim?"))
+        .unwrap();
+
+    assert_eq!(task.input_prompt.as_deref(), Some("What is the core claim?"));
+    assert!(task.output_markdown.contains("What is the core claim?"));
+
+    let listed = service.list_task_runs(Some(item_id), None).unwrap();
+    assert_eq!(listed[0].input_prompt.as_deref(), Some("What is the core claim?"));
+}
+
+#[test]
+fn collection_ask_persists_input_prompt_and_scope() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Review", None).unwrap();
+    let pdf_a = fixture_path(root.path(), "collection-ask-a.pdf");
+    let pdf_b = fixture_path(root.path(), "collection-ask-b.pdf");
+    write_pdf_fixture(&pdf_a);
+    write_partial_pdf_fixture(&pdf_b);
+
+    let result = service
+        .import_files(collection.id, &[pdf_a, pdf_b], ImportMode::ManagedCopy)
+        .unwrap();
+    let scope_item_ids = result.imported.iter().map(|item| item.id).collect::<Vec<_>>();
+
+    let task = service
+        .run_collection_task(
+            collection.id,
+            "collection.ask",
+            &scope_item_ids,
+            Some("How do these papers compare?"),
+        )
+        .unwrap();
+
+    assert_eq!(task.input_prompt.as_deref(), Some("How do these papers compare?"));
+    assert_eq!(task.scope_item_ids.as_deref(), Some(scope_item_ids.as_slice()));
+
+    let listed = service.list_task_runs(None, Some(collection.id)).unwrap();
+    assert_eq!(listed[0].input_prompt.as_deref(), Some("How do these papers compare?"));
+    assert_eq!(listed[0].scope_item_ids.as_deref(), Some(scope_item_ids.as_slice()));
+}
+
+#[test]
+fn legacy_ai_tasks_keep_null_input_prompt() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "summary-item.pdf");
+    write_pdf_fixture(&pdf);
+
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+    let item_id = result.imported[0].id;
+
+    let task = service.run_item_task(item_id, "item.summarize", None).unwrap();
+    assert_eq!(task.input_prompt, None);
+
+    let listed = service.list_task_runs(Some(item_id), None).unwrap();
+    assert_eq!(listed[0].input_prompt, None);
+}

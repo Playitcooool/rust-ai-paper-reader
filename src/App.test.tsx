@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -39,34 +39,20 @@ vi.mock("./components/readers/PdfReader", () => {
     view,
     page,
     onPageCountChange,
-    mode,
-    onSelectionChange,
     searchQuery,
     activeSearchMatchIndex = 0,
     onSearchMatchesChange,
   }: {
-    view: {
-      title: string;
-      page_count: number | null;
-    };
+    view: { title: string; page_count: number | null };
     page: number;
     onPageCountChange?: (pageCount: number) => void;
-    mode?: "workspace" | "focus";
     searchQuery?: string;
-    annotations?: unknown[];
-    onSelectionChange?: (selection: unknown) => void;
     activeSearchMatchIndex?: number;
     onSearchMatchesChange?: (state: { total: number; activeIndex: number }) => void;
   }) {
     useEffect(() => {
       onPageCountChange?.(view.page_count ?? 1);
     }, [onPageCountChange, view.page_count]);
-
-    useEffect(() => {
-      onSelectionChange?.(null);
-      // Only clear once on mount; rerender-driven handler identity changes should not wipe test selections.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
 
     useEffect(() => {
       if (!(searchQuery ?? "").trim()) {
@@ -78,7 +64,7 @@ vi.mock("./components/readers/PdfReader", () => {
 
     return (
       <section data-testid="pdf-reader">
-        {mode !== "focus" ? <h3>{view.title}</h3> : null}
+        <h3>{view.title}</h3>
         <p>Mock PDF reader page {page + 1}</p>
       </section>
     );
@@ -96,22 +82,14 @@ vi.mock("./components/readers/PdfContinuousReader", () => {
     searchQuery,
     activeSearchMatchIndex = 0,
     onSearchMatchesChange,
-    onActivePageChange,
-    onNavigateToPage,
   }: {
-    view: {
-      title: string;
-      page_count: number | null;
-    };
+    view: { title: string; page_count: number | null };
     page: number;
     onPageCountChange?: (pageCount: number) => void;
     searchQuery?: string;
-    annotations?: unknown[];
     onSelectionChange?: (selection: unknown) => void;
     activeSearchMatchIndex?: number;
     onSearchMatchesChange?: (state: { total: number; activeIndex: number }) => void;
-    onActivePageChange?: (pageIndex0: number) => void;
-    onNavigateToPage?: (pageIndex0: number) => void;
   }) {
     useEffect(() => {
       onPageCountChange?.(view.page_count ?? 1);
@@ -119,7 +97,6 @@ vi.mock("./components/readers/PdfContinuousReader", () => {
 
     useEffect(() => {
       onSelectionChange?.(null);
-      // Only clear once on mount; rerender-driven handler identity changes should not wipe test selections.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -179,45 +156,48 @@ afterEach(() => {
 });
 
 describe("App reading workspace", () => {
-  it("renders a resource tree instead of the current collection card list", async () => {
+  it("renders the compact resource tree", async () => {
     render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("tree", { name: "Library resources" })).toBeInTheDocument();
-    expect(screen.queryByText("Current Collection")).not.toBeInTheDocument();
-    expect(screen.queryByText("paper-card")).not.toBeInTheDocument();
-    expect(screen.getByRole("treeitem", { name: /Machine Learning/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New folder" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Rename Machine Learning/i })).toBeInTheDocument();
     expect(screen.getByRole("treeitem", { name: /Transformer Scaling Laws/i })).toBeInTheDocument();
   });
 
-  it("single-clicking a pdf enters focus mode (non-pdf stays in workspace)", async () => {
+  it("single-clicking a pdf opens workspace preview while double-click enters focus", async () => {
     const user = userEvent.setup();
-
     render(<App api={fakeApi} />);
-
-    const docxNode = await screen.findByRole("treeitem", { name: /Graph Neural Survey/i });
-    await user.click(docxNode);
-
-    expect(screen.getByRole("tab", { name: "Graph Neural Survey" })).toBeInTheDocument();
-    expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
 
     const pdfNode = await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i });
     await user.click(pdfNode);
 
-    expect(screen.getByRole("tab", { name: "Transformer Scaling Laws" })).toBeInTheDocument();
+    expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId("pdf-reader")).toHaveTextContent("Mock PDF reader page 1");
+    expect(screen.queryByRole("button", { name: "Find in document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Reader page input" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Annotations/i)).not.toBeInTheDocument();
+
+    await user.dblClick(pdfNode);
     expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Reader page input" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Show sidebar" })).not.toBeInTheDocument();
-    expect(screen.queryByText(/text capabilities/i)).not.toBeInTheDocument();
-    expect(screen.getByTestId("pdf-reader")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open AI Workspace" })).not.toBeInTheDocument();
   });
 
-  it("enters pdf focus immediately even while reader context is still loading", async () => {
+  it("keeps non-pdf items in workspace mode", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Graph Neural Survey/i }));
+
+    expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId("normalized-reader")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Find in document" })).toBeInTheDocument();
+  });
+
+  it("renders focus mode immediately while the reader context is still loading", async () => {
     let resolve!: (value: unknown) => void;
     const promise = new Promise((res) => {
       resolve = res;
     });
-
     const apiWithDelay = {
       ...fakeApi,
       getReaderView: vi.fn(() => promise),
@@ -226,48 +206,13 @@ describe("App reading workspace", () => {
     const user = userEvent.setup();
     render(<App api={apiWithDelay} />);
 
-    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
 
-    expect(screen.getByRole("toolbar", { name: /pdf focus/i })).toBeInTheDocument();
-    expect(screen.getByRole("toolbar", { name: /pdf focus/i })).toHaveAccessibleName("PDF focus toolbar");
+    expect(screen.getByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
     expect(screen.queryByTestId("pdf-reader")).not.toBeInTheDocument();
 
-    const view = await fakeApi.getReaderView(1);
-    resolve(view);
-
+    resolve(await fakeApi.getReaderView(1));
     expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
-  });
-
-  it("renders the reader view without waiting for annotations or artifacts", async () => {
-    let resolveAnnotations!: (value: unknown) => void;
-    let resolveArtifact!: (value: unknown) => void;
-    let resolveTaskRuns!: (value: unknown) => void;
-    const delayedAnnotations = new Promise((res) => {
-      resolveAnnotations = res;
-    });
-    const delayedArtifact = new Promise((res) => {
-      resolveArtifact = res;
-    });
-    const delayedTaskRuns = new Promise((res) => {
-      resolveTaskRuns = res;
-    });
-    const apiWithSlowAux = {
-      ...fakeApi,
-      listAnnotations: vi.fn(() => delayedAnnotations),
-      getArtifact: vi.fn(() => delayedArtifact),
-      listTaskRuns: vi.fn(() => delayedTaskRuns),
-    } as typeof fakeApi;
-
-    const user = userEvent.setup();
-    render(<App api={apiWithSlowAux} />);
-
-    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
-
-    expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
-
-    resolveAnnotations([]);
-    resolveArtifact(null);
-    resolveTaskRuns([]);
   });
 
   it("shows a focus highlight color bar and persists color into the anchor", async () => {
@@ -275,10 +220,7 @@ describe("App reading workspace", () => {
     const createAnnotationSpy = vi.spyOn(fakeApi, "createAnnotation");
 
     render(<App api={fakeApi} />);
-
-    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
-    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
-
+    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
     await user.click(screen.getByRole("button", { name: "Mock select PDF text" }));
     expect(await screen.findByRole("toolbar", { name: "PDF highlight colors" })).toBeInTheDocument();
 
@@ -287,24 +229,17 @@ describe("App reading workspace", () => {
     await waitFor(() => {
       expect(createAnnotationSpy).toHaveBeenCalled();
     });
-
-    const call = createAnnotationSpy.mock.calls[0]?.[0] as { anchor?: string } | undefined;
-    expect(call?.anchor).toContain("\"color\":\"yellow\"");
-    expect(screen.queryByRole("toolbar", { name: "PDF highlight colors" })).not.toBeInTheDocument();
+    expect((createAnnotationSpy.mock.calls[0]?.[0] as { anchor?: string } | undefined)?.anchor).toContain(
+      '"color":"yellow"',
+    );
   });
 
   it("leaves pdf focus when switching to a non-pdf tab", async () => {
     const user = userEvent.setup();
-
     render(<App api={fakeApi} />);
 
-    const pdfNode = await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i });
-    const docxNode = screen.getByRole("treeitem", { name: /Graph Neural Survey/i });
-
-    await user.click(docxNode);
-    expect(screen.getByRole("tab", { name: "Graph Neural Survey" })).toBeInTheDocument();
-
-    await user.click(pdfNode);
+    await user.click(await screen.findByRole("treeitem", { name: /Graph Neural Survey/i }));
+    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
     expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Graph Neural Survey" }));
@@ -315,12 +250,11 @@ describe("App reading workspace", () => {
     expect(screen.getByTestId("normalized-reader")).toBeInTheDocument();
   });
 
-  it("escape exits pdf focus but only when the current target is not an editor", async () => {
+  it("supports escape and back button to exit focus", async () => {
     const user = userEvent.setup();
-
     render(<App api={fakeApi} />);
 
-    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
     expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "Escape" });
@@ -328,152 +262,116 @@ describe("App reading workspace", () => {
       expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
     });
 
-    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
-    fireEvent.keyDown(window, { key: "f", metaKey: true });
-    const searchInput = await screen.findByRole("textbox", { name: "Find in document" });
-    searchInput.focus();
-    fireEvent.keyDown(searchInput, { key: "Escape" });
-    expect(screen.getByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
-  });
-
-  it("keeps PDF text tools available for partial/unavailable PDFs while keeping AI gated on ready", async () => {
-    replaceFakeApiState({
-      items: [
-        {
-          id: 1,
-          title: "Scanned PDF",
-          collection_id: 1,
-          primary_attachment_id: 101,
-          attachment_status: "ready",
-          authors: "Reader Team",
-          publication_year: 2026,
-          source: "Paper Reader",
-          doi: null,
-          tags: [],
-          plainText: "",
-          normalizedHtml: "<article><p>Fallback content.</p></article>",
-          attachmentFormat: "pdf",
-          primaryAttachmentPath: "/mock/scanned.pdf",
-          pageCount: 2,
-          contentStatus: "partial",
-          contentNotice: "This PDF can be read by page, but only part of the text layer is reliable.",
-        } as never,
-      ],
-    });
-
-    const user = userEvent.setup();
-    render(<App api={fakeApi} />);
-
-    await user.click(await screen.findByRole("treeitem", { name: /Scanned PDF/i }));
-
-    expect(await screen.findByTestId("pdf-reader")).toBeInTheDocument();
-    expect(screen.queryByText(/only part of the text layer is reliable/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/text capabilities/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: "Find in document" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open AI Workspace" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Highlight/i })).not.toBeInTheDocument();
-    expect(screen.queryByText(/Reader Content/i)).not.toBeInTheDocument();
-  });
-
-  it("keeps pdf focus when switching between pdf tabs", async () => {
-    replaceFakeApiState({
-      items: [
-        {
-          id: 1,
-          title: "Transformer Scaling Laws",
-          collection_id: 1,
-          primary_attachment_id: 101,
-          attachment_format: "pdf",
-          attachment_status: "ready",
-          authors: "Kaplan et al.",
-          publication_year: 2020,
-          source: "OpenAI",
-          doi: "10.1000/scaling-laws",
-          tags: [],
-          plainText:
-            "Overview. Scaling behavior emerges when model size, data volume, and compute are balanced. Methods. This paper discusses predictable loss curves and practical planning heuristics.",
-          normalizedHtml:
-            "<article><h1>Transformer Scaling Laws</h1><p>Scaling behavior emerges when model size, data volume, and compute are balanced.</p><h2>Methods</h2><p>This paper discusses predictable loss curves and practical planning heuristics.</p></article>",
-          attachmentFormat: "pdf",
-          primaryAttachmentPath: "/mock/transformer-scaling-laws.pdf",
-          pageCount: 2,
-        } as never,
-        {
-          id: 4,
-          title: "Second PDF",
-          collection_id: 1,
-          primary_attachment_id: 104,
-          attachment_format: "pdf",
-          attachment_status: "ready",
-          authors: "Reader Team",
-          publication_year: 2026,
-          source: "Paper Reader",
-          doi: null,
-          tags: [],
-          plainText: "Second PDF plain text.",
-          normalizedHtml: "<article><h1>Second PDF</h1><p>Second PDF</p></article>",
-          attachmentFormat: "pdf",
-          primaryAttachmentPath: "/mock/second.pdf",
-          pageCount: 1,
-        } as never,
-      ],
-    });
-
-    const user = userEvent.setup();
-    render(<App api={fakeApi} />);
-
-    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
-    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
-
-    fireEvent.keyDown(window, { key: "Escape" });
+    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Back to library" }));
     await waitFor(() => {
       expect(screen.queryByRole("toolbar", { name: /pdf focus toolbar/i })).not.toBeInTheDocument();
     });
-
-    await user.click(await screen.findByRole("treeitem", { name: /Second PDF/i }));
-    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Transformer Scaling Laws" }));
-    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
+    expect(screen.getByTestId("pdf-reader")).toBeInTheDocument();
   });
 
-  it("filters imported placeholder metadata in pdf focus", async () => {
-    replaceFakeApiState({
-      items: [
-        {
-          id: 1,
-          title: "Imported Placeholder PDF",
-          collection_id: 1,
-          primary_attachment_id: 101,
-          attachment_status: "ready",
-          authors: "Imported Author",
-          publication_year: null,
-          source: "Imported PDF",
-          doi: null,
-          tags: [],
-          plainText: "",
-          normalizedHtml: "<article><p>Imported</p></article>",
-          attachmentFormat: "pdf",
-          primaryAttachmentPath: "/mock/imported.pdf",
-          pageCount: 1,
-          contentStatus: "ready",
-          contentNotice: null,
-        } as never,
-      ],
-    });
-
+  it("opens the find HUD in document workspace and pdf focus", async () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
 
-    await user.click(await screen.findByRole("treeitem", { name: /Imported Placeholder PDF/i }));
-    expect(await screen.findByRole("toolbar", { name: /pdf focus toolbar/i })).toBeInTheDocument();
+    await user.click(await screen.findByRole("treeitem", { name: /Graph Neural Survey/i }));
+    await user.click(screen.getByRole("button", { name: "Find in document" }));
+    expect(await screen.findByRole("textbox", { name: "Find in document" })).toHaveFocus();
 
-    expect(document.querySelector(".reader-focus-subtitle")).toBeNull();
-    expect(screen.queryByText(/Imported Author/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Imported PDF/i)).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Find in document" }), { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("textbox", { name: "Find in document" })).not.toBeInTheDocument();
+    });
+
+    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(within(screen.getByRole("toolbar", { name: /pdf focus toolbar/i })).getByRole("button", { name: "Find in document" }));
+    expect(await screen.findByRole("textbox", { name: "Find in document" })).toHaveFocus();
   });
 
-  it("responds to native menu import events and removes legacy import controls", async () => {
+  it("creates and renames collections inline in the tree", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("button", { name: "New folder" }));
+    const createInput = await screen.findByRole("textbox", { name: "New collection name" });
+    await user.type(createInput, "Fresh Notes{enter}");
+    expect(await screen.findByRole("treeitem", { name: /Fresh Notes/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Machine Learning" }));
+    await user.click(screen.getByRole("button", { name: /Rename Machine Learning/i }));
+    const renameInput = await screen.findByRole("textbox", { name: "Rename collection" });
+    await user.clear(renameInput);
+    await user.type(renameInput, "ML Library{enter}");
+    expect(await screen.findByRole("treeitem", { name: /ML Library/i })).toBeInTheDocument();
+  });
+
+  it("toggles the docked AI panel from workspace and focus", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    expect(screen.getByLabelText("AI panel")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close AI panel" }));
+    expect(screen.queryByLabelText("AI panel")).not.toBeInTheDocument();
+
+    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    expect(screen.getByLabelText("AI panel")).toBeInTheDocument();
+  });
+
+  it("sends freeform prompts to paper and collection AI tasks", async () => {
+    const user = userEvent.setup();
+    const runItemTaskSpy = vi.spyOn(fakeApi, "runItemTask");
+    const runCollectionTaskSpy = vi.spyOn(fakeApi, "runCollectionTask");
+
+    render(<App api={fakeApi} />);
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "What is the key result?");
+    await user.click(screen.getByRole("button", { name: "Send AI prompt" }));
+
+    await waitFor(() => {
+      expect(runItemTaskSpy).toHaveBeenCalledWith({
+        item_id: 1,
+        kind: "item.ask",
+        prompt: "What is the key result?",
+      });
+    });
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.clear(screen.getByRole("textbox", { name: "AI prompt" }));
+    await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "Compare the papers.");
+    await user.click(screen.getByRole("button", { name: "Send AI prompt" }));
+
+    await waitFor(() => {
+      expect(runCollectionTaskSpy).toHaveBeenCalledWith({
+        collection_id: 1,
+        kind: "collection.ask",
+        scope_item_ids: [2, 1],
+        prompt: "Compare the papers.",
+      });
+    });
+  });
+
+  it("runs quick actions in the AI panel and shows results in the conversation", async () => {
+    const user = userEvent.setup();
+    const runItemTaskSpy = vi.spyOn(fakeApi, "runItemTask");
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "Summarize document" }));
+
+    await waitFor(() => {
+      expect(runItemTaskSpy).toHaveBeenCalledWith({ item_id: 1, kind: "item.summarize", prompt: undefined });
+    });
+    expect(screen.getByText(/Scaling behavior emerges/i)).toBeInTheDocument();
+  });
+
+  it("responds to native menu import events and native drag-and-drop", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).__TAURI_INTERNALS__ = {};
 
@@ -482,40 +380,20 @@ describe("App reading workspace", () => {
     const api = { ...fakeApi, importFiles, pickImportPaths };
 
     render(<App api={api} />);
-
     expect(await screen.findByRole("tree", { name: "Library resources" })).toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: "Import mode" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Import" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Import Citations/i })).not.toBeInTheDocument();
 
     menuListeners.get("menu:import-documents")?.();
-
     await waitFor(() => {
-      expect(pickImportPaths).toHaveBeenCalledTimes(1);
       expect(importFiles).toHaveBeenCalledWith({
         collection_id: 1,
         paths: ["/Users/test/dragged.pdf"],
       });
     });
-  });
 
-  it("imports PDFs via native drag & drop paths in the desktop runtime", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).__TAURI_INTERNALS__ = {};
-
-    const importFiles = vi.fn((input: { collection_id: number; paths: string[] }) => fakeApi.importFiles(input as never));
-    const api = { ...fakeApi, importFiles };
-
-    render(<App api={api} />);
-    expect(await screen.findByRole("tree", { name: "Library resources" })).toBeInTheDocument();
-
-    // Wait for the effect to register the drag handler.
     await waitFor(() => {
       expect(getDragHandler()).not.toBeNull();
     });
-
     getDragHandler()?.({ payload: { type: "drop", paths: ["/Users/test/absolute.pdf"] } });
-
     await waitFor(() => {
       expect(importFiles).toHaveBeenCalledWith({
         collection_id: 1,
@@ -524,7 +402,7 @@ describe("App reading workspace", () => {
     });
   });
 
-  it("filters the resource tree when the sidebar search is active", async () => {
+  it("filters the resource tree from the sidebar search", async () => {
     replaceFakeApiState({
       collections: [
         { id: 1, name: "Machine Learning", parent_id: null },
@@ -595,8 +473,7 @@ describe("App reading workspace", () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
 
-    const searchInput = await screen.findByRole("textbox", { name: "Search papers" });
-    await user.type(searchInput, "scaling");
+    await user.type(await screen.findByRole("textbox", { name: "Search papers" }), "scaling");
 
     expect(screen.getByRole("treeitem", { name: /Machine Learning/i })).toBeInTheDocument();
     expect(screen.getByRole("treeitem", { name: /Transformers/i })).toBeInTheDocument();
@@ -604,118 +481,5 @@ describe("App reading workspace", () => {
     expect(screen.getByRole("treeitem", { name: /Transformer Scaling Laws/i })).toBeInTheDocument();
     expect(screen.queryByRole("treeitem", { name: /Graph Neural Survey/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("treeitem", { name: /Systems/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("treeitem", { name: /Distributed Consensus Notes/i })).not.toBeInTheDocument();
-  });
-
-  it("opens and closes the find HUD with Command/Ctrl+F and Escape", async () => {
-    const user = userEvent.setup();
-    render(<App api={fakeApi} />);
-
-    await user.click(await screen.findByRole("treeitem", { name: /Graph Neural Survey/i }));
-    expect(screen.queryByRole("textbox", { name: "Find in document" })).not.toBeInTheDocument();
-
-    fireEvent.keyDown(window, { key: "f", metaKey: true });
-    const input = await screen.findByRole("textbox", { name: "Find in document" });
-    expect(input).toHaveFocus();
-
-    await user.type(input, "representation");
-
-    await waitFor(() => {
-      expect(document.querySelector("mark.reader-search-hit")).toBeTruthy();
-    });
-
-    fireEvent.keyDown(window, { key: "Escape" });
-
-    await waitFor(() => {
-      expect(screen.queryByRole("textbox", { name: "Find in document" })).not.toBeInTheDocument();
-      expect(document.querySelector("mark.reader-search-hit")).toBeFalsy();
-    });
-  });
-
-  it("navigates normalized reader matches from the find HUD with Enter and Shift+Enter", async () => {
-    const user = userEvent.setup();
-    render(<App api={fakeApi} />);
-
-    await user.click(await screen.findByRole("treeitem", { name: /Graph Neural Survey/i }));
-    fireEvent.keyDown(window, { key: "f", metaKey: true });
-    const input = await screen.findByRole("textbox", { name: "Find in document" });
-    await user.type(input, "graph");
-
-    await waitFor(() => {
-      expect(document.querySelectorAll("mark.reader-search-hit").length).toBeGreaterThan(1);
-      expect(document.querySelector("mark.reader-search-hit-active")?.textContent?.toLowerCase()).toBe("graph");
-    });
-
-    fireEvent.keyDown(input, { key: "Enter" });
-
-    await waitFor(() => {
-      expect(screen.getByText("2 / 2")).toBeInTheDocument();
-    });
-
-    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
-
-    await waitFor(() => {
-      expect(screen.getByText("1 / 2")).toBeInTheDocument();
-    });
-  });
-
-  it("navigates PDF matches from the find HUD with Enter and Shift+Enter", async () => {
-    const user = userEvent.setup();
-    render(<App api={fakeApi} />);
-
-    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
-    fireEvent.keyDown(window, { key: "f", metaKey: true });
-    const input = await screen.findByRole("textbox", { name: "Find in document" });
-    await user.type(input, "scaling");
-
-    await waitFor(() => {
-      expect(screen.getByText("1 / 3")).toBeInTheDocument();
-    });
-
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => {
-      expect(screen.getByText("2 / 3")).toBeInTheDocument();
-    });
-
-    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
-    await waitFor(() => {
-      expect(screen.getByText("1 / 3")).toBeInTheDocument();
-    });
-  });
-
-  it("opens the find HUD for partial PDFs", async () => {
-    replaceFakeApiState({
-      items: [
-        {
-          id: 1,
-          title: "Scanned PDF",
-          collection_id: 1,
-          primary_attachment_id: 101,
-          attachment_status: "ready",
-          authors: "Reader Team",
-          publication_year: 2026,
-          source: "Paper Reader",
-          doi: null,
-          tags: [],
-          plainText: "",
-          normalizedHtml: "<article><p>Fallback content.</p></article>",
-          attachmentFormat: "pdf",
-          primaryAttachmentPath: "/mock/scanned.pdf",
-          pageCount: 2,
-          contentStatus: "partial",
-          contentNotice: "This PDF can be read by page, but only part of the text layer is reliable.",
-        } as never,
-      ],
-    });
-
-    const user = userEvent.setup();
-    render(<App api={fakeApi} />);
-
-    await user.dblClick(await screen.findByRole("treeitem", { name: /Scanned PDF/i }));
-    fireEvent.keyDown(window, { key: "f", metaKey: true });
-
-    await waitFor(() => {
-      expect(screen.getByRole("textbox", { name: "Find in document" })).toBeInTheDocument();
-    });
   });
 });

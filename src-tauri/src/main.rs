@@ -2,8 +2,6 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::CString,
     fs,
-    fs::OpenOptions,
-    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
@@ -13,7 +11,6 @@ use app_core::service::{
     ResearchNote, Tag,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use tauri::{
     menu::{MenuBuilder, SubmenuBuilder},
     AppHandle, Emitter, Manager, State,
@@ -35,27 +32,6 @@ struct AppState {
 
 static OCR_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static PDF_RENDER_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
-
-#[derive(Deserialize)]
-struct ClientLogEvent {
-    ts_ms: i64,
-    kind: String,
-    data: JsonValue,
-}
-
-#[derive(Deserialize)]
-struct AppendClientEventLogInput {
-    session_id: String,
-    events: Vec<ClientLogEvent>,
-}
-
-#[derive(Serialize)]
-struct ClientLogLine<'a> {
-    session_id: &'a str,
-    ts_ms: i64,
-    kind: &'a str,
-    data: &'a JsonValue,
-}
 
 #[derive(Deserialize)]
 struct CreateCollectionInput {
@@ -152,6 +128,7 @@ struct MoveItemInput {
 struct RunItemTaskInput {
     item_id: i64,
     kind: String,
+    prompt: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -159,6 +136,7 @@ struct RunCollectionTaskInput {
     collection_id: i64,
     kind: String,
     scope_item_ids: Vec<i64>,
+    prompt: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -546,144 +524,6 @@ fn write_cached_ocr_atomic(path: &PathBuf, result: &OcrPageResult) -> Result<(),
     Ok(())
 }
 
-fn client_logs_dir(state: &AppState) -> PathBuf {
-    state.library_root.join("client_logs")
-}
-
-fn client_log_file_path(state: &AppState) -> PathBuf {
-    client_logs_dir(state).join("ui-events.jsonl")
-}
-
-fn ensure_client_logs_dir(state: &AppState) -> Result<PathBuf, String> {
-    let dir = client_logs_dir(state);
-    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    Ok(dir)
-}
-
-#[cfg(not(test))]
-fn reveal_dir_in_file_manager(dir: &PathBuf) -> Result<(), String> {
-    use std::process::Command;
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("/usr/bin/open")
-            .arg(dir)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("explorer")
-            .arg(dir)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // Prefer absolute path if PATH is restricted in the packaged runtime.
-        let xdg = if PathBuf::from("/usr/bin/xdg-open").exists() {
-            "/usr/bin/xdg-open"
-        } else {
-            "xdg-open"
-        };
-        Command::new(xdg)
-            .arg(dir)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-
-    #[allow(unreachable_code)]
-    Ok(())
-}
-
-#[cfg(test)]
-fn reveal_dir_in_file_manager(_dir: &PathBuf) -> Result<(), String> {
-    // Avoid spawning OS processes in unit tests/CI.
-    Ok(())
-}
-
-fn rotate_client_log_if_needed(path: &PathBuf) -> Result<(), String> {
-    const MAX_BYTES: u64 = 5 * 1024 * 1024;
-    const MAX_BACKUPS: usize = 3;
-
-    let size = match fs::metadata(path) {
-        Ok(meta) => meta.len(),
-        Err(_) => return Ok(()),
-    };
-    if size <= MAX_BYTES {
-        return Ok(());
-    }
-
-    let dir = path
-        .parent()
-        .ok_or_else(|| "invalid log path".to_string())?;
-    let base_name = path
-        .file_name()
-        .and_then(|v| v.to_str())
-        .ok_or_else(|| "invalid log filename".to_string())?
-        .to_string();
-
-    // Remove the oldest backup first.
-    let oldest = dir.join(format!("{base_name}.{MAX_BACKUPS}"));
-    let _ = fs::remove_file(&oldest);
-
-    // Shift backups: .2 -> .3, .1 -> .2
-    for idx in (1..MAX_BACKUPS).rev() {
-        let from = dir.join(format!("{base_name}.{idx}"));
-        let to = dir.join(format!("{base_name}.{}", idx + 1));
-        if from.exists() {
-            let _ = fs::rename(&from, &to);
-        }
-    }
-
-    // Move current file to .1
-    let first = dir.join(format!("{base_name}.1"));
-    let _ = fs::rename(path, &first);
-    Ok(())
-}
-
-fn append_client_log_lines(
-    state: &AppState,
-    session_id: &str,
-    events: &[ClientLogEvent],
-) -> Result<(), String> {
-    if events.is_empty() {
-        return Ok(());
-    }
-
-    let dir = client_logs_dir(state);
-    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-
-    let path = client_log_file_path(state);
-    rotate_client_log_if_needed(&path)?;
-
-    // Serialize to a single buffer to reduce interleaving risk.
-    let mut buf: Vec<u8> = Vec::with_capacity(events.len() * 256);
-    for event in events {
-        let line = ClientLogLine {
-            session_id,
-            ts_ms: event.ts_ms,
-            kind: event.kind.as_str(),
-            data: &event.data,
-        };
-        serde_json::to_writer(&mut buf, &line).map_err(|error| error.to_string())?;
-        buf.push(b'\n');
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| error.to_string())?;
-    file.write_all(&buf).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
 #[tauri::command]
 async fn ocr_pdf_page(
     app: AppHandle,
@@ -750,19 +590,6 @@ async fn ocr_pdf_page(
     // Best-effort cache write; OCR results are still returned even if disk write fails.
     let _ = write_cached_ocr_atomic(&cache_path, &result);
     Ok(result)
-}
-
-#[tauri::command]
-fn get_client_log_dir(state: State<'_, AppState>) -> Result<String, String> {
-    let dir = ensure_client_logs_dir(&state)?;
-    Ok(dir.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-fn reveal_client_log_dir(state: State<'_, AppState>) -> Result<(), String> {
-    let dir = ensure_client_logs_dir(&state)?;
-    reveal_dir_in_file_manager(&dir)?;
-    Ok(())
 }
 
 fn width_bucket(width_px: u32) -> u32 {
@@ -1011,19 +838,9 @@ async fn pdf_engine_get_page_bundle(
     .map_err(|error| error.to_string())?
 }
 
-#[tauri::command]
-fn append_client_event_log(
-    state: State<'_, AppState>,
-    input: AppendClientEventLogInput,
-) -> Result<(), String> {
-    append_client_log_lines(&state, &input.session_id, &input.events)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tempfile::tempdir;
 
     #[test]
     fn parses_tesseract_tsv_word_rows_with_header_mapping() {
@@ -1043,86 +860,6 @@ mod tests {
         assert!((lines[0].bbox.width - 0.1).abs() < 1e-6);
         assert!((lines[0].bbox.height - 0.005).abs() < 1e-6);
         assert!((lines[0].confidence - 85.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn appends_client_log_as_jsonl_one_line_per_event() {
-        let dir = tempdir().expect("tempdir");
-        let state = AppState {
-            library_root: dir.path().to_path_buf(),
-            pdf_cache: Arc::new(Mutex::new(PdfEngineCache::default())),
-        };
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-        let events = vec![
-            ClientLogEvent {
-                ts_ms: now_ms,
-                kind: "test_event_1".to_string(),
-                data: serde_json::json!({"a": 1}),
-            },
-            ClientLogEvent {
-                ts_ms: now_ms + 1,
-                kind: "test_event_2".to_string(),
-                data: serde_json::json!({"b": true}),
-            },
-        ];
-
-        append_client_log_lines(&state, "session-abc", &events).expect("append");
-
-        let path = client_log_file_path(&state);
-        let content = fs::read_to_string(&path).expect("read");
-        let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 2);
-        for (idx, line) in lines.iter().enumerate() {
-            let parsed: serde_json::Value = serde_json::from_str(line).expect("json");
-            assert_eq!(parsed["session_id"], "session-abc");
-            assert_eq!(parsed["kind"], events[idx].kind);
-        }
-    }
-
-    #[test]
-    fn rotates_client_log_when_exceeding_limit() {
-        let dir = tempdir().expect("tempdir");
-        let state = AppState {
-            library_root: dir.path().to_path_buf(),
-            pdf_cache: Arc::new(Mutex::new(PdfEngineCache::default())),
-        };
-        let logs_dir = client_logs_dir(&state);
-        fs::create_dir_all(&logs_dir).unwrap();
-
-        // Create an oversized log file to force rotation.
-        let path = client_log_file_path(&state);
-        fs::write(&path, vec![b'x'; (5 * 1024 * 1024) as usize + 10]).unwrap();
-
-        let events = vec![ClientLogEvent {
-            ts_ms: 1,
-            kind: "after_rotate".to_string(),
-            data: serde_json::json!({}),
-        }];
-        append_client_log_lines(&state, "s", &events).expect("append");
-
-        assert!(path.exists());
-        let backup1 = logs_dir.join("ui-events.jsonl.1");
-        assert!(backup1.exists());
-    }
-
-    #[test]
-    fn reveal_client_log_dir_creates_directory() {
-        let dir = tempdir().expect("tempdir");
-        let state = AppState {
-            library_root: dir.path().to_path_buf(),
-            pdf_cache: Arc::new(Mutex::new(PdfEngineCache::default())),
-        };
-
-        let logs_dir = client_logs_dir(&state);
-        assert!(!logs_dir.exists());
-
-        let created = ensure_client_logs_dir(&state).expect("ensure_client_logs_dir");
-        assert_eq!(created, logs_dir);
-        assert!(logs_dir.exists());
     }
 
     #[test]
@@ -1386,7 +1123,7 @@ fn run_item_task(
 ) -> Result<app_core::service::AITask, String> {
     match input.kind.as_str() {
         "item.summarize" | "item.translate" | "item.explain_term" | "item.ask" => service(&state)?
-            .run_item_task(input.item_id, &input.kind)
+            .run_item_task(input.item_id, &input.kind, input.prompt.as_deref())
             .map_err(|error| error.to_string()),
         _ => Err("unsupported item task".into()),
     }
@@ -1401,8 +1138,14 @@ fn run_collection_task(
         "collection.review_draft"
         | "collection.bulk_summarize"
         | "collection.theme_map"
-        | "collection.compare_methods" => service(&state)?
-            .run_collection_task(input.collection_id, &input.kind, &input.scope_item_ids)
+        | "collection.compare_methods"
+        | "collection.ask" => service(&state)?
+            .run_collection_task(
+                input.collection_id,
+                &input.kind,
+                &input.scope_item_ids,
+                input.prompt.as_deref(),
+            )
             .map_err(|error| error.to_string()),
         _ => Err("unsupported collection task".into()),
     }
@@ -1554,9 +1297,6 @@ fn main() {
             pdf_engine_get_document_info,
             pdf_engine_get_page_bundle,
             pdf_engine_get_page_text,
-            get_client_log_dir,
-            reveal_client_log_dir,
-            append_client_event_log
         ])
         .run(tauri::generate_context!())
         .expect("failed to run paper-reader desktop app");

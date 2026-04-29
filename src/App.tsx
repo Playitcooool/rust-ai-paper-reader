@@ -5,13 +5,11 @@ import { PdfContinuousReader } from "./components/readers/PdfContinuousReader";
 import { PdfReader } from "./components/readers/PdfReader";
 import type { PdfHighlightColor, PdfTextSelection } from "./components/readers/pdfSelection";
 import { isTauriRuntime } from "./lib/api";
-import { logEvent, startClientEventLog, textForLog } from "./lib/clientEventLog";
 import { getRuntimePolyfillDiagnostics } from "./lib/runtimePolyfills";
 import type {
   AIArtifact,
   AITask,
   Annotation,
-  AnnotationFilter,
   AppApi,
   Collection,
   ImportBatchResult,
@@ -25,12 +23,16 @@ type AiPanelMode = "paper" | "collection";
 type WorkspaceMode = "workspace" | "pdf_focus";
 type ItemSort = "recent" | "title" | "year_desc";
 type AttachmentFilter = "all" | "ready" | "missing" | "citation_only";
+type ReaderFitMode = "fit_width" | "manual";
+
+const READER_MIN_ZOOM = 70;
+const READER_MAX_ZOOM = 180;
+const READER_ZOOM_STEP = 10;
 
 const itemActions = [
   { label: "Summarize document", kind: "item.summarize" },
   { label: "Translate selection", kind: "item.translate" },
   { label: "Explain terminology", kind: "item.explain_term" },
-  { label: "Ask about this paper", kind: "item.ask" },
 ];
 
 const collectionActions = [
@@ -39,6 +41,19 @@ const collectionActions = [
   { label: "Compare Methods", kind: "collection.compare_methods" },
   { label: "Generate Review Draft", kind: "collection.review_draft" },
 ];
+
+const taskLabel = (kind: string) =>
+  ({
+    "item.summarize": "Summarize",
+    "item.translate": "Translate",
+    "item.explain_term": "Explain",
+    "item.ask": "Ask",
+    "collection.bulk_summarize": "Bulk Summaries",
+    "collection.theme_map": "Theme Map",
+    "collection.compare_methods": "Compare Methods",
+    "collection.review_draft": "Review Draft",
+    "collection.ask": "Ask",
+  })[kind] ?? kind;
 
 const attachmentFormatLabel = (format: LibraryItem["attachment_format"] | ReaderView["attachment_format"]) =>
   format.toUpperCase();
@@ -212,48 +227,60 @@ export default function App({ api }: { api: AppApi }) {
   const [isImporting, setIsImporting] = useState(false);
   const [draggedFileCount, setDraggedFileCount] = useState(0);
   const [statusMessage, setStatusMessage] = useState("Loading library...");
-  const [newCollectionName, setNewCollectionName] = useState("");
   const [newTagName, setNewTagName] = useState("");
   const [batchTagName, setBatchTagName] = useState("");
   const [batchMoveTargetId, setBatchMoveTargetId] = useState("current");
   const [readerPage, setReaderPage] = useState(0);
   const [readerPageInput, setReaderPageInput] = useState("1");
   const [readerZoom, setReaderZoom] = useState(100);
+  const [readerFitMode, setReaderFitMode] = useState<ReaderFitMode>("fit_width");
   const [readerSearchQuery, setReaderSearchQuery] = useState("");
   const [isFindHudOpen, setIsFindHudOpen] = useState(false);
   const [readerSearchMatchIndex, setReaderSearchMatchIndex] = useState(0);
   const [readerSearchMatchCount, setReaderSearchMatchCount] = useState(0);
   const [reportedActiveSearchMatchIndex, setReportedActiveSearchMatchIndex] = useState(-1);
   const [pdfPageCounts, setPdfPageCounts] = useState<Record<number, number>>({});
-  const [annotationFilter, setAnnotationFilter] = useState<AnnotationFilter>("all");
   const [pdfSelection, setPdfSelection] = useState<PdfTextSelection | null>(null);
+  const [isManageOpen, setIsManageOpen] = useState(false);
+  const [creatingCollectionParentId, setCreatingCollectionParentId] = useState<number | "root" | null>(null);
+  const [collectionDraftName, setCollectionDraftName] = useState("");
+  const [renamingCollectionId, setRenamingCollectionId] = useState<number | null>(null);
+  const [aiComposerValue, setAiComposerValue] = useState("");
+  const manageButtonRef = useRef<HTMLButtonElement | null>(null);
+  const managePopoverRef = useRef<HTMLDivElement | null>(null);
 
-  // Client-side debug logging (append-only JSONL on disk).
   useEffect(() => {
+    // Probe polyfills (useful for debugging) but do not write client logs to disk anymore.
     if (!isTauriRuntime()) return;
-    const sessionId =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const stop = startClientEventLog({
-      sessionId,
-      appendFn: (input) => api.appendClientEventLog(input),
-    });
-    logEvent("app_start", { session_id: sessionId });
-    logEvent("runtime_feature_probe", {
-      // Avoid requiring TS lib upgrades for `.at()`; we polyfill at runtime when missing.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      hasArrayAt: typeof (Array.prototype as any).at === "function",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      hasStringAt: typeof (String.prototype as any).at === "function",
-      hasPromiseWithResolvers:
-        typeof Promise !== "undefined" &&
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        typeof (Promise as any).withResolvers === "function",
-      hasReadableStreamHealthy: getRuntimePolyfillDiagnostics().readableStreamHealthy,
-    });
-    return stop;
-  }, [api]);
+    void getRuntimePolyfillDiagnostics();
+  }, []);
+
+  useEffect(() => {
+    if (!isManageOpen) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setIsManageOpen(false);
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const popover = managePopoverRef.current;
+      const button = manageButtonRef.current;
+      if (popover && popover.contains(target)) return;
+      if (button && button.contains(target)) return;
+      setIsManageOpen(false);
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [isManageOpen]);
 
   const hasCollections = collections.length > 0;
 
@@ -310,22 +337,8 @@ export default function App({ api }: { api: AppApi }) {
     attachmentAvailable && isPdfAttachment,
   );
   const textToolsEnabled = Boolean(isPdfAttachment ? pdfTextToolsEnabled : aiCapabilitiesEnabled);
-  const readyForAi = Boolean(activePaper && aiCapabilitiesEnabled);
   const readerPageCount =
     activePaper?.id && isPdfReader ? pdfPageCounts[activePaper.id] ?? readerView?.page_count ?? 1 : 1;
-  const visibleAnnotations = useMemo(() => {
-    if (annotationFilter !== "current_page") return annotations;
-    const currentPage = readerPage + 1;
-    return annotations.filter((annotation) => {
-      if (annotation.anchor === `page-${currentPage}`) return true;
-      try {
-        const parsed = JSON.parse(annotation.anchor) as { type?: string; page?: number };
-        return parsed.type === "pdf_text" && parsed.page === currentPage;
-      } catch {
-        return false;
-      }
-    });
-  }, [annotationFilter, annotations, readerPage]);
   const importHasIssues = Boolean(
     lastImportResult &&
       (lastImportResult.duplicates.length > 0 || lastImportResult.failed.length > 0),
@@ -428,7 +441,6 @@ export default function App({ api }: { api: AppApi }) {
 
     async function loadReaderContext() {
       const startedAt = performance.now();
-      logEvent("reader_open_click", { itemId, requestId });
       setReaderView(null);
       setAnnotations([]);
       setPaperArtifact(null);
@@ -440,22 +452,17 @@ export default function App({ api }: { api: AppApi }) {
         setReaderView(view);
         setReaderPage(0);
         setReaderPageInput("1");
+        setReaderFitMode("fit_width");
+        setReaderZoom(100);
         setReaderSearchQuery("");
         setIsFindHudOpen(false);
         setReaderSearchMatchIndex(0);
         setReaderSearchMatchCount(0);
         setReportedActiveSearchMatchIndex(-1);
         setPdfSelection(null);
-        logEvent("reader_view_loaded", {
-          itemId,
-          requestId,
-          durationMs: Math.round(performance.now() - startedAt),
-          readerKind: view.reader_kind,
-          attachmentFormat: view.attachment_format,
-        });
+        void startedAt;
 
         void (async () => {
-          const auxStartedAt = performance.now();
           const [annotationsResult, artifactResult, taskRunsResult] = await Promise.allSettled([
             runtimeApi.listAnnotations(itemId),
             runtimeApi.getArtifact({ item_id: itemId }),
@@ -465,23 +472,10 @@ export default function App({ api }: { api: AppApi }) {
           if (annotationsResult.status === "fulfilled") setAnnotations(annotationsResult.value);
           if (artifactResult.status === "fulfilled") setPaperArtifact(artifactResult.value);
           if (taskRunsResult.status === "fulfilled") setPaperTaskRuns(taskRunsResult.value);
-          logEvent("reader_aux_loaded", {
-            itemId,
-            requestId,
-            durationMs: Math.round(performance.now() - auxStartedAt),
-            annotationsOk: annotationsResult.status === "fulfilled",
-            artifactOk: artifactResult.status === "fulfilled",
-            taskRunsOk: taskRunsResult.status === "fulfilled",
-          });
         })();
       } catch (error) {
         if (cancelled || readerLoadRequestIdRef.current !== requestId) return;
-        logEvent("reader_open_failed", {
-          itemId,
-          requestId,
-          durationMs: Math.round(performance.now() - startedAt),
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
+        void error;
       }
     }
 
@@ -510,7 +504,6 @@ export default function App({ api }: { api: AppApi }) {
   useEffect(() => {
     if (workspaceMode === "pdf_focus") {
       setIsSidebarVisible(false);
-      setIsAiPanelOpen(false);
     }
   }, [workspaceMode]);
 
@@ -519,36 +512,82 @@ export default function App({ api }: { api: AppApi }) {
   }, [activePaperId, readerPage, readerSearchQuery, readerView?.reader_kind]);
 
   useEffect(() => {
-    if (textToolsEnabled) return;
-    setIsFindHudOpen(false);
-    setReaderSearchQuery("");
-    setReaderSearchMatchIndex(0);
-    setReaderSearchMatchCount(0);
-    setReportedActiveSearchMatchIndex(-1);
-  }, [textToolsEnabled]);
-
-  useEffect(() => {
     if (!isFindHudOpen) return;
     readerSearchInputRef.current?.focus();
     readerSearchInputRef.current?.select();
   }, [isFindHudOpen]);
 
+  const openFindHud = useCallback(() => {
+    if (!textToolsEnabled) return;
+    setIsFindHudOpen(true);
+  }, [textToolsEnabled]);
+
+  const closeFindHud = useCallback(() => {
+    setIsFindHudOpen(false);
+    setReaderSearchQuery("");
+    setReaderSearchMatchIndex(0);
+    setReaderSearchMatchCount(0);
+    setReportedActiveSearchMatchIndex(-1);
+  }, []);
+
+  const setReaderPageClamped = useCallback(
+    (nextPage: number) => {
+      const clampedPage = Math.max(0, Math.min(nextPage, Math.max(readerPageCount - 1, 0)));
+      setReaderPage(clampedPage);
+      setReaderPageInput(String(clampedPage + 1));
+    },
+    [readerPageCount],
+  );
+
+  const goToPreviousReaderPage = useCallback(() => {
+    setReaderPageClamped(readerPage - 1);
+  }, [readerPage, setReaderPageClamped]);
+
+  const goToNextReaderPage = useCallback(() => {
+    setReaderPageClamped(readerPage + 1);
+  }, [readerPage, setReaderPageClamped]);
+
+  const clampReaderZoom = useCallback((value: number) => {
+    return Math.max(READER_MIN_ZOOM, Math.min(value, READER_MAX_ZOOM));
+  }, []);
+
+  const setPdfZoomManual = useCallback(
+    (value: number) => {
+      setReaderFitMode("manual");
+      setReaderZoom(clampReaderZoom(value));
+    },
+    [clampReaderZoom],
+  );
+
+  const stepPdfZoom = useCallback(
+    (direction: 1 | -1) => {
+      setPdfZoomManual(readerZoom + direction * READER_ZOOM_STEP);
+    },
+    [readerZoom, setPdfZoomManual],
+  );
+
+  const stepNormalizedZoom = useCallback(
+    (direction: 1 | -1) => {
+      setReaderZoom((current) => clampReaderZoom(current + direction * READER_ZOOM_STEP));
+    },
+    [clampReaderZoom],
+  );
+
+  useEffect(() => {
+    if (textToolsEnabled) return;
+    closeFindHud();
+  }, [closeFindHud, textToolsEnabled]);
+
   useEffect(() => {
     function handleWindowKeydown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && textToolsEnabled) {
         event.preventDefault();
-        setIsFindHudOpen(true);
-        logEvent("find_open", { source: "keydown" });
+        openFindHud();
         return;
       }
       if (event.key === "Escape" && isFindHudOpen) {
         event.preventDefault();
-        setIsFindHudOpen(false);
-        setReaderSearchQuery("");
-        setReaderSearchMatchIndex(0);
-        setReaderSearchMatchCount(0);
-        setReportedActiveSearchMatchIndex(-1);
-        logEvent("find_close", { source: "escape" });
+        closeFindHud();
         return;
       }
       if (workspaceMode !== "pdf_focus") return;
@@ -560,25 +599,20 @@ export default function App({ api }: { api: AppApi }) {
 
     window.addEventListener("keydown", handleWindowKeydown);
     return () => window.removeEventListener("keydown", handleWindowKeydown);
-  }, [isFindHudOpen, textToolsEnabled, workspaceMode]);
+  }, [closeFindHud, isFindHudOpen, openFindHud, textToolsEnabled, workspaceMode]);
 
   useEffect(() => {
     if (!isFindHudOpen) return;
     const handle = window.setTimeout(() => {
-      const meta = textForLog(readerSearchQuery) ?? { text_len: 0, text_snippet: "" };
-      logEvent("find_query_change", meta);
+      void readerSearchQuery;
     }, 250);
     return () => window.clearTimeout(handle);
   }, [isFindHudOpen, readerSearchQuery]);
 
   const moveReaderSearchMatch = (direction: 1 | -1, source: "button" | "enter") => {
     if (readerSearchMatchCount <= 0) return;
-    logEvent("find_nav", {
-      source,
-      direction: direction === 1 ? "next" : "prev",
-      total: readerSearchMatchCount,
-      activeIndex: reportedActiveSearchMatchIndex,
-    });
+    void source;
+    void reportedActiveSearchMatchIndex;
     setReaderSearchMatchIndex((current) => {
       const base = ((current % readerSearchMatchCount) + readerSearchMatchCount) % readerSearchMatchCount;
       return (base + direction + readerSearchMatchCount) % readerSearchMatchCount;
@@ -805,18 +839,53 @@ export default function App({ api }: { api: AppApi }) {
     };
   }, []);
 
-  const handleCreateCollection = async () => {
-    const name = newCollectionName.trim();
+  const handleCreateCollection = async (parentId: number | null) => {
+    const name = collectionDraftName.trim();
     if (!name) {
       setStatusMessage("Enter a collection name first.");
       return;
     }
     const runtimeApi = await getApi();
-    const collection = await runtimeApi.createCollection({ name });
+    const collection = await runtimeApi.createCollection({ name, parent_id: parentId });
     await refreshCollections(collection.id);
-    setNewCollectionName("");
+    setCollectionDraftName("");
+    setCreatingCollectionParentId(null);
     setStatusMessage(`Created collection ${collection.name}.`);
   };
+
+  const startCreateCollection = useCallback((parentId: number | null) => {
+    setCreatingCollectionParentId(parentId === null ? "root" : parentId);
+    setRenamingCollectionId(null);
+    setCollectionDraftName("");
+  }, []);
+
+  const startRenameCollection = useCallback((collection: Collection) => {
+    setRenamingCollectionId(collection.id);
+    setCreatingCollectionParentId(null);
+    setCollectionDraftName(collection.name);
+  }, []);
+
+  const submitCollectionRename = useCallback(async () => {
+    if (!renamingCollectionId) return;
+    const name = collectionDraftName.trim();
+    if (!name) {
+      setRenamingCollectionId(null);
+      setCollectionDraftName("");
+      return;
+    }
+    const runtimeApi = await getApi();
+    await runtimeApi.renameCollection({ collection_id: renamingCollectionId, name });
+    await refreshCollections(renamingCollectionId);
+    setRenamingCollectionId(null);
+    setCollectionDraftName("");
+    setStatusMessage(`Renamed collection to ${name}.`);
+  }, [collectionDraftName, getApi, refreshCollections, renamingCollectionId]);
+
+  const cancelCollectionInlineEdit = useCallback(() => {
+    setCreatingCollectionParentId(null);
+    setRenamingCollectionId(null);
+    setCollectionDraftName("");
+  }, []);
 
   const handleCreateTag = async () => {
     if (!activePaper) {
@@ -876,10 +945,10 @@ export default function App({ api }: { api: AppApi }) {
     setStatusMessage(`Moved ${selectedItemIds.length} papers.`);
   };
 
-  const handleItemTask = async (kind: string) => {
+  const handleItemTask = async (kind: string, prompt?: string) => {
     if (!activePaper || !aiCapabilitiesEnabled) return;
     const runtimeApi = await getApi();
-    await runtimeApi.runItemTask({ item_id: activePaper.id, kind });
+    await runtimeApi.runItemTask({ item_id: activePaper.id, kind, prompt });
     const [artifact, taskRuns] = await Promise.all([
       runtimeApi.getArtifact({ item_id: activePaper.id }),
       runtimeApi.listTaskRuns({ item_id: activePaper.id }),
@@ -889,13 +958,14 @@ export default function App({ api }: { api: AppApi }) {
     setStatusMessage(`Completed ${kind} for ${activePaper.title}.`);
   };
 
-  const handleCollectionTask = async (kind: string) => {
+  const handleCollectionTask = async (kind: string, prompt?: string) => {
     if (!activeCollection || visibleScopeItemIds.length === 0) return;
     const runtimeApi = await getApi();
     await runtimeApi.runCollectionTask({
       collection_id: activeCollection.id,
       kind,
       scope_item_ids: visibleScopeItemIds,
+      prompt,
     });
     const [artifact, taskRuns, collectionNotes] = await Promise.all([
       runtimeApi.getArtifact({ collection_id: activeCollection.id }),
@@ -907,6 +977,17 @@ export default function App({ api }: { api: AppApi }) {
     setNotes(collectionNotes);
     setStatusMessage(`Completed ${kind} for ${activeCollection.name}.`);
   };
+
+  const handleAiSubmit = useCallback(async () => {
+    const prompt = aiComposerValue.trim();
+    if (!prompt) return;
+    if (aiPanelMode === "paper") {
+      await handleItemTask("item.ask", prompt);
+    } else {
+      await handleCollectionTask("collection.ask", prompt);
+    }
+    setAiComposerValue("");
+  }, [aiComposerValue, aiPanelMode, handleCollectionTask, handleItemTask]);
 
   const handleCreateResearchNote = async () => {
     if (!collectionArtifact || !activeCollection) return;
@@ -938,19 +1019,6 @@ export default function App({ api }: { api: AppApi }) {
     if (!path) return;
     await runtimeApi.writeExportFile({ path, contents: markdown });
     setStatusMessage(`Saved Markdown to ${path}.`);
-  };
-
-  const handleCreatePdfHighlight = async () => {
-    if (!activePaper || !pdfTextToolsEnabled || !pdfSelection) return;
-    const runtimeApi = await getApi();
-    const annotation = await runtimeApi.createAnnotation({
-      item_id: activePaper.id,
-      anchor: pdfSelection.anchor,
-      kind: "highlight",
-      body: pdfSelection.quote,
-    });
-    setAnnotations((current) => [...current, annotation]);
-    setStatusMessage("Created highlight.");
   };
 
   const clearDomSelection = useCallback(() => {
@@ -997,9 +1065,7 @@ export default function App({ api }: { api: AppApi }) {
       setReaderPageInput(String(readerPage + 1));
       return;
     }
-    const nextPage = Math.max(0, Math.min(parsed - 1, readerPageCount - 1));
-    setReaderPage(nextPage);
-    setReaderPageInput(String(nextPage + 1));
+    setReaderPageClamped(parsed - 1);
   };
 
   const currentReaderHtml = useMemo(
@@ -1007,13 +1073,17 @@ export default function App({ api }: { api: AppApi }) {
     [readerView],
   );
 
-  const selectedTagName = tags.find((tag) => tag.id === selectedTagId)?.name ?? null;
-  const showHighlightAction = Boolean(activePaper && pdfTextToolsEnabled);
   const isCollectionDraftStale = Boolean(
     collectionArtifact &&
       collectionArtifact.collection_id === activeCollection?.id &&
       !scopeMatches(collectionArtifact.scope_item_ids, visibleScopeItemIds),
   );
+  const aiPanelTasks = aiPanelMode === "paper" ? paperTaskRuns : collectionTaskRuns;
+  const aiPanelArtifact = aiPanelMode === "paper" ? paperArtifact : collectionArtifact;
+  const aiPanelScopeReady =
+    aiPanelMode === "paper" ? Boolean(activePaper && aiCapabilitiesEnabled) : visibleScopeItemIds.length > 0;
+  const aiPanelCanSend =
+    aiPanelMode === "paper" ? Boolean(activePaper && aiCapabilitiesEnabled) : Boolean(activeCollection && visibleScopeItemIds.length > 0);
 
   const pdfFocusHighlightBarRef = useRef<HTMLDivElement | null>(null);
   const showPdfFocusHighlightBar = Boolean(
@@ -1087,89 +1157,171 @@ export default function App({ api }: { api: AppApi }) {
     return { allowedItemIds, allowedCollectionIds };
   }, [activeCollectionItems, collections, search]);
 
+  const renderInlineCollectionEditor = (parentId: number | null) => (
+    <div className="resource-tree-row resource-tree-row-editing" role="none" key={`inline-editor-${parentId ?? "root"}`}>
+      <span className="resource-tree-leading-icon" aria-hidden="true">
+        {renamingCollectionId ? "📁" : "＋"}
+      </span>
+      <input
+        aria-label={renamingCollectionId ? "Rename collection" : "New collection name"}
+        autoFocus
+        className="resource-tree-inline-input"
+        value={collectionDraftName}
+        onBlur={() =>
+          renamingCollectionId ? void submitCollectionRename() : void handleCreateCollection(parentId)
+        }
+        onChange={(event) => setCollectionDraftName(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            if (renamingCollectionId) {
+              void submitCollectionRename();
+            } else {
+              void handleCreateCollection(parentId);
+            }
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            cancelCollectionInlineEdit();
+          }
+        }}
+        placeholder={renamingCollectionId ? "Rename collection" : "New collection"}
+      />
+    </div>
+  );
+
   const renderTreeNodes = (parentId: number | null, depth = 0): JSX.Element[] =>
     childCollectionsFor(collections, parentId)
       .filter((collection) =>
         treeSearchFilter ? treeSearchFilter.allowedCollectionIds.has(collection.id) : true,
       )
       .flatMap((collection) => {
-      const isExpanded = expandedCollectionIds.includes(collection.id);
-      const collectionChildren = renderTreeNodes(collection.id, depth + 1);
-      const directItems = sortItems(
-        libraryItems
-          .filter((item) => item.collection_id === collection.id)
-          .filter((item) => (treeSearchFilter ? treeSearchFilter.allowedItemIds.has(item.id) : true)),
-        "title",
-      );
-      const collectionCount = treeSearchFilter
-        ? directItems.length
-        : itemCountForCollection(libraryItems, collection.id);
+        const isExpanded = expandedCollectionIds.includes(collection.id);
+        const collectionChildren = renderTreeNodes(collection.id, depth + 1);
+        const directItems = sortItems(
+          libraryItems
+            .filter((item) => item.collection_id === collection.id)
+            .filter((item) => (treeSearchFilter ? treeSearchFilter.allowedItemIds.has(item.id) : true)),
+          "title",
+        );
+        const isRenaming = renamingCollectionId === collection.id;
 
-      return [
-        <div key={`collection-${collection.id}`} role="none">
-          <div
-            className={`resource-tree-row resource-tree-collection ${
-              selectedCollectionId === collection.id ? "resource-tree-row-active" : ""
-            }`}
-            role="treeitem"
-            aria-expanded={isExpanded}
-            aria-label={collection.name}
-          >
-            <button
-              aria-label={isExpanded ? `Collapse ${collection.name}` : `Expand ${collection.name}`}
-              className="resource-tree-toggle"
-              type="button"
-              onClick={() => toggleCollectionExpanded(collection.id)}
+        return [
+          <div key={`collection-${collection.id}`} role="none">
+            <div
+              className={`resource-tree-row resource-tree-collection ${
+                selectedCollectionId === collection.id ? "resource-tree-row-active" : ""
+              }`}
+              role="treeitem"
+              aria-expanded={isExpanded}
+              aria-label={collection.name}
+              style={{ paddingLeft: `${10 + depth * 18}px` }}
             >
-              {isExpanded ? "-" : "+"}
-            </button>
-            <button
-              className="resource-tree-label resource-tree-collection-button"
-              style={{ marginLeft: `${depth * 12}px` }}
-              type="button"
-              onClick={() => setSelectedCollectionId(collection.id)}
-            >
-              {collection.name}
-            </button>
-            <span className="meta-count">{collectionCount}</span>
-          </div>
-          {isExpanded ? (
-            <div className="resource-tree-group" role="group">
-              {collectionChildren}
-              {directItems.map((item) => (
+              <button
+                aria-label={isExpanded ? `Collapse ${collection.name}` : `Expand ${collection.name}`}
+                className="resource-tree-toggle"
+                type="button"
+                onClick={() => toggleCollectionExpanded(collection.id)}
+              >
+                {isExpanded ? "▾" : "▸"}
+              </button>
+              <span className="resource-tree-leading-icon" aria-hidden="true">
+                📁
+              </span>
+              {isRenaming ? (
+                <input
+                  aria-label="Rename collection"
+                  autoFocus
+                  className="resource-tree-inline-input"
+                  value={collectionDraftName}
+                  onBlur={() => void submitCollectionRename()}
+                  onChange={(event) => setCollectionDraftName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void submitCollectionRename();
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      cancelCollectionInlineEdit();
+                    }
+                  }}
+                />
+              ) : (
                 <button
-                  key={`item-${item.id}`}
-                  aria-label={item.title}
-                  className={`resource-tree-row resource-tree-item ${
-                    activePaperId === item.id ? "resource-tree-row-active" : ""
-                  }`}
-                  role="treeitem"
-                  style={{ marginLeft: `${(depth + 1) * 24}px` }}
+                  className="resource-tree-label resource-tree-collection-button"
                   type="button"
-                  onClick={() =>
-                    item.attachment_format === "pdf"
-                      ? activateItem(item, { focusPdf: true })
-                      : activateItem(item)
-                  }
-                  onDoubleClick={() => activateItem(item, { focusPdf: true })}
+                  onClick={() => setSelectedCollectionId(collection.id)}
                 >
-                  <span>{item.title}</span>
-                  <span className="meta-count">{attachmentFormatLabel(item.attachment_format)}</span>
+                  {collection.name}
                 </button>
-              ))}
+              )}
+              {selectedCollectionId === collection.id && !isRenaming ? (
+                <button
+                  aria-label={`Rename ${collection.name}`}
+                  className="resource-tree-inline-action"
+                  type="button"
+                  onClick={() => startRenameCollection(collection)}
+                >
+                  ✎
+                </button>
+              ) : null}
             </div>
-          ) : null}
-        </div>,
-      ];
-    });
+            {isExpanded ? (
+              <div className="resource-tree-group" role="group">
+                {creatingCollectionParentId === collection.id ? renderInlineCollectionEditor(collection.id) : null}
+                {collectionChildren}
+                {directItems.map((item) => (
+                  <button
+                    key={`item-${item.id}`}
+                    aria-label={item.title}
+                    className={`resource-tree-row resource-tree-item ${
+                      activePaperId === item.id ? "resource-tree-row-active" : ""
+                    }`}
+                    role="treeitem"
+                    style={{ paddingLeft: `${28 + depth * 18}px` }}
+                    type="button"
+                    onClick={() => activateItem(item)}
+                    onDoubleClick={() => {
+                      if (item.attachment_format === "pdf") {
+                        activateItem(item, { focusPdf: true });
+                      }
+                    }}
+                  >
+                    <span className="resource-tree-leading-icon" aria-hidden="true">
+                      {item.attachment_format === "pdf" ? "📄" : "•"}
+                    </span>
+                    <span className="resource-tree-item-title">{item.title}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>,
+        ];
+      });
 
   return (
-    <div className={`app-shell ${workspaceMode === "pdf_focus" ? "app-shell-focus" : "app-shell-workspace"}`}>
+    <div
+      className={`app-shell ${
+        workspaceMode === "pdf_focus" ? "app-shell-focus" : "app-shell-workspace"
+      } ${isAiPanelOpen ? "app-shell-ai-open" : ""}`}
+    >
       {isSidebarVisible ? (
         <aside className="sidebar">
-          <div className="panel-header">
-            <p className="eyebrow">Workspace</p>
-            <h1>Library</h1>
+          <div className="panel-header panel-header-row">
+            <div>
+              <p className="eyebrow">Workspace</p>
+              <h1>Library</h1>
+            </div>
+            <button
+              aria-label="Manage library"
+              className="icon-button"
+              type="button"
+              ref={manageButtonRef}
+              onClick={() => setIsManageOpen((current) => !current)}
+            >
+              ⚙
+            </button>
           </div>
 
           <div className="toolbar-row">
@@ -1212,7 +1364,17 @@ export default function App({ api }: { api: AppApi }) {
           >
             <div className="section-title-row">
               <h2>Resources</h2>
-              <span className="meta-count">{libraryItems.length}</span>
+              <div className="section-title-actions">
+                <span className="meta-count">{libraryItems.length}</span>
+                <button
+                  aria-label="New folder"
+                  className="icon-button icon-button-small"
+                  type="button"
+                  onClick={() => startCreateCollection(selectedCollectionId)}
+                >
+                  ＋
+                </button>
+              </div>
             </div>
             {draggedFileCount > 0 ? (
               <p className="drop-helper">Drop {draggedFileCount} files into {activeCollection?.name ?? "this collection"}.</p>
@@ -1229,144 +1391,147 @@ export default function App({ api }: { api: AppApi }) {
                 {treeSearchFilter && treeSearchFilter.allowedItemIds.size === 0 ? (
                   <p className="secondary-copy">No matches.</p>
                 ) : (
-                  renderTreeNodes(null)
+                  <>
+                    {creatingCollectionParentId === "root" ? renderInlineCollectionEditor(null) : null}
+                    {renderTreeNodes(null)}
+                  </>
                 )}
               </div>
             )}
           </section>
 
-          <details className="management-panel">
-            <summary>Manage</summary>
-            <div className="management-panel-body">
-              <div className="collection-create-row">
-                <input
-                  aria-label="New collection name"
-                  className="search-input"
-                  placeholder="Create a new collection..."
-                  value={newCollectionName}
-                  onChange={(event) => setNewCollectionName(event.target.value)}
-                />
-                <button className="ghost-button" type="button" onClick={() => void handleCreateCollection()}>
-                  Add Collection
-                </button>
-              </div>
-              <div className="collection-create-row">
-                <select
-                  aria-label="Attachment filter"
-                  className="mode-select"
-                  value={attachmentFilter}
-                  onChange={(event) => setAttachmentFilter(event.target.value as AttachmentFilter)}
-                >
-                  <option value="all">All Attachments</option>
-                  <option value="ready">Readable Files</option>
-                  <option value="missing">Missing Files</option>
-                  <option value="citation_only">Citation Only</option>
-                </select>
-                <select
-                  aria-label="Sort papers"
-                  className="mode-select"
-                  value={itemSort}
-                  onChange={(event) => setItemSort(event.target.value as ItemSort)}
-                >
-                  <option value="recent">Recently Added</option>
-                  <option value="title">Title A-Z</option>
-                  <option value="year_desc">Year (Newest)</option>
-                </select>
-                <select
-                  aria-label="Filter tag"
-                  className="mode-select"
-                  value={selectedTagId ?? "all"}
-                  onChange={(event) =>
-                    setSelectedTagId(event.target.value === "all" ? null : Number(event.target.value))
-                  }
-                >
-                  <option value="all">All Tags</option>
-                  {tags.map((tag) => (
-                    <option key={tag.id} value={tag.id}>
-                      {tag.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="collection-create-row">
-                <input
-                  aria-label="New tag name"
-                  className="search-input"
-                  placeholder="Tag the active paper..."
-                  value={newTagName}
-                  onChange={(event) => setNewTagName(event.target.value)}
-                />
-                <button className="ghost-button" disabled={!activePaper} type="button" onClick={() => void handleCreateTag()}>
-                  Add Tag
-                </button>
-              </div>
-              {selectedItemIds.length > 0 ? (
-                <div className="selection-toolbar">
-                  <div className="collection-create-row">
-                    <input
-                      aria-label="Batch tag papers"
-                      className="search-input"
-                      placeholder="Tag selected papers..."
-                      value={batchTagName}
-                      onChange={(event) => setBatchTagName(event.target.value)}
-                    />
-                    <button className="ghost-button" type="button" onClick={() => void handleBatchTag()}>
-                      Tag Selected
-                    </button>
-                  </div>
-                  <div className="collection-create-row">
-                    <select
-                      aria-label="Batch move papers"
-                      className="mode-select"
-                      value={batchMoveTargetId}
-                      onChange={(event) => setBatchMoveTargetId(event.target.value)}
-                    >
-                      <option value="current">Current Collection</option>
-                      {collections
-                        .filter((collection) => collection.id !== selectedCollectionId)
-                        .map((collection) => (
-                          <option key={collection.id} value={collection.id}>
-                            {collection.name}
-                          </option>
-                        ))}
-                    </select>
-                    <button className="ghost-button" type="button" onClick={() => void handleBatchMove()}>
-                      Move Selected
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </details>
-
-          <section className="section-block footer-block">
-            <div className="section-title-row">
-              <h2>Status</h2>
-              <span className="meta-count">{lastImportResult ? `${lastImportResult.imported.length}/${lastImportResult.results.length}` : "Idle"}</span>
-            </div>
-            <p>{statusMessage}</p>
-            {selectedTagName ? <p>Filtered by tag: {selectedTagName}</p> : null}
-            {importHasIssues && lastImportResult ? (
-              <details className="management-panel" open>
-                <summary>Show Import Issues</summary>
-                <div className="management-panel-body">
-                  {lastImportResult.results
-                    .filter((result) => result.status !== "imported")
-                    .map((result) => (
-                      <div key={`${result.path}-${result.status}`} className="export-row">
-                        <span>{result.status}</span>
-                        <span>{result.message}</span>
-                      </div>
+          {isManageOpen ? (
+            <div className="manage-popover" ref={managePopoverRef} role="dialog" aria-label="Manage">
+              <div className="manage-popover-body">
+                <div className="collection-create-row">
+                  <select
+                    aria-label="Attachment filter"
+                    className="mode-select"
+                    value={attachmentFilter}
+                    onChange={(event) => setAttachmentFilter(event.target.value as AttachmentFilter)}
+                  >
+                    <option value="all">All Attachments</option>
+                    <option value="ready">Readable Files</option>
+                    <option value="missing">Missing Files</option>
+                    <option value="citation_only">Citation Only</option>
+                  </select>
+                  <select
+                    aria-label="Sort papers"
+                    className="mode-select"
+                    value={itemSort}
+                    onChange={(event) => setItemSort(event.target.value as ItemSort)}
+                  >
+                    <option value="recent">Recently Added</option>
+                    <option value="title">Title A-Z</option>
+                    <option value="year_desc">Year (Newest)</option>
+                  </select>
+                  <select
+                    aria-label="Filter tag"
+                    className="mode-select"
+                    value={selectedTagId ?? "all"}
+                    onChange={(event) =>
+                      setSelectedTagId(event.target.value === "all" ? null : Number(event.target.value))
+                    }
+                  >
+                    <option value="all">All Tags</option>
+                    {tags.map((tag) => (
+                      <option key={tag.id} value={tag.id}>
+                        {tag.name}
+                      </option>
                     ))}
+                  </select>
                 </div>
-              </details>
-            ) : null}
-          </section>
+                <div className="collection-create-row">
+                  <input
+                    aria-label="New tag name"
+                    className="search-input"
+                    placeholder="Tag the active paper..."
+                    value={newTagName}
+                    onChange={(event) => setNewTagName(event.target.value)}
+                  />
+                  <button
+                    className="ghost-button"
+                    disabled={!activePaper}
+                    type="button"
+                    onClick={() => void handleCreateTag()}
+                  >
+                    Add Tag
+                  </button>
+                </div>
+                {selectedItemIds.length > 0 ? (
+                  <div className="selection-toolbar">
+                    <div className="collection-create-row">
+                      <input
+                        aria-label="Batch tag papers"
+                        className="search-input"
+                        placeholder="Tag selected papers..."
+                        value={batchTagName}
+                        onChange={(event) => setBatchTagName(event.target.value)}
+                      />
+                      <button className="ghost-button" type="button" onClick={() => void handleBatchTag()}>
+                        Tag Selected
+                      </button>
+                    </div>
+                    <div className="collection-create-row">
+                      <select
+                        aria-label="Batch move papers"
+                        className="mode-select"
+                        value={batchMoveTargetId}
+                        onChange={(event) => setBatchMoveTargetId(event.target.value)}
+                      >
+                        <option value="current">Current Collection</option>
+                        {collections
+                          .filter((collection) => collection.id !== selectedCollectionId)
+                          .map((collection) => (
+                            <option key={collection.id} value={collection.id}>
+                              {collection.name}
+                            </option>
+                          ))}
+                      </select>
+                      <button className="ghost-button" type="button" onClick={() => void handleBatchMove()}>
+                        Move Selected
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {importHasIssues && lastImportResult ? (
+            <details className="management-panel" open>
+              <summary>Show Import Issues</summary>
+              <div className="management-panel-body">
+                {lastImportResult.results
+                  .filter((result) => result.status !== "imported")
+                  .map((result) => (
+                    <div key={`${result.path}-${result.status}`} className="export-row">
+                      <span>{result.status}</span>
+                      <span>{result.message}</span>
+                    </div>
+                  ))}
+              </div>
+            </details>
+          ) : null}
         </aside>
       ) : null}
 
       <main className={`reader-shell ${workspaceMode === "pdf_focus" ? "reader-shell-focus" : "reader-shell-workspace"}`}>
         <div className={`reader-tabs ${workspaceMode === "pdf_focus" ? "reader-tabs-focus" : ""}`} role="tablist" aria-label="Open papers">
+          {workspaceMode === "pdf_focus" && activePaper?.attachment_format === "pdf" ? (
+            <button
+              aria-label="Back to library"
+              className="reader-back-button"
+              title="Back to library"
+              type="button"
+              onClick={() => {
+                setWorkspaceMode("workspace");
+                setIsSidebarVisible(true);
+              }}
+            >
+              &lt;
+            </button>
+          ) : null}
           {openPapers.map((paper) => (
             <div
               key={paper.id}
@@ -1395,22 +1560,40 @@ export default function App({ api }: { api: AppApi }) {
               </button>
             </div>
           ))}
+          <button
+            aria-label={isAiPanelOpen ? "Close AI panel" : "Open AI panel"}
+            aria-pressed={isAiPanelOpen}
+            className="icon-button reader-ai-toggle"
+            type="button"
+            onClick={() => setIsAiPanelOpen((current) => !current)}
+          >
+            ✦
+          </button>
         </div>
 
         {workspaceMode === "pdf_focus" && activePaper?.attachment_format === "pdf" ? (
           <section className="reader-panel reader-panel-focus">
             <div className="reader-toolbar reader-toolbar-focus" role="toolbar" aria-label="PDF focus toolbar">
+              {textToolsEnabled ? (
+                <div className="reader-control-group">
+                  <button
+                    aria-label="Find in document"
+                    className="ghost-button"
+                    type="button"
+                    onClick={openFindHud}
+                  >
+                    Search
+                  </button>
+                </div>
+              ) : null}
+
               <div className="reader-control-group reader-control-group-page">
                 <button
                   aria-label="Previous Page"
                   className="ghost-button"
                   disabled={readerPage === 0}
                   type="button"
-                  onClick={() => {
-                    const nextPage = Math.max(0, readerPage - 1);
-                    setReaderPage(nextPage);
-                    setReaderPageInput(String(nextPage + 1));
-                  }}
+                  onClick={goToPreviousReaderPage}
                 >
                   Prev
                 </button>
@@ -1429,42 +1612,36 @@ export default function App({ api }: { api: AppApi }) {
                   className="ghost-button"
                   disabled={readerPage >= readerPageCount - 1}
                   type="button"
-                  onClick={() => {
-                    const nextPage = Math.min(readerPageCount - 1, readerPage + 1);
-                    setReaderPage(nextPage);
-                    setReaderPageInput(String(nextPage + 1));
-                  }}
+                  onClick={goToNextReaderPage}
                 >
                   Next
                 </button>
               </div>
 
-              <div className="reader-control-group reader-control-group-logs">
+              <div className="reader-control-group reader-control-group-zoom">
                 <button
+                  aria-pressed={readerFitMode === "fit_width"}
                   className="ghost-button"
                   type="button"
-                  onClick={async () => {
-                    logEvent("open_logs_dir_click", {});
-                    try {
-                      await api.revealClientLogDir();
-                      logEvent("open_logs_dir_result", { ok: true });
-                    } catch (error) {
-                      logEvent("open_logs_dir_result", {
-                        ok: false,
-                        error: error instanceof Error ? error.message : String(error),
-                      });
-                    }
-                  }}
+                  onClick={() => setReaderFitMode("fit_width")}
                 >
-                  Logs
+                  Fit
+                </button>
+                <button aria-label="Zoom out" className="ghost-button" type="button" onClick={() => stepPdfZoom(-1)}>
+                  -
+                </button>
+                <span className="reader-zoom-label">{readerFitMode === "fit_width" ? "Fit width" : `${readerZoom}%`}</span>
+                <button aria-label="Zoom in" className="ghost-button" type="button" onClick={() => stepPdfZoom(1)}>
+                  +
                 </button>
               </div>
+
             </div>
 
             {readerView ? (
               <>
                 <PdfContinuousReader
-                  fitMode="fit_width"
+                  fitMode={readerFitMode}
                   getPdfDocumentInfo={getPdfDocumentInfo}
                   getPdfPageBundle={getPdfPageBundle}
                   getPdfPageText={getPdfPageText}
@@ -1478,16 +1655,13 @@ export default function App({ api }: { api: AppApi }) {
                   onSearchMatchesChange={({ total, activeIndex }) => {
                     setReaderSearchMatchCount(total);
                     setReportedActiveSearchMatchIndex(activeIndex);
-                    logEvent("find_matches_update", { total, activeIndex, reader: "pdf_continuous" });
                   }}
                   onSelectionChange={(selection) => setPdfSelection(selection)}
                   onActivePageChange={(pageIndex0) => {
-                    setReaderPage(pageIndex0);
-                    setReaderPageInput(String(pageIndex0 + 1));
+                    setReaderPageClamped(pageIndex0);
                   }}
                   onNavigateToPage={(pageIndex0) => {
-                    setReaderPage(pageIndex0);
-                    setReaderPageInput(String(pageIndex0 + 1));
+                    setReaderPageClamped(pageIndex0);
                   }}
                   onPageCountChange={(pageCount) => {
                     if (!activePaper) return;
@@ -1543,79 +1717,59 @@ export default function App({ api }: { api: AppApi }) {
                     .join(" · ")}
                 </p>
               </div>
-              <div className="reader-actions">
-                {readyForAi ? (
-                  <button
-                    aria-expanded={isAiPanelOpen}
-                    className="primary-button"
-                    type="button"
-                    onClick={() => setIsAiPanelOpen(true)}
-                  >
-                    Open AI Workspace
-                  </button>
-                ) : null}
-                {showHighlightAction ? (
-                  <button
-                    aria-label="Highlight selection"
-                    className="ghost-button"
-                    disabled={!pdfSelection}
-                    type="button"
-                    onClick={() => void handleCreatePdfHighlight()}
-                  >
-                    Highlight
-                  </button>
-                ) : null}
-                {activePaper ? (
-                  <label className="ghost-button">
-                    <input
-                      aria-label={`Select paper ${activePaper.title}`}
-                      checked={selectedItemIds.includes(activePaper.id)}
-                      onChange={() =>
-                        setSelectedItemIds((current) =>
-                          current.includes(activePaper.id)
-                            ? current.filter((id) => id !== activePaper.id)
-                            : [...current, activePaper.id],
-                        )
-                      }
-                      type="checkbox"
-                    />
-                    Select
-                  </label>
-                ) : null}
-              </div>
             </div>
 
-            <div className="reader-toolbar">
-              {readerView && readerView.content_status !== "ready" ? (
-                <span className="meta-count">{readerView.content_notice ?? readerView.content_status}</span>
-              ) : null}
-              {activePaper && activePaper.attachment_status !== "ready" ? (
-                <span className="meta-count">{activePaper.attachment_status}</span>
-              ) : null}
-            </div>
+            {readerView?.reader_kind !== "pdf" ? (
+              <div className="reader-toolbar">
+                {textToolsEnabled ? (
+                  <div className="reader-control-group">
+                    <button
+                      aria-label="Find in document"
+                      className="ghost-button"
+                      type="button"
+                      onClick={openFindHud}
+                    >
+                      Search
+                    </button>
+                  </div>
+                ) : null}
+                <div className="reader-control-group">
+                  <button
+                    aria-label="Zoom out"
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => stepNormalizedZoom(-1)}
+                  >
+                    -
+                  </button>
+                  <span className="reader-zoom-label">{readerZoom}%</span>
+                  <button
+                    aria-label="Zoom in"
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => stepNormalizedZoom(1)}
+                  >
+                    +
+                  </button>
+                </div>
+                {readerView && readerView.content_status !== "ready" ? (
+                  <span className="meta-count">{readerView.content_notice ?? readerView.content_status}</span>
+                ) : null}
+                {activePaper && activePaper.attachment_status !== "ready" ? (
+                  <span className="meta-count">{activePaper.attachment_status}</span>
+                ) : null}
+              </div>
+            ) : null}
 
             {activePaper && readerView ? (
               readerView.reader_kind === "pdf" ? (
                 <PdfReader
-                  fitMode="fit_width"
+                  fitMode={readerFitMode}
                   getPdfDocumentInfo={getPdfDocumentInfo}
                   getPdfPageBundle={getPdfPageBundle}
-                  annotations={annotations}
-                  page={readerPage}
-                  searchQuery={readerSearchQuery}
-                  activeSearchMatchIndex={readerSearchMatchIndex}
+                  page={0}
                   view={readerView}
                   zoom={readerZoom}
-                  onSearchMatchesChange={({ total, activeIndex }) => {
-                    setReaderSearchMatchCount(total);
-                    setReportedActiveSearchMatchIndex(activeIndex);
-                    logEvent("find_matches_update", { total, activeIndex, reader: "pdf_single" });
-                  }}
-                  onSelectionChange={(selection) => setPdfSelection(selection)}
-                  onNavigateToPage={(pageIndex0) => {
-                    setReaderPage(pageIndex0);
-                    setReaderPageInput(String(pageIndex0 + 1));
-                  }}
                   onPageCountChange={(pageCount) => {
                     setPdfPageCounts((current) =>
                       current[activePaper.id] === pageCount
@@ -1632,7 +1786,6 @@ export default function App({ api }: { api: AppApi }) {
                   onSearchMatchesChange={({ total, activeIndex }) => {
                     setReaderSearchMatchCount(total);
                     setReportedActiveSearchMatchIndex(activeIndex);
-                    logEvent("find_matches_update", { total, activeIndex, reader: "normalized" });
                   }}
                   zoom={readerZoom}
                 />
@@ -1650,33 +1803,6 @@ export default function App({ api }: { api: AppApi }) {
                 <p className="eyebrow">Reader Content</p>
                 <h3>{readerView.title}</h3>
                 <p>{readerView.plain_text}</p>
-              </div>
-            ) : null}
-
-            {visibleAnnotations.length > 0 && workspaceMode === "workspace" ? (
-              <div className="annotation-panel">
-                <div className="section-title-row">
-                  <h3>Annotations</h3>
-                  <span className="meta-count">{visibleAnnotations.length}</span>
-                </div>
-                <div className="annotation-filter-row">
-                  <button
-                    aria-pressed={annotationFilter === "all"}
-                    className={`ghost-button ${annotationFilter === "all" ? "nav-item-active" : ""}`}
-                    type="button"
-                    onClick={() => setAnnotationFilter("all")}
-                  >
-                    All Annotations
-                  </button>
-                  <button
-                    aria-pressed={annotationFilter === "current_page"}
-                    className={`ghost-button ${annotationFilter === "current_page" ? "nav-item-active" : ""}`}
-                    type="button"
-                    onClick={() => setAnnotationFilter("current_page")}
-                  >
-                    Current Page Annotations
-                  </button>
-                </div>
               </div>
             ) : null}
           </section>
@@ -1698,12 +1824,7 @@ export default function App({ api }: { api: AppApi }) {
                 }
                 if (event.key === "Escape") {
                   event.preventDefault();
-                  setIsFindHudOpen(false);
-                  setReaderSearchQuery("");
-                  setReaderSearchMatchIndex(0);
-                  setReaderSearchMatchCount(0);
-                  setReportedActiveSearchMatchIndex(-1);
-                  logEvent("find_close", { source: "escape" });
+                  closeFindHud();
                 }
               }}
             />
@@ -1732,14 +1853,7 @@ export default function App({ api }: { api: AppApi }) {
               aria-label="Close find"
               className="ghost-button"
               type="button"
-              onClick={() => {
-                setIsFindHudOpen(false);
-                setReaderSearchQuery("");
-                setReaderSearchMatchIndex(0);
-                setReaderSearchMatchCount(0);
-                setReportedActiveSearchMatchIndex(-1);
-                logEvent("find_close", { source: "button" });
-              }}
+              onClick={closeFindHud}
             >
               Close
             </button>
@@ -1747,115 +1861,154 @@ export default function App({ api }: { api: AppApi }) {
         ) : null}
       </main>
 
-      {isAiPanelOpen && readyForAi ? (
-        <>
-          <div
-            aria-hidden="true"
-            className="drawer-backdrop drawer-backdrop-visible"
-            onClick={() => setIsAiPanelOpen(false)}
-          />
-          <aside className="ai-shell ai-shell-open">
-            <div className="panel-header panel-header-row">
-              <div>
-                <p className="eyebrow">AI Workspace</p>
-                <h2>Research Copilot</h2>
-              </div>
-              <button className="ghost-button" type="button" onClick={() => setIsAiPanelOpen(false)}>
-                Close
-              </button>
+      {isAiPanelOpen ? (
+        <aside className="ai-shell" aria-label="AI panel">
+          <div className="panel-header panel-header-row">
+            <div>
+              <p className="eyebrow">AI Panel</p>
+              <h2>Research Copilot</h2>
             </div>
+            <button className="ghost-button" type="button" onClick={() => setIsAiPanelOpen(false)}>
+              Close
+            </button>
+          </div>
 
-            <div className="reader-tabs" role="tablist" aria-label="AI scope">
-              <button
-                className={`reader-tab ${aiPanelMode === "paper" ? "reader-tab-active" : ""}`}
-                role="tab"
-                type="button"
-                onClick={() => setAiPanelMode("paper")}
-              >
-                Current Paper
-              </button>
-              <button
-                className={`reader-tab ${aiPanelMode === "collection" ? "reader-tab-active" : ""}`}
-                role="tab"
-                type="button"
-                onClick={() => setAiPanelMode("collection")}
-              >
-                Current Collection
-              </button>
-            </div>
+          <div className="ai-scope-tabs" role="tablist" aria-label="AI scope">
+            <button
+              className={`reader-tab ${aiPanelMode === "paper" ? "reader-tab-active" : ""}`}
+              role="tab"
+              type="button"
+              onClick={() => setAiPanelMode("paper")}
+            >
+              Current Paper
+            </button>
+            <button
+              className={`reader-tab ${aiPanelMode === "collection" ? "reader-tab-active" : ""}`}
+              role="tab"
+              type="button"
+              onClick={() => setAiPanelMode("collection")}
+            >
+              Current Collection
+            </button>
+          </div>
 
+          <div className="ai-chat-history">
             {aiPanelMode === "paper" ? (
-              <section className="ai-card-stack">
-                <div className="context-card">
-                  <p className="eyebrow">Paper Scope</p>
-                  <h3>{activePaper?.title ?? "No active paper"}</h3>
-                  <p>{readerView?.plain_text ?? "No reader view."}</p>
-                </div>
-                <div className="action-grid">
-                  {itemActions.map((action) => (
-                    <button
-                      key={action.kind}
-                      className="action-card"
-                      type="button"
-                      onClick={() => void handleItemTask(action.kind)}
-                    >
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="result-card">
-                  <h3>Cached Summary</h3>
-                  <p>{paperArtifact?.markdown ?? "Run an AI paper task to cache the first artifact."}</p>
-                </div>
-                <div className="result-card">
-                  <h3>Paper Task History</h3>
-                  {paperTaskRuns.length > 0 ? (
-                    paperTaskRuns.slice(0, 4).map((task) => (
-                      <div key={task.id} className="result-card">
-                        <div className="export-row">
-                          <span>{task.kind}</span>
-                          <span className="meta-count">{task.status}</span>
-                        </div>
-                        <p>{taskPreview(task)}</p>
-                      </div>
-                    ))
-                  ) : (
-                    <p>No paper tasks have run yet.</p>
-                  )}
-                </div>
-              </section>
+              <div className="context-card ai-context-card">
+                <p className="eyebrow">Paper Scope</p>
+                <h3>{activePaper?.title ?? "No active paper"}</h3>
+                <p>{activePaper ? activePaperMetadata ?? "No metadata" : "Open a paper to ask questions."}</p>
+              </div>
             ) : (
-              <section className="ai-card-stack">
-                <div className="context-card">
-                  <p className="eyebrow">Collection Scope</p>
-                  <h3>{activeCollection?.name ?? "No active collection"}</h3>
-                  <p>{visibleItems.length} papers included in the current scope.</p>
-                </div>
-                <div className="action-grid">
-                  {collectionActions.map((task) => (
-                    <button
-                      key={task.kind}
-                      className="action-card"
-                      type="button"
-                      onClick={() => void handleCollectionTask(task.kind)}
-                    >
-                      {task.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="result-card">
-                  <h3>Draft Status</h3>
-                  {isCollectionDraftStale ? <p>Draft scope is stale.</p> : null}
-                  <p>{collectionArtifact?.markdown ?? "No collection draft yet."}</p>
-                  {collectionArtifact ? (
-                    <button className="ghost-button" type="button" onClick={() => void handleCreateResearchNote()}>
-                      Save as Research Note
-                    </button>
-                  ) : null}
-                </div>
+              <div className="context-card ai-context-card">
+                <p className="eyebrow">Collection Scope</p>
+                <h3>{activeCollection?.name ?? "No active collection"}</h3>
+                <p>{activeCollection ? `${visibleItems.length} papers included in the current scope.` : "Select a collection to ask cross-paper questions."}</p>
+              </div>
+            )}
+
+            {aiPanelTasks.length > 0 ? (
+              aiPanelTasks.map((task) => (
+                <article key={task.id} className="ai-message-card">
+                  <div className="export-row">
+                    <strong>{taskLabel(task.kind)}</strong>
+                    <span className="meta-count">{task.status}</span>
+                  </div>
+                  {task.input_prompt ? <p className="ai-message-prompt">{task.input_prompt}</p> : null}
+                  <p>{taskPreview(task)}</p>
+                </article>
+              ))
+            ) : (
+              <div className="result-card">
+                <p>{aiPanelScopeReady ? "Ask a question or run a quick action." : "No active scope available yet."}</p>
+              </div>
+            )}
+          </div>
+
+          <div className="ai-quick-actions">
+            {(aiPanelMode === "paper" ? itemActions : collectionActions).map((action) => (
+              <button
+                key={action.kind}
+                className="ghost-button ai-quick-action"
+                disabled={!aiPanelCanSend}
+                type="button"
+                onClick={() =>
+                  aiPanelMode === "paper"
+                    ? void handleItemTask(action.kind)
+                    : void handleCollectionTask(action.kind)
+                }
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="ai-composer">
+            <textarea
+              aria-label="AI prompt"
+              className="note-editor ai-composer-input"
+              disabled={!aiPanelCanSend}
+              placeholder={
+                aiPanelMode === "paper"
+                  ? "Ask about the current paper..."
+                  : "Ask about the current collection..."
+              }
+              rows={4}
+              value={aiComposerValue}
+              onChange={(event) => setAiComposerValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  void handleAiSubmit();
+                }
+              }}
+            />
+            <button
+              aria-label="Send AI prompt"
+              className="primary-button"
+              disabled={!aiPanelCanSend || aiComposerValue.trim().length === 0}
+              type="button"
+              onClick={() => void handleAiSubmit()}
+            >
+              Send
+            </button>
+          </div>
+
+          <details className="management-panel">
+            <summary>Artifacts</summary>
+            <div className="management-panel-body">
+              <p>{aiPanelArtifact?.markdown ?? "No artifact yet."}</p>
+              {aiPanelMode === "collection" && collectionArtifact ? (
+                <button className="ghost-button" type="button" onClick={() => void handleCreateResearchNote()}>
+                  Save as Research Note
+                </button>
+              ) : null}
+              {aiPanelMode === "collection" && isCollectionDraftStale ? <p>Draft scope is stale.</p> : null}
+            </div>
+          </details>
+
+          <details className="management-panel">
+            <summary>Task History</summary>
+            <div className="management-panel-body">
+              {aiPanelTasks.length > 0 ? (
+                aiPanelTasks.map((task) => (
+                  <div key={`history-${task.id}`} className="export-row">
+                    <span>{taskLabel(task.kind)}</span>
+                    <span className="meta-count">{task.status}</span>
+                  </div>
+                ))
+              ) : (
+                <p>No tasks yet.</p>
+              )}
+            </div>
+          </details>
+
+          {aiPanelMode === "collection" ? (
+            <details className="management-panel">
+              <summary>Research Notes</summary>
+              <div className="management-panel-body">
                 {activeNoteId ? (
-                  <div className="result-card">
-                    <h3>Research Note</h3>
+                  <>
                     <textarea
                       aria-label="Research note editor"
                       className="note-editor"
@@ -1870,48 +2023,29 @@ export default function App({ api }: { api: AppApi }) {
                         Export Markdown
                       </button>
                     </div>
-                  </div>
+                  </>
                 ) : null}
-                <div className="result-card">
-                  <h3>Saved Notes</h3>
-                  {notes.length > 0 ? (
-                    notes.map((note) => (
-                      <button
-                        key={note.id}
-                        className={`nav-item ${note.id === activeNoteId ? "nav-item-active" : ""}`}
-                        type="button"
-                        onClick={() => {
-                          setActiveNoteId(note.id);
-                          setNoteDraft(note.markdown);
-                        }}
-                      >
-                        {noteHeading(note)}
-                      </button>
-                    ))
-                  ) : (
-                    <p>No notes yet.</p>
-                  )}
-                </div>
-                <div className="result-card">
-                  <h3>Task History</h3>
-                  {collectionTaskRuns.length > 0 ? (
-                    collectionTaskRuns.slice(0, 4).map((task) => (
-                      <div key={task.id} className="result-card">
-                        <div className="export-row">
-                          <span>{task.kind}</span>
-                          <span className="meta-count">{task.status}</span>
-                        </div>
-                        <p>{taskPreview(task)}</p>
-                      </div>
-                    ))
-                  ) : (
-                    <p>No collection tasks have run yet.</p>
-                  )}
-                </div>
-              </section>
-            )}
-          </aside>
-        </>
+                {notes.length > 0 ? (
+                  notes.map((note) => (
+                    <button
+                      key={note.id}
+                      className={`nav-item ${note.id === activeNoteId ? "nav-item-active" : ""}`}
+                      type="button"
+                      onClick={() => {
+                        setActiveNoteId(note.id);
+                        setNoteDraft(note.markdown);
+                      }}
+                    >
+                      {noteHeading(note)}
+                    </button>
+                  ))
+                ) : (
+                  <p>No notes yet.</p>
+                )}
+              </div>
+            </details>
+          ) : null}
+        </aside>
       ) : null}
     </div>
   );

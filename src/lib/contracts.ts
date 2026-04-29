@@ -77,6 +77,7 @@ export type AITask = {
   item_id: number | null;
   collection_id: number | null;
   scope_item_ids: number[] | null;
+  input_prompt: string | null;
   kind: string;
   status: string;
   output_markdown: string;
@@ -177,17 +178,6 @@ export type PdfPageText = {
   spans: PdfTextSpan[];
 };
 
-export type ClientLogEvent = {
-  ts_ms: number;
-  kind: string;
-  data: unknown;
-};
-
-export type AppendClientEventLogInput = {
-  session_id: string;
-  events: ClientLogEvent[];
-};
-
 export type AppApi = {
   listCollections: () => Promise<Collection[]>;
   createCollection: (input: { name: string; parent_id?: number | null }) => Promise<Collection>;
@@ -229,11 +219,12 @@ export type AppApi = {
     body: string;
   }) => Promise<Annotation>;
   removeAnnotation: (input: { annotation_id: number }) => Promise<void>;
-  runItemTask: (input: { item_id: number; kind: string }) => Promise<AITask>;
+  runItemTask: (input: { item_id: number; kind: string; prompt?: string }) => Promise<AITask>;
   runCollectionTask: (input: {
     collection_id: number;
     kind: string;
     scope_item_ids: number[];
+    prompt?: string;
   }) => Promise<AITask>;
   listTaskRuns: (input: { item_id?: number; collection_id?: number }) => Promise<AITask[]>;
   getArtifact: (input: {
@@ -254,7 +245,4 @@ export type AppApi = {
   pdfEngineGetDocumentInfo: (input: PdfEngineGetDocumentInfoInput) => Promise<PdfDocumentInfo>;
   pdfEngineGetPageBundle: (input: PdfEngineGetPageBundleInput) => Promise<PdfPageBundle>;
   pdfEngineGetPageText: (input: PdfEngineGetPageTextInput) => Promise<PdfPageText>;
-  getClientLogDir: () => Promise<string>;
-  revealClientLogDir: () => Promise<void>;
-  appendClientEventLog: (input: AppendClientEventLogInput) => Promise<void>;
 };

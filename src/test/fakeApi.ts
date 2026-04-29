@@ -139,6 +139,7 @@ const initialState = (): MockState => ({
       item_id: 1,
       collection_id: 1,
       scope_item_ids: null,
+      input_prompt: null,
       kind: "item.summarize",
       status: "succeeded",
       output_markdown:
@@ -299,13 +300,15 @@ const collectionTaskOutput = (collectionId: number, kind: string, scopeItemIds: 
       return `# Theme Map: ${collectionName(collectionId)}\n\n## Themes\n${evidenceMap}\n\n## Theme Clusters\nTheme clusters across ${items.length} visible papers.`;
     case "collection.compare_methods":
       return `# Method Comparison: ${collectionName(collectionId)}\n\n## Comparison Matrix\n${evidenceMap}\n\n## Method Notes\nMethod comparison across ${items.length} visible papers.`;
+    case "collection.ask":
+      return `# Collection Q&A: ${collectionName(collectionId)}\n\n## Answer\n${items[0]?.plainText.split(".").shift()?.trim() ?? "No readable evidence was available."}\n\n## Scope\n${items.length} papers in the current collection view.`;
     case "collection.review_draft":
     default:
       return `# Review Draft: ${collectionName(collectionId)}\n\n## Evidence Map\n${evidenceMap}\n\n## Narrative\nThis draft groups the imported papers into a concise literature review scaffold ready for editing.`;
   }
 };
 
-const itemTaskOutput = (item: MockItemDetails, kind: string) => {
+const itemTaskOutput = (item: MockItemDetails, kind: string, prompt?: string) => {
   const firstLine = item.plainText.split(".").shift()?.trim() ?? item.title;
 
   switch (kind) {
@@ -316,7 +319,7 @@ const itemTaskOutput = (item: MockItemDetails, kind: string) => {
     case "item.explain_term":
       return `# Terminology Notes: ${item.title}\n\n## Key Terms\n- Scaling law: ${firstLine}\n\n## Reading Tip\nUse this note to clarify repeated technical vocabulary.`;
     case "item.ask":
-      return `# Reading Q&A: ${item.title}\n\n## Answer\n${firstLine}\n\n## Evidence\nCollection: ${collectionName(item.collection_id)}`;
+      return `# Reading Q&A: ${item.title}\n\n## Question\n${prompt?.trim() || "No question provided."}\n\n## Answer\n${firstLine}\n\n## Evidence\nCollection: ${collectionName(item.collection_id)}`;
     default:
       return `# Summary: ${item.title}\n\nCollection: ${collectionName(item.collection_id)}\n\n${firstLine}`;
   }
@@ -779,12 +782,13 @@ export const fakeApi: AppApi = {
     if (!item) {
       throw new Error(`Unknown item ${input.item_id}`);
     }
-    const output = itemTaskOutput(item, input.kind);
+    const output = itemTaskOutput(item, input.kind, input.prompt);
     const task = {
       id: state.nextId++,
       item_id: item.id,
       collection_id: item.collection_id,
       scope_item_ids: null,
+      input_prompt: input.prompt?.trim() || null,
       kind: input.kind,
       status: "succeeded",
       output_markdown: output,
@@ -818,6 +822,7 @@ export const fakeApi: AppApi = {
       item_id: null,
       collection_id: input.collection_id,
       scope_item_ids: [...input.scope_item_ids],
+      input_prompt: input.prompt?.trim() || null,
       kind: input.kind,
       status: "succeeded",
       output_markdown: output,
@@ -958,17 +963,5 @@ export const fakeApi: AppApi = {
         { text: "world", x0: 55, y0: 10, x1: 95, y1: 20 },
       ],
     };
-  },
-
-  async getClientLogDir() {
-    return "/mock/library_root/client_logs";
-  },
-
-  async revealClientLogDir() {
-    // No-op in unit tests.
-  },
-
-  async appendClientEventLog() {
-    // No-op in unit tests.
   },
 };
