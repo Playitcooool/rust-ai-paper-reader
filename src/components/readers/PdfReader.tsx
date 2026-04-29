@@ -8,7 +8,6 @@ import type {
   ReaderView,
 } from "../../lib/contracts";
 import { safeScrollIntoView } from "../../lib/dom";
-import { logEvent, textForLog } from "../../lib/clientEventLog";
 import { computeFitWidthZoomPct } from "./pdfFit";
 import {
   buildPdfTextSelectionFromRange,
@@ -166,11 +165,7 @@ export function PdfReader({
     void (async () => {
       try {
         const renderStart = performance.now();
-        logEvent("pdf_render_start", {
-          pageIndex0: page,
-          zoomPct: effectiveZoom,
-          targetWidthPx: desiredWidthCssPx,
-        });
+        void renderStart;
         const bundle = await getPdfPageBundle({
           primary_attachment_id: primaryAttachmentId,
           page_index0: page,
@@ -187,10 +182,6 @@ export function PdfReader({
         imageUrlRef.current = blobUrl;
         setImageUrl(blobUrl);
 
-        logEvent("textlayer_render_start", {
-          pageIndex0: page,
-          itemsLength: bundle.spans.length,
-        });
         const built = buildRustPdfTextLayer({
           host,
           bundle,
@@ -205,17 +196,7 @@ export function PdfReader({
         if (ready) textLayerSelectionCleanupRef.current = installPdfJsTextLayerSelectionSupport(host);
 
         setStatus("ready");
-        logEvent("pdf_render_done", {
-          pageIndex0: page,
-          zoomPct: effectiveZoom,
-          durationMs: Math.round(performance.now() - renderStart),
-        });
-        logEvent("textlayer_render_done", {
-          pageIndex0: page,
-          itemsLength: bundle.spans.length,
-          divCount: built.divs.length,
-          ready,
-        });
+        void effectiveZoom;
       } catch (error) {
         if (cancelled) return;
         setStatus("error");
@@ -419,8 +400,6 @@ export function PdfReader({
       if (nextKey === lastKey) return;
       lastKey = nextKey;
 
-      const quote = selection?.toString?.() ?? "";
-      const quoteMeta = textForLog(quote) ?? { text_len: 0, text_snippet: "" };
       let insideTextLayer = false;
       let nearestDivIndex: string | null = null;
       try {
@@ -437,13 +416,8 @@ export function PdfReader({
       } catch {
         // ignore
       }
-      logEvent("selection_change", {
-        pageIndex0: page,
-        rangeCount: selection?.rangeCount ?? 0,
-        insideTextLayer,
-        nearestDivIndex,
-        ...quoteMeta,
-      });
+      void insideTextLayer;
+      void nearestDivIndex;
       onSelectionChange(next);
     };
 
@@ -455,7 +429,10 @@ export function PdfReader({
   const pageShellStyleVars = useMemo((): CSSProperties => ({ width: `${renderedWidthCssPx}px` }), [renderedWidthCssPx]);
 
   return (
-    <section className={`pdf-reader ${showChrome ? "pdf-reader-workspace" : "pdf-reader-focus"}`} data-testid="pdf-reader">
+    <section
+      className={`pdf-reader ${showChrome ? "pdf-reader-workspace" : "pdf-reader-focus"}`}
+      data-testid="pdf-reader"
+    >
       {showChrome ? (
         <div className="reader-location-bar">
           <span className="meta-count">

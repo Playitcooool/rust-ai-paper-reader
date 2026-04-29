@@ -10,7 +10,6 @@ import type {
   ReaderView,
 } from "../../lib/contracts";
 import { clearChildren, safeScrollIntoView } from "../../lib/dom";
-import { logEvent, textForLog } from "../../lib/clientEventLog";
 import { computeFitWidthZoomPct } from "./pdfFit";
 import { computeActivePageIndexFromRects } from "./pdfContinuousActivePage";
 import { buildOcrTextLayer } from "./pdfOcrTextLayer";
@@ -292,11 +291,8 @@ export function PdfContinuousReader({
         };
       });
       setTextLayerEpoch((current) => current + 1);
-      logEvent("pdf_text_source_selected", {
-        pageIndex0,
-        source: textSource,
-        stringCount: strings.length,
-      });
+      void textSource;
+      void strings;
     },
     [rememberPageText],
   );
@@ -552,14 +548,7 @@ export function PdfContinuousReader({
         const host = textLayerHostByIndexRef.current.get(request.pageIndex0);
         if (host) clearChildren(host);
 
-        logEvent("pdf_render_start", {
-          pageIndex0: request.pageIndex0,
-          zoomPct: effectiveZoom,
-          targetWidthPx: request.targetRasterWidthPx,
-          cssWidthPx: request.cssWidthPx,
-          rasterScale: request.rasterScale,
-          priority: request.priority,
-        });
+        void effectiveZoom;
         const bundle = await getPdfPageBundle({
           primary_attachment_id: primaryAttachmentId,
           page_index0: request.pageIndex0,
@@ -611,19 +600,6 @@ export function PdfContinuousReader({
           strings: nativeLayer.strings,
           textSource: pickPageTextSource(nativeLayer.strings),
         });
-        logEvent("pdf_render_done", {
-          pageIndex0: request.pageIndex0,
-          zoomPct: effectiveZoom,
-          rasterWidthPx: bundle.width_px,
-          rasterHeightPx: bundle.height_px,
-          rasterScale: request.rasterScale,
-        });
-        logEvent("textlayer_render_done", {
-          pageIndex0: request.pageIndex0,
-          itemsLength: bundle.spans.length,
-          divCount: nativeLayer.divs.length,
-          ready: nativeLayer.divs.length > 0,
-        });
         if (request.pageIndex0 === page) setStatus("ready");
 
         const ocrEligible =
@@ -635,10 +611,6 @@ export function PdfContinuousReader({
           inFlightOcrPagesRef.current.add(request.pageIndex0);
           void (async () => {
             try {
-              logEvent("pdf_ocr_fallback_start", {
-                pageIndex0: request.pageIndex0,
-                sourceResolution: bundle.width_px,
-              });
               const result = await ocrPdfPage({
                 primary_attachment_id: primaryAttachmentId,
                 page_index0: request.pageIndex0,
@@ -662,16 +634,9 @@ export function PdfContinuousReader({
                 strings: built.strings,
                 textSource: built.divs.length > 0 ? "ocr" : pickPageTextSource(nativeLayer.strings),
               });
-              logEvent("pdf_ocr_fallback_done", {
-                pageIndex0: request.pageIndex0,
-                lineCount: result.lines.length,
-                divCount: built.divs.length,
-              });
+              void result;
             } catch (error) {
-              logEvent("pdf_ocr_fallback_failed", {
-                pageIndex0: request.pageIndex0,
-                error: error instanceof Error ? error.message : String(error),
-              });
+              void error;
             } finally {
               inFlightOcrPagesRef.current.delete(request.pageIndex0);
             }
@@ -1035,8 +1000,6 @@ export function PdfContinuousReader({
       if (nextKey === lastKey) return;
       lastKey = nextKey;
 
-      const quote = selection?.toString?.() ?? "";
-      const quoteMeta = textForLog(quote) ?? { text_len: 0, text_snippet: "" };
       let insideTextLayer = false;
       let nearestDivIndex: string | null = null;
       let pageIndex0: number | null = null;
@@ -1058,13 +1021,9 @@ export function PdfContinuousReader({
       } catch {
         // ignore
       }
-      logEvent("selection_change", {
-        pageIndex0,
-        rangeCount: selection?.rangeCount ?? 0,
-        insideTextLayer,
-        nearestDivIndex,
-        ...quoteMeta,
-      });
+      void insideTextLayer;
+      void nearestDivIndex;
+      void pageIndex0;
       onSelectionChange(next);
     };
     document.addEventListener("selectionchange", onSelectionChangeEvent);
