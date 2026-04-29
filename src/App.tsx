@@ -1,4 +1,7 @@
+import type { ComponentProps } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { NormalizedReader } from "./components/readers/NormalizedReader";
 import { PdfContinuousReader } from "./components/readers/PdfContinuousReader";
@@ -9,6 +12,7 @@ import { getRuntimePolyfillDiagnostics } from "./lib/runtimePolyfills";
 import type {
   AIArtifact,
   AITask,
+  AITaskStreamEvent,
   Annotation,
   AppApi,
   Collection,
@@ -20,6 +24,7 @@ import type {
 } from "./lib/contracts";
 
 type AiPanelMode = "paper" | "collection";
+type AiDockSection = "artifacts" | "history" | "notes";
 type WorkspaceMode = "workspace" | "pdf_focus";
 type ItemSort = "recent" | "title" | "year_desc";
 type AttachmentFilter = "all" | "ready" | "missing" | "citation_only";
@@ -54,6 +59,8 @@ const taskLabel = (kind: string) =>
     "collection.review_draft": "Review Draft",
     "collection.ask": "Ask",
   })[kind] ?? kind;
+
+const isQuickActionKind = (kind: string) => kind !== "item.ask" && kind !== "collection.ask";
 
 const attachmentFormatLabel = (format: LibraryItem["attachment_format"] | ReaderView["attachment_format"]) =>
   format.toUpperCase();
@@ -145,14 +152,61 @@ const scopeMatches = (left: number[] | null, right: number[]) =>
   left.length === right.length &&
   left.every((itemId, index) => itemId === right[index]);
 
-const taskPreview = (task: AITask) =>
-  (() => {
-    const lines = task.output_markdown
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith("#"));
-    return lines[lines.length - 1] ?? "No preview available.";
-  })();
+type AiPendingMessage = {
+  streamId: string;
+  kind: string;
+  inputPrompt: string | null;
+  markdown: string;
+  error: string | null;
+  status: "streaming" | "failed";
+  taskId?: number;
+};
+
+type AiDockState = Record<AiDockSection, boolean>;
+type AiPendingByScope = Record<AiPanelMode, AiPendingMessage | null>;
+
+const initialAiDockState = (): Record<AiPanelMode, AiDockState> => ({
+  paper: { artifacts: false, history: false, notes: false },
+  collection: { artifacts: false, history: false, notes: false },
+});
+
+const initialAiPendingByScope = (): AiPendingByScope => ({
+  paper: null,
+  collection: null,
+});
+
+const createStreamId = () =>
+  globalThis.crypto?.randomUUID?.() ?? `stream-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+const markdownComponents = {
+  a: (props: ComponentProps<"a">) => <a {...props} rel="noreferrer" target="_blank" />,
+  pre: (props: ComponentProps<"pre">) => <pre className="ai-markdown-pre" {...props} />,
+  code({
+    inline,
+    className,
+    children,
+    ...props
+  }: ComponentProps<"code"> & { inline?: boolean }) {
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  },
+};
+
+const assistantStatusLabel = (status: AiPendingMessage["status"] | AITask["status"]) =>
+  status === "streaming" ? "Streaming" : status === "failed" ? "Failed" : status;
+
+function MarkdownMessage({ markdown }: { markdown: string }) {
+  return (
+    <div className="ai-markdown">
+      <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+        {markdown}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 const noteHeading = (note: ResearchNote) =>
   note.markdown
@@ -218,6 +272,8 @@ export default function App({ api }: { api: AppApi }) {
   const [noteDraft, setNoteDraft] = useState("");
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [aiPanelMode, setAiPanelMode] = useState<AiPanelMode>("paper");
+  const [aiPendingByScope, setAiPendingByScope] = useState<AiPendingByScope>(initialAiPendingByScope);
+  const [aiDockOpenByScope, setAiDockOpenByScope] = useState(initialAiDockState);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("workspace");
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
   const [search, setSearch] = useState("");
@@ -246,6 +302,7 @@ export default function App({ api }: { api: AppApi }) {
   const [collectionDraftName, setCollectionDraftName] = useState("");
   const [renamingCollectionId, setRenamingCollectionId] = useState<number | null>(null);
   const [aiComposerValue, setAiComposerValue] = useState("");
+  const [areQuickActionsVisible, setAreQuickActionsVisible] = useState(true);
   const manageButtonRef = useRef<HTMLButtonElement | null>(null);
   const managePopoverRef = useRef<HTMLDivElement | null>(null);
 
@@ -389,6 +446,7 @@ export default function App({ api }: { api: AppApi }) {
       setSelectedTagId(null);
       setCollectionArtifact(null);
       setCollectionTaskRuns([]);
+      setAiPendingByScope((current) => ({ ...current, collection: null }));
       setNotes([]);
       setActiveNoteId(null);
       setNoteDraft("");
@@ -400,11 +458,9 @@ export default function App({ api }: { api: AppApi }) {
 
     async function loadCollectionContext() {
       const runtimeApi = await getApi();
-      const [loadedTags, artifact, collectionNotes, taskRuns] = await Promise.all([
+      const [loadedTags, { artifact, taskRuns, collectionNotes }] = await Promise.all([
         runtimeApi.listTags(collectionId),
-        runtimeApi.getArtifact({ collection_id: collectionId }),
-        runtimeApi.listNotes(collectionId),
-        runtimeApi.listTaskRuns({ collection_id: collectionId }),
+        refreshCollectionAiContext(collectionId),
       ]);
       if (cancelled) return;
       setTags(loadedTags);
@@ -414,6 +470,7 @@ export default function App({ api }: { api: AppApi }) {
       setCollectionArtifact(artifact);
       setCollectionTaskRuns(taskRuns);
       setNotes(collectionNotes);
+      setAiPendingByScope((current) => ({ ...current, collection: null }));
       setActiveNoteId(collectionNotes[0]?.id ?? null);
       setNoteDraft(collectionNotes[0]?.markdown ?? "");
     }
@@ -431,6 +488,7 @@ export default function App({ api }: { api: AppApi }) {
       setAnnotations([]);
       setPaperArtifact(null);
       setPaperTaskRuns([]);
+      setAiPendingByScope((current) => ({ ...current, paper: null }));
       return;
     }
 
@@ -463,15 +521,17 @@ export default function App({ api }: { api: AppApi }) {
         void startedAt;
 
         void (async () => {
-          const [annotationsResult, artifactResult, taskRunsResult] = await Promise.allSettled([
+          const [annotationsResult, aiContextResult] = await Promise.allSettled([
             runtimeApi.listAnnotations(itemId),
-            runtimeApi.getArtifact({ item_id: itemId }),
-            runtimeApi.listTaskRuns({ item_id: itemId }),
+            refreshPaperAiContext(itemId),
           ]);
           if (cancelled || readerLoadRequestIdRef.current !== requestId) return;
           if (annotationsResult.status === "fulfilled") setAnnotations(annotationsResult.value);
-          if (artifactResult.status === "fulfilled") setPaperArtifact(artifactResult.value);
-          if (taskRunsResult.status === "fulfilled") setPaperTaskRuns(taskRunsResult.value);
+          if (aiContextResult.status === "fulfilled") {
+            setPaperArtifact(aiContextResult.value.artifact);
+            setPaperTaskRuns(aiContextResult.value.taskRuns);
+            setAiPendingByScope((current) => ({ ...current, paper: null }));
+          }
         })();
       } catch (error) {
         if (cancelled || readerLoadRequestIdRef.current !== requestId) return;
@@ -516,6 +576,10 @@ export default function App({ api }: { api: AppApi }) {
     readerSearchInputRef.current?.focus();
     readerSearchInputRef.current?.select();
   }, [isFindHudOpen]);
+
+  useEffect(() => {
+    setAreQuickActionsVisible(true);
+  }, [aiPanelMode]);
 
   const openFindHud = useCallback(() => {
     if (!textToolsEnabled) return;
@@ -945,37 +1009,150 @@ export default function App({ api }: { api: AppApi }) {
     setStatusMessage(`Moved ${selectedItemIds.length} papers.`);
   };
 
-  const handleItemTask = async (kind: string, prompt?: string) => {
-    if (!activePaper || !aiCapabilitiesEnabled) return;
+  async function refreshPaperAiContext(itemId: number) {
     const runtimeApi = await getApi();
-    await runtimeApi.runItemTask({ item_id: activePaper.id, kind, prompt });
     const [artifact, taskRuns] = await Promise.all([
-      runtimeApi.getArtifact({ item_id: activePaper.id }),
-      runtimeApi.listTaskRuns({ item_id: activePaper.id }),
+      runtimeApi.getArtifact({ item_id: itemId }),
+      runtimeApi.listTaskRuns({ item_id: itemId }),
     ]);
     setPaperArtifact(artifact);
     setPaperTaskRuns(taskRuns);
-    setStatusMessage(`Completed ${kind} for ${activePaper.title}.`);
+    return { artifact, taskRuns };
+  }
+
+  async function refreshCollectionAiContext(collectionId: number) {
+    const runtimeApi = await getApi();
+    const [artifact, taskRuns, collectionNotes] = await Promise.all([
+      runtimeApi.getArtifact({ collection_id: collectionId }),
+      runtimeApi.listTaskRuns({ collection_id: collectionId }),
+      runtimeApi.listNotes(collectionId),
+    ]);
+    setCollectionArtifact(artifact);
+    setCollectionTaskRuns(taskRuns);
+    setNotes(collectionNotes);
+    return { artifact, taskRuns, collectionNotes };
+  }
+
+  const toggleAiDockSection = useCallback((scope: AiPanelMode, section: AiDockSection) => {
+    setAiDockOpenByScope((current) => ({
+      ...current,
+      [scope]: {
+        ...current[scope],
+        [section]: !current[scope][section],
+      },
+    }));
+  }, []);
+
+  const handleAiTaskStreamEvent = useCallback((event: AITaskStreamEvent) => {
+    setAiPendingByScope((current) => {
+      const existing = current[event.scope];
+      if (event.phase === "started") {
+        return {
+          ...current,
+          [event.scope]: {
+            streamId: event.stream_id,
+            kind: event.kind,
+            inputPrompt: event.input_prompt ?? null,
+            markdown: "",
+            error: null,
+            status: "streaming",
+          },
+        };
+      }
+      if (!existing || existing.streamId !== event.stream_id) return current;
+      if (event.phase === "delta") {
+        return {
+          ...current,
+          [event.scope]: {
+            ...existing,
+            markdown: event.full_markdown ?? `${existing.markdown}${event.delta_markdown ?? ""}`,
+          },
+        };
+      }
+      if (event.phase === "completed") {
+        return {
+          ...current,
+          [event.scope]: {
+            ...existing,
+            markdown: event.full_markdown ?? existing.markdown,
+            taskId: event.task_id,
+          },
+        };
+      }
+      if (event.phase === "failed") {
+        return {
+          ...current,
+          [event.scope]: {
+            ...existing,
+            error: event.error ?? "AI task failed.",
+            status: "failed",
+          },
+        };
+      }
+      return current;
+    });
+  }, []);
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+
+    void (async () => {
+      const runtimeApi = await getApi();
+      const unlisten = await runtimeApi.listenAiTaskStream(handleAiTaskStreamEvent);
+      if (cancelled) {
+        unlisten();
+        return;
+      }
+      dispose = unlisten;
+    })();
+
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [api, handleAiTaskStreamEvent]);
+
+  const handleItemTask = async (kind: string, prompt?: string) => {
+    if (!activePaper || !aiCapabilitiesEnabled) return;
+    const runtimeApi = await getApi();
+    const streamId = createStreamId();
+    try {
+      const task = await runtimeApi.runItemTask({ item_id: activePaper.id, kind, prompt, stream_id: streamId });
+      const { taskRuns } = await refreshPaperAiContext(activePaper.id);
+      setAiPendingByScope((current) => ({
+        ...current,
+        paper: taskRuns.some((entry) => entry.id === task.id) ? null : current.paper,
+      }));
+      setStatusMessage(`Completed ${kind} for ${activePaper.title}.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : `Failed ${kind} for ${activePaper.title}.`);
+    }
   };
 
   const handleCollectionTask = async (kind: string, prompt?: string) => {
     if (!activeCollection || visibleScopeItemIds.length === 0) return;
     const runtimeApi = await getApi();
-    await runtimeApi.runCollectionTask({
-      collection_id: activeCollection.id,
-      kind,
-      scope_item_ids: visibleScopeItemIds,
-      prompt,
-    });
-    const [artifact, taskRuns, collectionNotes] = await Promise.all([
-      runtimeApi.getArtifact({ collection_id: activeCollection.id }),
-      runtimeApi.listTaskRuns({ collection_id: activeCollection.id }),
-      runtimeApi.listNotes(activeCollection.id),
-    ]);
-    setCollectionArtifact(artifact);
-    setCollectionTaskRuns(taskRuns);
-    setNotes(collectionNotes);
-    setStatusMessage(`Completed ${kind} for ${activeCollection.name}.`);
+    const streamId = createStreamId();
+    try {
+      const task = await runtimeApi.runCollectionTask({
+        collection_id: activeCollection.id,
+        kind,
+        scope_item_ids: visibleScopeItemIds,
+        prompt,
+        stream_id: streamId,
+      });
+      const { taskRuns } = await refreshCollectionAiContext(activeCollection.id);
+      setAiPendingByScope((current) => ({
+        ...current,
+        collection: taskRuns.some((entry) => entry.id === task.id) ? null : current.collection,
+      }));
+      setStatusMessage(`Completed ${kind} for ${activeCollection.name}.`);
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error ? error.message : `Failed ${kind} for ${activeCollection?.name ?? "collection"}.`,
+      );
+    }
   };
 
   const handleAiSubmit = useCallback(async () => {
@@ -988,6 +1165,22 @@ export default function App({ api }: { api: AppApi }) {
     }
     setAiComposerValue("");
   }, [aiComposerValue, aiPanelMode, handleCollectionTask, handleItemTask]);
+
+  const handleQuickAction = useCallback(
+    async (kind: string) => {
+      setAreQuickActionsVisible(false);
+      try {
+        if (aiPanelMode === "paper") {
+          await handleItemTask(kind);
+        } else {
+          await handleCollectionTask(kind);
+        }
+      } finally {
+        setAreQuickActionsVisible(true);
+      }
+    },
+    [aiPanelMode, handleCollectionTask, handleItemTask],
+  );
 
   const handleCreateResearchNote = async () => {
     if (!collectionArtifact || !activeCollection) return;
@@ -1080,10 +1273,12 @@ export default function App({ api }: { api: AppApi }) {
   );
   const aiPanelTasks = aiPanelMode === "paper" ? paperTaskRuns : collectionTaskRuns;
   const aiPanelArtifact = aiPanelMode === "paper" ? paperArtifact : collectionArtifact;
-  const aiPanelScopeReady =
-    aiPanelMode === "paper" ? Boolean(activePaper && aiCapabilitiesEnabled) : visibleScopeItemIds.length > 0;
+  const aiPanelPending = aiPendingByScope[aiPanelMode];
+  const aiPanelDockState = aiDockOpenByScope[aiPanelMode];
   const aiPanelCanSend =
-    aiPanelMode === "paper" ? Boolean(activePaper && aiCapabilitiesEnabled) : Boolean(activeCollection && visibleScopeItemIds.length > 0);
+    (aiPanelMode === "paper"
+      ? Boolean(activePaper && aiCapabilitiesEnabled)
+      : Boolean(activeCollection && visibleScopeItemIds.length > 0)) && aiPanelPending?.status !== "streaming";
 
   const pdfFocusHighlightBarRef = useRef<HTMLDivElement | null>(null);
   const showPdfFocusHighlightBar = Boolean(
@@ -1159,9 +1354,6 @@ export default function App({ api }: { api: AppApi }) {
 
   const renderInlineCollectionEditor = (parentId: number | null) => (
     <div className="resource-tree-row resource-tree-row-editing" role="none" key={`inline-editor-${parentId ?? "root"}`}>
-      <span className="resource-tree-leading-icon" aria-hidden="true">
-        {renamingCollectionId ? "📁" : "＋"}
-      </span>
       <input
         aria-label={renamingCollectionId ? "Rename collection" : "New collection name"}
         autoFocus
@@ -1225,9 +1417,6 @@ export default function App({ api }: { api: AppApi }) {
               >
                 {isExpanded ? "▾" : "▸"}
               </button>
-              <span className="resource-tree-leading-icon" aria-hidden="true">
-                📁
-              </span>
               {isRenaming ? (
                 <input
                   aria-label="Rename collection"
@@ -1288,9 +1477,6 @@ export default function App({ api }: { api: AppApi }) {
                       }
                     }}
                   >
-                    <span className="resource-tree-leading-icon" aria-hidden="true">
-                      {item.attachment_format === "pdf" ? "📄" : "•"}
-                    </span>
                     <span className="resource-tree-item-title">{item.title}</span>
                   </button>
                 ))}
@@ -1863,188 +2049,257 @@ export default function App({ api }: { api: AppApi }) {
 
       {isAiPanelOpen ? (
         <aside className="ai-shell" aria-label="AI panel">
-          <div className="panel-header panel-header-row">
-            <div>
-              <p className="eyebrow">AI Panel</p>
-              <h2>Research Copilot</h2>
+          <div className="ai-shell-header">
+            <div className="panel-header panel-header-row">
+              <div>
+                <p className="eyebrow">AI Panel</p>
+                <h2>Research Copilot</h2>
+              </div>
+              <button className="ghost-button" type="button" onClick={() => setIsAiPanelOpen(false)}>
+                Close
+              </button>
             </div>
-            <button className="ghost-button" type="button" onClick={() => setIsAiPanelOpen(false)}>
-              Close
-            </button>
-          </div>
 
-          <div className="ai-scope-tabs" role="tablist" aria-label="AI scope">
-            <button
-              className={`reader-tab ${aiPanelMode === "paper" ? "reader-tab-active" : ""}`}
-              role="tab"
-              type="button"
-              onClick={() => setAiPanelMode("paper")}
-            >
-              Current Paper
-            </button>
-            <button
-              className={`reader-tab ${aiPanelMode === "collection" ? "reader-tab-active" : ""}`}
-              role="tab"
-              type="button"
-              onClick={() => setAiPanelMode("collection")}
-            >
-              Current Collection
-            </button>
+            <div className="ai-scope-tabs" role="tablist" aria-label="AI scope">
+              <button
+                aria-selected={aiPanelMode === "paper"}
+                className={`reader-tab ${aiPanelMode === "paper" ? "reader-tab-active" : ""}`}
+                role="tab"
+                type="button"
+                onClick={() => setAiPanelMode("paper")}
+              >
+                Current Paper
+              </button>
+              <button
+                aria-selected={aiPanelMode === "collection"}
+                className={`reader-tab ${aiPanelMode === "collection" ? "reader-tab-active" : ""}`}
+                role="tab"
+                type="button"
+                onClick={() => setAiPanelMode("collection")}
+              >
+                Current Collection
+              </button>
+            </div>
           </div>
 
           <div className="ai-chat-history">
-            {aiPanelMode === "paper" ? (
-              <div className="context-card ai-context-card">
-                <p className="eyebrow">Paper Scope</p>
-                <h3>{activePaper?.title ?? "No active paper"}</h3>
-                <p>{activePaper ? activePaperMetadata ?? "No metadata" : "Open a paper to ask questions."}</p>
+            <article className="ai-message ai-message-system">
+              <div className="ai-message-meta">
+                <strong>{aiPanelMode === "paper" ? "Current Paper" : "Current Collection"}</strong>
               </div>
-            ) : (
-              <div className="context-card ai-context-card">
-                <p className="eyebrow">Collection Scope</p>
-                <h3>{activeCollection?.name ?? "No active collection"}</h3>
-                <p>{activeCollection ? `${visibleItems.length} papers included in the current scope.` : "Select a collection to ask cross-paper questions."}</p>
-              </div>
-            )}
+            </article>
 
-            {aiPanelTasks.length > 0 ? (
-              aiPanelTasks.map((task) => (
-                <article key={task.id} className="ai-message-card">
-                  <div className="export-row">
-                    <strong>{taskLabel(task.kind)}</strong>
-                    <span className="meta-count">{task.status}</span>
-                  </div>
-                  {task.input_prompt ? <p className="ai-message-prompt">{task.input_prompt}</p> : null}
-                  <p>{taskPreview(task)}</p>
-                </article>
-              ))
-            ) : (
-              <div className="result-card">
-                <p>{aiPanelScopeReady ? "Ask a question or run a quick action." : "No active scope available yet."}</p>
-              </div>
-            )}
-          </div>
-
-          <div className="ai-quick-actions">
-            {(aiPanelMode === "paper" ? itemActions : collectionActions).map((action) => (
-              <button
-                key={action.kind}
-                className="ghost-button ai-quick-action"
-                disabled={!aiPanelCanSend}
-                type="button"
-                onClick={() =>
-                  aiPanelMode === "paper"
-                    ? void handleItemTask(action.kind)
-                    : void handleCollectionTask(action.kind)
-                }
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="ai-composer">
-            <textarea
-              aria-label="AI prompt"
-              className="note-editor ai-composer-input"
-              disabled={!aiPanelCanSend}
-              placeholder={
-                aiPanelMode === "paper"
-                  ? "Ask about the current paper..."
-                  : "Ask about the current collection..."
-              }
-              rows={4}
-              value={aiComposerValue}
-              onChange={(event) => setAiComposerValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  void handleAiSubmit();
-                }
-              }}
-            />
-            <button
-              aria-label="Send AI prompt"
-              className="primary-button"
-              disabled={!aiPanelCanSend || aiComposerValue.trim().length === 0}
-              type="button"
-              onClick={() => void handleAiSubmit()}
-            >
-              Send
-            </button>
-          </div>
-
-          <details className="management-panel">
-            <summary>Artifacts</summary>
-            <div className="management-panel-body">
-              <p>{aiPanelArtifact?.markdown ?? "No artifact yet."}</p>
-              {aiPanelMode === "collection" && collectionArtifact ? (
-                <button className="ghost-button" type="button" onClick={() => void handleCreateResearchNote()}>
-                  Save as Research Note
-                </button>
-              ) : null}
-              {aiPanelMode === "collection" && isCollectionDraftStale ? <p>Draft scope is stale.</p> : null}
-            </div>
-          </details>
-
-          <details className="management-panel">
-            <summary>Task History</summary>
-            <div className="management-panel-body">
-              {aiPanelTasks.length > 0 ? (
-                aiPanelTasks.map((task) => (
-                  <div key={`history-${task.id}`} className="export-row">
-                    <span>{taskLabel(task.kind)}</span>
-                    <span className="meta-count">{task.status}</span>
-                  </div>
-                ))
-              ) : (
-                <p>No tasks yet.</p>
-              )}
-            </div>
-          </details>
-
-          {aiPanelMode === "collection" ? (
-            <details className="management-panel">
-              <summary>Research Notes</summary>
-              <div className="management-panel-body">
-                {activeNoteId ? (
-                  <>
-                    <textarea
-                      aria-label="Research note editor"
-                      className="note-editor"
-                      value={noteDraft}
-                      onChange={(event) => setNoteDraft(event.target.value)}
-                    />
-                    <div className="export-row">
-                      <button className="ghost-button" type="button" onClick={() => void handleSaveNoteEdits()}>
-                        Save Note Edits
-                      </button>
-                      <button className="ghost-button" type="button" onClick={() => void handleExportMarkdown()}>
-                        Export Markdown
-                      </button>
+            {aiPanelTasks.map((task) => (
+              <article key={task.id} className="ai-thread-entry">
+                {task.input_prompt ? (
+                  <div className="ai-message ai-message-user">
+                    <div className="ai-message-meta">
+                      <strong>You</strong>
+                      <span className="meta-count">Question</span>
                     </div>
-                  </>
-                ) : null}
-                {notes.length > 0 ? (
-                  notes.map((note) => (
-                    <button
-                      key={note.id}
-                      className={`nav-item ${note.id === activeNoteId ? "nav-item-active" : ""}`}
-                      type="button"
-                      onClick={() => {
-                        setActiveNoteId(note.id);
-                        setNoteDraft(note.markdown);
-                      }}
-                    >
-                      {noteHeading(note)}
-                    </button>
-                  ))
+                    <p>{task.input_prompt}</p>
+                  </div>
                 ) : (
-                  <p>No notes yet.</p>
+                  <div className="ai-message ai-message-user">
+                    <div className="ai-message-meta">
+                      <strong>You</strong>
+                    </div>
+                    <p>{taskLabel(task.kind)}</p>
+                  </div>
                 )}
+                <div className="ai-message ai-message-assistant">
+                  <div className="ai-message-meta">
+                    <strong>{taskLabel(task.kind)}</strong>
+                    {!isQuickActionKind(task.kind) ? (
+                      <span className="meta-count">{assistantStatusLabel(task.status)}</span>
+                    ) : null}
+                  </div>
+                  <MarkdownMessage markdown={task.output_markdown} />
+                </div>
+              </article>
+            ))}
+
+            {aiPanelPending ? (
+              <article className="ai-thread-entry">
+                {aiPanelPending.inputPrompt ? (
+                  <div className="ai-message ai-message-user">
+                    <div className="ai-message-meta">
+                      <strong>You</strong>
+                      <span className="meta-count">Question</span>
+                    </div>
+                    <p>{aiPanelPending.inputPrompt}</p>
+                  </div>
+                ) : (
+                  <div className="ai-message ai-message-user">
+                    <div className="ai-message-meta">
+                      <strong>You</strong>
+                    </div>
+                    <p>{taskLabel(aiPanelPending.kind)}</p>
+                  </div>
+                )}
+                <div className="ai-message ai-message-assistant">
+                  <div className="ai-message-meta">
+                    <strong>{taskLabel(aiPanelPending.kind)}</strong>
+                    {!isQuickActionKind(aiPanelPending.kind) ? (
+                      <span className="meta-count">{assistantStatusLabel(aiPanelPending.status)}</span>
+                    ) : null}
+                  </div>
+                  {aiPanelPending.error ? <p className="ai-error-text">{aiPanelPending.error}</p> : null}
+                  {aiPanelPending.markdown ? <MarkdownMessage markdown={aiPanelPending.markdown} /> : <p>Thinking…</p>}
+                </div>
+              </article>
+            ) : null}
+          </div>
+
+          <div className="ai-bottom-dock">
+            <div className="ai-dock-sections">
+              <details className="ai-dock-panel" open={aiPanelDockState.artifacts}>
+                <summary
+                  onClick={(event) => {
+                    event.preventDefault();
+                    toggleAiDockSection(aiPanelMode, "artifacts");
+                  }}
+                >
+                  Artifacts
+                </summary>
+                {aiPanelDockState.artifacts ? (
+                  <div className="management-panel-body ai-dock-panel-body">
+                    {aiPanelArtifact ? <MarkdownMessage markdown={aiPanelArtifact.markdown} /> : <p>No artifact yet.</p>}
+                    {aiPanelMode === "collection" && collectionArtifact ? (
+                      <button className="ghost-button" type="button" onClick={() => void handleCreateResearchNote()}>
+                        Save as Research Note
+                      </button>
+                    ) : null}
+                    {aiPanelMode === "collection" && isCollectionDraftStale ? <p>Draft scope is stale.</p> : null}
+                  </div>
+                ) : null}
+              </details>
+
+              <details className="ai-dock-panel" open={aiPanelDockState.history}>
+                <summary
+                  onClick={(event) => {
+                    event.preventDefault();
+                    toggleAiDockSection(aiPanelMode, "history");
+                  }}
+                >
+                  Task History
+                </summary>
+                {aiPanelDockState.history ? (
+                  <div className="management-panel-body ai-dock-panel-body">
+                    {aiPanelTasks.length > 0 ? (
+                      aiPanelTasks.map((task) => (
+                        <div key={`history-${task.id}`} className="export-row">
+                          <span>{taskLabel(task.kind)}</span>
+                          <span className="meta-count">{task.status}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p>No tasks yet.</p>
+                    )}
+                  </div>
+                ) : null}
+              </details>
+
+              {aiPanelMode === "collection" ? (
+                <details className="ai-dock-panel" open={aiPanelDockState.notes}>
+                  <summary
+                    onClick={(event) => {
+                      event.preventDefault();
+                      toggleAiDockSection(aiPanelMode, "notes");
+                    }}
+                  >
+                    Research Notes
+                  </summary>
+                  {aiPanelDockState.notes ? (
+                    <div className="management-panel-body ai-dock-panel-body">
+                      {activeNoteId ? (
+                        <>
+                          <textarea
+                            aria-label="Research note editor"
+                            className="note-editor"
+                            value={noteDraft}
+                            onChange={(event) => setNoteDraft(event.target.value)}
+                          />
+                          <div className="export-row">
+                            <button className="ghost-button" type="button" onClick={() => void handleSaveNoteEdits()}>
+                              Save Note Edits
+                            </button>
+                            <button className="ghost-button" type="button" onClick={() => void handleExportMarkdown()}>
+                              Export Markdown
+                            </button>
+                          </div>
+                        </>
+                      ) : null}
+                      {notes.length > 0 ? (
+                        notes.map((note) => (
+                          <button
+                            key={note.id}
+                            className={`nav-item ${note.id === activeNoteId ? "nav-item-active" : ""}`}
+                            type="button"
+                            onClick={() => {
+                              setActiveNoteId(note.id);
+                              setNoteDraft(note.markdown);
+                            }}
+                          >
+                            {noteHeading(note)}
+                          </button>
+                        ))
+                      ) : (
+                        <p>No notes yet.</p>
+                      )}
+                    </div>
+                  ) : null}
+                </details>
+              ) : null}
+            </div>
+
+            {areQuickActionsVisible ? (
+              <div className="ai-quick-actions" aria-label="AI quick actions">
+                {(aiPanelMode === "paper" ? itemActions : collectionActions).map((action) => (
+                  <button
+                    key={action.kind}
+                    className="ghost-button ai-quick-action"
+                    disabled={!aiPanelCanSend}
+                    type="button"
+                    onClick={() => void handleQuickAction(action.kind)}
+                  >
+                    {action.label}
+                  </button>
+                ))}
               </div>
-            </details>
-          ) : null}
+            ) : null}
+
+            <div className="ai-composer">
+              <textarea
+                aria-label="AI prompt"
+                className="note-editor ai-composer-input"
+                disabled={!aiPanelCanSend}
+                placeholder={
+                  aiPanelMode === "paper"
+                    ? "Ask about the current paper..."
+                    : "Ask about the current collection..."
+                }
+                rows={4}
+                value={aiComposerValue}
+                onChange={(event) => setAiComposerValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    void handleAiSubmit();
+                  }
+                }}
+              />
+              <button
+                aria-label="Send AI prompt"
+                className="primary-button"
+                disabled={!aiPanelCanSend || aiComposerValue.trim().length === 0}
+                type="button"
+                onClick={() => void handleAiSubmit()}
+              >
+                Send
+              </button>
+            </div>
+          </div>
         </aside>
       ) : null}
     </div>

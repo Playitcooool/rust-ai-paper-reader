@@ -51,6 +51,8 @@ textarea {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   color: #f4efe6;
   position: relative;
   background:
@@ -68,7 +70,7 @@ textarea {
 
 .sidebar,
 .reader-shell {
-  min-height: 100vh;
+  min-height: 0;
 }
 
 .sidebar,
@@ -81,17 +83,18 @@ textarea {
 
 .sidebar {
   border-right: 1px solid var(--panel-border);
+  overflow-y: auto;
 }
 
 .ai-shell {
-  min-height: 100vh;
+  min-height: 0;
   border-left: 1px solid var(--panel-border);
   border-right: none;
   box-shadow: -16px 0 28px rgba(0, 0, 0, 0.16);
-  overflow: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .reader-shell {
@@ -99,6 +102,11 @@ textarea {
   flex-direction: column;
   background: rgba(19, 22, 29, 0.72);
   position: relative;
+}
+
+.reader-shell-workspace {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .panel-header {
@@ -433,7 +441,7 @@ p {
 .resource-tree-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 18px 18px minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
@@ -461,7 +469,7 @@ p {
 
 .resource-tree-item {
   text-align: left;
-  grid-template-columns: 18px 18px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .resource-tree-item-title {
@@ -485,12 +493,6 @@ p {
 .resource-tree-toggle:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #fff4e8;
-}
-
-.resource-tree-leading-icon {
-  font-size: 0.84rem;
-  line-height: 1;
-  color: var(--text-dim);
 }
 
 .resource-tree-label {
@@ -525,7 +527,7 @@ p {
 }
 
 .resource-tree-row-editing {
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   background: rgba(255, 255, 255, 0.03);
 }
 
@@ -648,6 +650,9 @@ p {
 
 .reader-panel-workspace {
   padding-top: 20px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .reader-panel-focus {
@@ -992,47 +997,199 @@ p {
   gap: 8px;
 }
 
+.ai-shell-header {
+  display: grid;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
 .ai-chat-history {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  display: grid;
-  gap: 10px;
-  padding-right: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 4px;
 }
 
-.ai-context-card,
-.ai-message-card {
+.ai-thread-entry {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-message {
   padding: 14px;
-  border-radius: 16px;
+  border-radius: 18px;
   border: 1px solid var(--panel-border);
   background: var(--card-bg);
 }
 
-.ai-message-prompt {
-  color: #f8dfc7;
+.ai-message-user {
+  margin-left: 22px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ai-message-assistant {
+  margin-right: 22px;
+}
+
+.ai-message-system {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ai-message-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.ai-scope-summary {
+  margin: 0;
+  color: var(--muted-text);
+}
+
+.ai-error-text {
+  color: #ffb4a7;
   font-weight: 600;
 }
 
-.ai-quick-actions {
+.ai-bottom-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 8px;
+  background:
+    linear-gradient(180deg, rgba(14, 16, 22, 0) 0%, rgba(14, 16, 22, 0.94) 18%, rgba(14, 16, 22, 0.98) 100%);
+}
+
+.ai-dock-sections {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  position: relative;
+}
+
+.ai-dock-panel {
+  position: relative;
+}
+
+.ai-dock-panel summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 0.84rem;
+  color: var(--muted-text);
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ai-dock-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.ai-dock-panel-body {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: min(320px, calc(100vw - 48px));
+  max-height: 280px;
+  overflow: auto;
+  border-radius: 18px;
+  border: 1px solid var(--panel-border);
+  background: rgba(18, 21, 29, 0.98);
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.ai-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 0;
 }
 
 .ai-quick-action {
-  width: 100%;
+  width: auto;
+  min-height: 34px;
   text-align: left;
-  padding: 10px 12px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 0.84rem;
 }
 
 .ai-composer {
   display: grid;
   gap: 10px;
+  padding: 12px;
+  border-radius: 22px;
+  border: 1px solid var(--panel-border);
+  background: rgba(19, 22, 29, 0.98);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.02), 0 -10px 24px rgba(0, 0, 0, 0.18);
 }
 
 .ai-composer-input {
   min-height: 108px;
+}
+
+.ai-markdown > :first-child {
+  margin-top: 0;
+}
+
+.ai-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-markdown p,
+.ai-markdown ul,
+.ai-markdown ol,
+.ai-markdown blockquote,
+.ai-markdown pre,
+.ai-markdown table {
+  margin: 0 0 12px;
+}
+
+.ai-markdown code {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.92em;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.1em 0.35em;
+  border-radius: 6px;
+}
+
+.ai-markdown-pre {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  overflow: auto;
+  border-radius: 14px;
+  background: rgba(8, 10, 15, 0.8);
+}
+
+.ai-markdown-pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.ai-markdown blockquote {
+  padding-left: 12px;
+  border-left: 3px solid rgba(244, 192, 120, 0.7);
+  color: var(--muted-text);
+}
+
+.ai-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ai-markdown th,
+.ai-markdown td {
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
 }
 
 .context-card,
@@ -1139,6 +1296,10 @@ p {
   max-width: none;
   margin: 0;
   display: flex;
+  min-height: 0;
+}
+
+.pdf-reader-workspace {
   min-height: 0;
 }
 
@@ -1434,6 +1595,7 @@ p {
     min-height: auto;
     border-left: none;
     border-top: 1px solid var(--panel-border);
+    overflow: visible;
   }
 
   .reader-panel-focus {
@@ -1479,8 +1641,13 @@ p {
   }
 
   .resource-tree-row {
-    grid-template-columns: 18px 18px minmax(0, 1fr);
+    grid-template-columns: 18px minmax(0, 1fr) auto;
     gap: 8px;
     padding: 8px 10px;
+  }
+
+  .resource-tree-item,
+  .resource-tree-row-editing {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -140,7 +140,7 @@ vi.mock("./components/readers/PdfContinuousReader", () => {
 });
 
 import App from "./App";
-import { fakeApi, replaceFakeApiState, resetFakeApi } from "./test/fakeApi";
+import { failNextFakeAiStream, fakeApi, replaceFakeApiState, resetFakeApi } from "./test/fakeApi";
 
 beforeEach(() => {
   resetFakeApi();
@@ -157,12 +157,14 @@ afterEach(() => {
 
 describe("App reading workspace", () => {
   it("renders the compact resource tree", async () => {
-    render(<App api={fakeApi} />);
+    const { container } = render(<App api={fakeApi} />);
 
     expect(await screen.findByRole("tree", { name: "Library resources" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New folder" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Rename Machine Learning/i })).toBeInTheDocument();
     expect(screen.getByRole("treeitem", { name: /Transformer Scaling Laws/i })).toBeInTheDocument();
+    expect(container.querySelectorAll(".resource-tree-leading-icon")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Collapse Machine Learning/i })).toBeInTheDocument();
   });
 
   it("single-clicking a pdf opens workspace preview while double-click enters focus", async () => {
@@ -338,6 +340,7 @@ describe("App reading workspace", () => {
         item_id: 1,
         kind: "item.ask",
         prompt: "What is the key result?",
+        stream_id: expect.any(String),
       });
     });
 
@@ -352,23 +355,130 @@ describe("App reading workspace", () => {
         kind: "collection.ask",
         scope_item_ids: [2, 1],
         prompt: "Compare the papers.",
+        stream_id: expect.any(String),
       });
     });
   });
 
-  it("runs quick actions in the AI panel and shows results in the conversation", async () => {
+  it("renders the simplified AI scope header for paper and collection tabs", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    expect(screen.getByRole("textbox", { name: "AI prompt" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeInTheDocument();
+    expect(screen.getAllByText("Current Paper").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Paper Scope")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collection Scope")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    expect(screen.getAllByText("Current Collection").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Paper Scope")).not.toBeInTheDocument();
+    expect(screen.queryByText("Collection Scope")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "AI prompt" })).toBeInTheDocument();
+  });
+
+  it("keeps workspace pdf preview and ai composer inside the fixed-height layout", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    expect(container.querySelector(".app-shell.app-shell-workspace.app-shell-ai-open")).not.toBeNull();
+    const workspacePanel = container.querySelector(".reader-panel-workspace");
+    expect(workspacePanel).not.toBeNull();
+    expect(screen.getByTestId("pdf-reader").closest(".reader-panel-workspace")).toBe(workspacePanel);
+    expect(screen.getByLabelText("AI panel")).toContainElement(screen.getByRole("textbox", { name: "AI prompt" }));
+  });
+
+  it("renders quick actions as user chat entries, hides the strip while active, and restores it after completion", async () => {
     const user = userEvent.setup();
     const runItemTaskSpy = vi.spyOn(fakeApi, "runItemTask");
+    const { container } = render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    expect(screen.getByRole("button", { name: "Summarize document" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Summarize document" }));
+
+    await waitFor(() => {
+      expect(runItemTaskSpy).toHaveBeenCalledWith({
+        item_id: 1,
+        kind: "item.summarize",
+        prompt: undefined,
+        stream_id: expect.any(String),
+      });
+    });
+    expect(container.querySelector(".ai-quick-actions")).toBeNull();
+    expect(Array.from(container.querySelectorAll(".ai-message-user p")).some((node) => node.textContent === "Summarize")).toBe(true);
+    expect(screen.queryByText("Streaming")).not.toBeInTheDocument();
+    expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
+    expect((await screen.findAllByText("Key Points")).length).toBeGreaterThan(0);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Summarize document" })).toBeInTheDocument();
+    });
+    expect(screen.getAllByText("Axis").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Signal").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("The paper argues for predictable scaling trends.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("loss ~= f(model, data, compute)").length).toBeGreaterThan(0);
+    expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
+  });
+
+  it("restores quick actions when switching AI scope during a quick action", async () => {
+    const user = userEvent.setup();
     render(<App api={fakeApi} />);
 
     await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
     await user.click(screen.getByRole("button", { name: "Open AI panel" }));
     await user.click(screen.getByRole("button", { name: "Summarize document" }));
 
-    await waitFor(() => {
-      expect(runItemTaskSpy).toHaveBeenCalledWith({ item_id: 1, kind: "item.summarize", prompt: undefined });
-    });
-    expect(screen.getByText(/Scaling behavior emerges/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Summarize document" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    expect(screen.getByRole("button", { name: "Bulk Summaries" })).toBeInTheDocument();
+  });
+
+  it("keeps ask prompts and assistant replies in one message flow for paper and collection scopes", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "What is the key result?");
+    await user.click(screen.getByRole("button", { name: "Send AI prompt" }));
+
+    expect((await screen.findAllByText("What is the key result?")).length).toBeGreaterThan(0);
+    expect(await screen.findByText(/Reading Q&A: Transformer Scaling Laws/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Current Collection" }));
+    await user.clear(screen.getByRole("textbox", { name: "AI prompt" }));
+    await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "Compare the papers.");
+    await user.click(screen.getByRole("button", { name: "Send AI prompt" }));
+
+    expect((await screen.findAllByText("Compare the papers.")).length).toBeGreaterThan(0);
+    expect(await screen.findByText(/Collection Q&A: Machine Learning/i)).toBeInTheDocument();
+  });
+
+  it("shows stream failures without corrupting task history", async () => {
+    const user = userEvent.setup();
+    failNextFakeAiStream("Network stream dropped.");
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "Summarize document" }));
+
+    expect(await screen.findByText("Network stream dropped.")).toBeInTheDocument();
+    expect(screen.getAllByText("Summarize").length).toBeGreaterThan(0);
+    expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Task History"));
+    expect(screen.getAllByText("Summarize").length).toBeGreaterThan(0);
+    expect(screen.getByText("succeeded")).toBeInTheDocument();
   });
 
   it("responds to native menu import events and native drag-and-drop", async () => {
