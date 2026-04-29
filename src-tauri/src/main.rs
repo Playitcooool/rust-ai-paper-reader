@@ -129,6 +129,7 @@ struct RunItemTaskInput {
     item_id: i64,
     kind: String,
     prompt: Option<String>,
+    stream_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +138,91 @@ struct RunCollectionTaskInput {
     kind: String,
     scope_item_ids: Vec<i64>,
     prompt: Option<String>,
+    stream_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct AITaskStreamEvent {
+    stream_id: String,
+    scope: String,
+    kind: String,
+    phase: String,
+    task_id: Option<i64>,
+    input_prompt: Option<String>,
+    delta_markdown: Option<String>,
+    full_markdown: Option<String>,
+    error: Option<String>,
+}
+
+fn split_markdown_chunks(markdown: &str) -> Vec<String> {
+    const MAX_CHUNK_CHARS: usize = 220;
+    let trimmed = markdown.trim();
+    if trimmed.is_empty() {
+        return vec![];
+    }
+
+    let mut chunks = Vec::new();
+    for paragraph in trimmed.split("\n\n") {
+        if paragraph.len() <= MAX_CHUNK_CHARS {
+            chunks.push(paragraph.to_string());
+            continue;
+        }
+
+        let mut current = String::new();
+        for sentence in paragraph.split_inclusive(['.', '!', '?', '\n']) {
+            if current.len() + sentence.len() > MAX_CHUNK_CHARS && !current.is_empty() {
+                chunks.push(current.trim_end().to_string());
+                current.clear();
+            }
+            if sentence.len() > MAX_CHUNK_CHARS {
+                let bytes = sentence.as_bytes();
+                let mut start = 0;
+                while start < bytes.len() {
+                    let end = usize::min(start + MAX_CHUNK_CHARS, bytes.len());
+                    let piece = sentence[start..end].trim();
+                    if !piece.is_empty() {
+                        chunks.push(piece.to_string());
+                    }
+                    start = end;
+                }
+            } else {
+                current.push_str(sentence);
+            }
+        }
+        if !current.trim().is_empty() {
+            chunks.push(current.trim_end().to_string());
+        }
+    }
+
+    chunks
+}
+
+fn emit_ai_task_stream(
+    app_handle: &AppHandle,
+    stream_id: &str,
+    scope: &str,
+    kind: &str,
+    phase: &str,
+    task_id: Option<i64>,
+    input_prompt: Option<String>,
+    delta_markdown: Option<String>,
+    full_markdown: Option<String>,
+    error: Option<String>,
+) {
+    let _ = app_handle.emit(
+        "ai-task-stream",
+        AITaskStreamEvent {
+            stream_id: stream_id.to_string(),
+            scope: scope.to_string(),
+            kind: kind.to_string(),
+            phase: phase.to_string(),
+            task_id,
+            input_prompt,
+            delta_markdown,
+            full_markdown,
+            error,
+        },
+    );
 }
 
 #[derive(Deserialize)]
@@ -898,6 +984,17 @@ mod tests {
         assert!(cache.bundle_by_key.len() <= PDF_BUNDLE_CACHE_ENTRY_LIMIT);
         assert!(!cache.bundle_by_key.contains_key(&(7, 0, 640)));
     }
+
+    #[test]
+    fn markdown_chunks_prefer_sentence_and_paragraph_boundaries() {
+        let chunks = split_markdown_chunks(
+            "# Heading\n\nSentence one. Sentence two is still compact.\n\nThis is a much longer paragraph that should remain readable while being split across multiple emitted chunks when it exceeds the maximum chunk width threshold by a clear margin. It continues with another sentence for good measure.",
+        );
+
+        assert!(chunks.len() >= 3);
+        assert!(chunks[0].contains("# Heading"));
+        assert!(chunks.iter().all(|chunk| !chunk.trim().is_empty()));
+    }
 }
 
 #[tauri::command]
@@ -1118,22 +1215,120 @@ fn remove_annotation(
 
 #[tauri::command]
 fn run_item_task(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     input: RunItemTaskInput,
 ) -> Result<app_core::service::AITask, String> {
+    if let Some(stream_id) = input.stream_id.as_deref() {
+        emit_ai_task_stream(
+            &app_handle,
+            stream_id,
+            "paper",
+            &input.kind,
+            "started",
+            None,
+            input.prompt.clone(),
+            None,
+            None,
+            None,
+        );
+    }
     match input.kind.as_str() {
         "item.summarize" | "item.translate" | "item.explain_term" | "item.ask" => service(&state)?
             .run_item_task(input.item_id, &input.kind, input.prompt.as_deref())
-            .map_err(|error| error.to_string()),
-        _ => Err("unsupported item task".into()),
+            .map(|task| {
+                if let Some(stream_id) = input.stream_id.as_deref() {
+                    let mut full_markdown = String::new();
+                    for chunk in split_markdown_chunks(&task.output_markdown) {
+                        if !full_markdown.is_empty() {
+                            full_markdown.push_str("\n\n");
+                        }
+                        full_markdown.push_str(&chunk);
+                        emit_ai_task_stream(
+                            &app_handle,
+                            stream_id,
+                            "paper",
+                            &input.kind,
+                            "delta",
+                            None,
+                            task.input_prompt.clone(),
+                            Some(chunk),
+                            Some(full_markdown.clone()),
+                            None,
+                        );
+                    }
+                    emit_ai_task_stream(
+                        &app_handle,
+                        stream_id,
+                        "paper",
+                        &input.kind,
+                        "completed",
+                        Some(task.id),
+                        task.input_prompt.clone(),
+                        None,
+                        Some(task.output_markdown.clone()),
+                        None,
+                    );
+                }
+                task
+            })
+            .map_err(|error| {
+                if let Some(stream_id) = input.stream_id.as_deref() {
+                    emit_ai_task_stream(
+                        &app_handle,
+                        stream_id,
+                        "paper",
+                        &input.kind,
+                        "failed",
+                        None,
+                        input.prompt.clone(),
+                        None,
+                        None,
+                        Some(error.to_string()),
+                    );
+                }
+                error.to_string()
+            }),
+        _ => {
+            if let Some(stream_id) = input.stream_id.as_deref() {
+                emit_ai_task_stream(
+                    &app_handle,
+                    stream_id,
+                    "paper",
+                    &input.kind,
+                    "failed",
+                    None,
+                    input.prompt.clone(),
+                    None,
+                    None,
+                    Some("unsupported item task".into()),
+                );
+            }
+            Err("unsupported item task".into())
+        }
     }
 }
 
 #[tauri::command]
 fn run_collection_task(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     input: RunCollectionTaskInput,
 ) -> Result<app_core::service::AITask, String> {
+    if let Some(stream_id) = input.stream_id.as_deref() {
+        emit_ai_task_stream(
+            &app_handle,
+            stream_id,
+            "collection",
+            &input.kind,
+            "started",
+            None,
+            input.prompt.clone(),
+            None,
+            None,
+            None,
+        );
+    }
     match input.kind.as_str() {
         "collection.review_draft"
         | "collection.bulk_summarize"
@@ -1146,8 +1341,76 @@ fn run_collection_task(
                 &input.scope_item_ids,
                 input.prompt.as_deref(),
             )
-            .map_err(|error| error.to_string()),
-        _ => Err("unsupported collection task".into()),
+            .map(|task| {
+                if let Some(stream_id) = input.stream_id.as_deref() {
+                    let mut full_markdown = String::new();
+                    for chunk in split_markdown_chunks(&task.output_markdown) {
+                        if !full_markdown.is_empty() {
+                            full_markdown.push_str("\n\n");
+                        }
+                        full_markdown.push_str(&chunk);
+                        emit_ai_task_stream(
+                            &app_handle,
+                            stream_id,
+                            "collection",
+                            &input.kind,
+                            "delta",
+                            None,
+                            task.input_prompt.clone(),
+                            Some(chunk),
+                            Some(full_markdown.clone()),
+                            None,
+                        );
+                    }
+                    emit_ai_task_stream(
+                        &app_handle,
+                        stream_id,
+                        "collection",
+                        &input.kind,
+                        "completed",
+                        Some(task.id),
+                        task.input_prompt.clone(),
+                        None,
+                        Some(task.output_markdown.clone()),
+                        None,
+                    );
+                }
+                task
+            })
+            .map_err(|error| {
+                if let Some(stream_id) = input.stream_id.as_deref() {
+                    emit_ai_task_stream(
+                        &app_handle,
+                        stream_id,
+                        "collection",
+                        &input.kind,
+                        "failed",
+                        None,
+                        input.prompt.clone(),
+                        None,
+                        None,
+                        Some(error.to_string()),
+                    );
+                }
+                error.to_string()
+            }),
+        _ => {
+            if let Some(stream_id) = input.stream_id.as_deref() {
+                emit_ai_task_stream(
+                    &app_handle,
+                    stream_id,
+                    "collection",
+                    &input.kind,
+                    "failed",
+                    None,
+                    input.prompt.clone(),
+                    None,
+                    None,
+                    Some("unsupported collection task".into()),
+                );
+            }
+            Err("unsupported collection task".into())
+        }
     }
 }
 

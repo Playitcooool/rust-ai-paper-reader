@@ -83,6 +83,18 @@ export type AITask = {
   output_markdown: string;
 };
 
+export type AITaskStreamEvent = {
+  stream_id: string;
+  scope: "paper" | "collection";
+  kind: string;
+  phase: "started" | "delta" | "completed" | "failed";
+  task_id?: number;
+  input_prompt?: string | null;
+  delta_markdown?: string;
+  full_markdown?: string;
+  error?: string;
+};
+
 export type AIArtifact = {
   id: number;
   task_id: number;
@@ -219,14 +231,21 @@ export type AppApi = {
     body: string;
   }) => Promise<Annotation>;
   removeAnnotation: (input: { annotation_id: number }) => Promise<void>;
-  runItemTask: (input: { item_id: number; kind: string; prompt?: string }) => Promise<AITask>;
+  runItemTask: (input: {
+    item_id: number;
+    kind: string;
+    prompt?: string;
+    stream_id?: string;
+  }) => Promise<AITask>;
   runCollectionTask: (input: {
     collection_id: number;
     kind: string;
     scope_item_ids: number[];
     prompt?: string;
+    stream_id?: string;
   }) => Promise<AITask>;
   listTaskRuns: (input: { item_id?: number; collection_id?: number }) => Promise<AITask[]>;
+  listenAiTaskStream: (handler: (event: AITaskStreamEvent) => void) => Promise<() => void>;
   getArtifact: (input: {
     item_id?: number;
     collection_id?: number;

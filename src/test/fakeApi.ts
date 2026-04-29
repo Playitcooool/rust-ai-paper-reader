@@ -1,5 +1,6 @@
 import type {
   AIArtifact,
+  AITaskStreamEvent,
   Annotation,
   AttachmentFormat,
   AppApi,
@@ -43,9 +44,13 @@ type MockState = {
   nextId: number;
   importFileResults?: ImportBatchResult | null;
   importCitationResults?: ImportBatchResult | null;
+  nextAiStreamFailure?: string | null;
 };
 
 const exportWrites: Array<{ path: string; contents: string }> = [];
+
+const richItemSummary = (title: string, collectionLabel: string, firstLine: string) =>
+  `# Summary: ${title}\n\nCollection: ${collectionLabel}\n\n## Key Points\n- ${firstLine}\n- Compute and data should stay balanced.\n\n> The paper argues for predictable scaling trends.\n\n| Axis | Signal |\n| --- | --- |\n| Model | Larger models improve smoothly |\n| Data | More tokens reduce loss |\n\n\`\`\`text\nloss ~= f(model, data, compute)\n\`\`\`\n`;
 
 const initialState = (): MockState => ({
   collections: [
@@ -142,8 +147,11 @@ const initialState = (): MockState => ({
       input_prompt: null,
       kind: "item.summarize",
       status: "succeeded",
-      output_markdown:
-        "# Summary: Transformer Scaling Laws\n\nCollection: Machine Learning\n\nScaling behavior emerges when model size, data volume, and compute are balanced.",
+      output_markdown: richItemSummary(
+        "Transformer Scaling Laws",
+        "Machine Learning",
+        "Scaling behavior emerges when model size, data volume, and compute are balanced",
+      ),
     },
   ],
   artifacts: [
@@ -154,8 +162,11 @@ const initialState = (): MockState => ({
       collection_id: 1,
       scope_item_ids: null,
       kind: "item.summarize",
-      markdown:
-        "# Summary: Transformer Scaling Laws\n\nCollection: Machine Learning\n\nScaling behavior emerges when model size, data volume, and compute are balanced.",
+      markdown: richItemSummary(
+        "Transformer Scaling Laws",
+        "Machine Learning",
+        "Scaling behavior emerges when model size, data volume, and compute are balanced",
+      ),
     },
   ],
   notes: [
@@ -170,7 +181,32 @@ const initialState = (): MockState => ({
   nextId: 1000,
   importFileResults: null,
   importCitationResults: null,
+  nextAiStreamFailure: null,
 });
+
+const aiStreamListeners = new Set<(event: AITaskStreamEvent) => void>();
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const emitAiTaskStream = (event: AITaskStreamEvent) => {
+  for (const listener of aiStreamListeners) {
+    listener(event);
+  }
+};
+
+const chunkMarkdown = (markdown: string) => {
+  const normalized = markdown.trim();
+  if (!normalized) return [];
+  const paragraphs = normalized.split(/\n{2,}/).flatMap((paragraph) => {
+    if (paragraph.length <= 140) return [paragraph];
+    const pieces: string[] = [];
+    for (let start = 0; start < paragraph.length; start += 140) {
+      pieces.push(paragraph.slice(start, start + 140));
+    }
+    return pieces;
+  });
+  return paragraphs.map((part, index) => (index < paragraphs.length - 1 ? `${part}\n\n` : part));
+};
 
 let state = initialState();
 
@@ -295,7 +331,7 @@ const collectionTaskOutput = (collectionId: number, kind: string, scopeItemIds: 
 
   switch (kind) {
     case "collection.bulk_summarize":
-      return `# Bulk Summary: ${collectionName(collectionId)}\n\n## Paper Capsules\n${evidenceMap}\n\n## Synthesis\nBulk summary across ${items.length} visible papers.`;
+      return `# Bulk Summary: ${collectionName(collectionId)}\n\n## Paper Capsules\n${evidenceMap}\n\n> Working set spans ${items.length} visible papers.\n\n| Lens | Takeaway |\n| --- | --- |\n| Breadth | Cross-paper synthesis |\n| Depth | Quick evidence capsules |`;
     case "collection.theme_map":
       return `# Theme Map: ${collectionName(collectionId)}\n\n## Themes\n${evidenceMap}\n\n## Theme Clusters\nTheme clusters across ${items.length} visible papers.`;
     case "collection.compare_methods":
@@ -313,7 +349,7 @@ const itemTaskOutput = (item: MockItemDetails, kind: string, prompt?: string) =>
 
   switch (kind) {
     case "item.summarize":
-      return `# Summary: ${item.title}\n\nCollection: ${collectionName(item.collection_id)}\n\n${firstLine}`;
+      return richItemSummary(item.title, collectionName(item.collection_id), firstLine);
     case "item.translate":
       return `# Translation: ${item.title}\n\n## Translated Passage\n${firstLine}\n\n## Notes\nTranslated from the active reader selection.`;
     case "item.explain_term":
@@ -328,6 +364,7 @@ const itemTaskOutput = (item: MockItemDetails, kind: string, prompt?: string) =>
 export function resetFakeApi() {
   state = initialState();
   exportWrites.length = 0;
+  aiStreamListeners.clear();
 }
 
 export function replaceFakeApiState(nextState: Partial<MockState>) {
@@ -336,6 +373,10 @@ export function replaceFakeApiState(nextState: Partial<MockState>) {
     ...nextState,
   };
   exportWrites.length = 0;
+}
+
+export function failNextFakeAiStream(message = "Mock AI stream failed.") {
+  state.nextAiStreamFailure = message;
 }
 
 export const fakeApi: AppApi = {
@@ -777,12 +818,56 @@ export const fakeApi: AppApi = {
     state.annotations = state.annotations.filter((annotation) => annotation.id !== input.annotation_id);
   },
 
+  async listenAiTaskStream(handler) {
+    aiStreamListeners.add(handler);
+    return () => {
+      aiStreamListeners.delete(handler);
+    };
+  },
+
   async runItemTask(input) {
     const item = state.items.find((entry) => entry.id === input.item_id);
     if (!item) {
       throw new Error(`Unknown item ${input.item_id}`);
     }
     const output = itemTaskOutput(item, input.kind, input.prompt);
+    if (input.stream_id) {
+      emitAiTaskStream({
+        stream_id: input.stream_id,
+        scope: "paper",
+        kind: input.kind,
+        phase: "started",
+        input_prompt: input.prompt?.trim() || null,
+      });
+      await delay(0);
+      if (state.nextAiStreamFailure) {
+        const error = state.nextAiStreamFailure;
+        state.nextAiStreamFailure = null;
+        emitAiTaskStream({
+          stream_id: input.stream_id,
+          scope: "paper",
+          kind: input.kind,
+          phase: "failed",
+          input_prompt: input.prompt?.trim() || null,
+          error,
+        });
+        throw new Error(error);
+      }
+      let streamed = "";
+      for (const chunk of chunkMarkdown(output)) {
+        streamed += chunk;
+        emitAiTaskStream({
+          stream_id: input.stream_id,
+          scope: "paper",
+          kind: input.kind,
+          phase: "delta",
+          input_prompt: input.prompt?.trim() || null,
+          delta_markdown: chunk,
+          full_markdown: streamed,
+        });
+        await delay(0);
+      }
+    }
     const task = {
       id: state.nextId++,
       item_id: item.id,
@@ -803,6 +888,17 @@ export const fakeApi: AppApi = {
       kind: input.kind,
       markdown: output,
     });
+    if (input.stream_id) {
+      emitAiTaskStream({
+        stream_id: input.stream_id,
+        scope: "paper",
+        kind: input.kind,
+        phase: "completed",
+        task_id: task.id,
+        input_prompt: input.prompt?.trim() || null,
+        full_markdown: output,
+      });
+    }
     return task;
   },
 
@@ -817,6 +913,43 @@ export const fakeApi: AppApi = {
       throw new Error("scope contains items outside the target collection");
     }
     const output = collectionTaskOutput(input.collection_id, input.kind, input.scope_item_ids);
+    if (input.stream_id) {
+      emitAiTaskStream({
+        stream_id: input.stream_id,
+        scope: "collection",
+        kind: input.kind,
+        phase: "started",
+        input_prompt: input.prompt?.trim() || null,
+      });
+      await delay(0);
+      if (state.nextAiStreamFailure) {
+        const error = state.nextAiStreamFailure;
+        state.nextAiStreamFailure = null;
+        emitAiTaskStream({
+          stream_id: input.stream_id,
+          scope: "collection",
+          kind: input.kind,
+          phase: "failed",
+          input_prompt: input.prompt?.trim() || null,
+          error,
+        });
+        throw new Error(error);
+      }
+      let streamed = "";
+      for (const chunk of chunkMarkdown(output)) {
+        streamed += chunk;
+        emitAiTaskStream({
+          stream_id: input.stream_id,
+          scope: "collection",
+          kind: input.kind,
+          phase: "delta",
+          input_prompt: input.prompt?.trim() || null,
+          delta_markdown: chunk,
+          full_markdown: streamed,
+        });
+        await delay(0);
+      }
+    }
     const task = {
       id: state.nextId++,
       item_id: null,
@@ -837,6 +970,17 @@ export const fakeApi: AppApi = {
       kind: input.kind,
       markdown: output,
     });
+    if (input.stream_id) {
+      emitAiTaskStream({
+        stream_id: input.stream_id,
+        scope: "collection",
+        kind: input.kind,
+        phase: "completed",
+        task_id: task.id,
+        input_prompt: input.prompt?.trim() || null,
+        full_markdown: output,
+      });
+    }
     return task;
   },
 

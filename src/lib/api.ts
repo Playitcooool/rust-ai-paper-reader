@@ -1,10 +1,11 @@
-import type { AppApi } from "./contracts";
+import type { AITaskStreamEvent, AppApi } from "./contracts";
 
 export const isTauriRuntime = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export async function createTauriApi(): Promise<AppApi> {
   const { invoke } = await import("@tauri-apps/api/core");
+  const { listen } = await import("@tauri-apps/api/event");
   const { open, save } = await import("@tauri-apps/plugin-dialog");
   const toUint8Array = (value: unknown): Uint8Array => {
     if (value instanceof Uint8Array) return value;
@@ -148,6 +149,14 @@ export async function createTauriApi(): Promise<AppApi> {
     removeAnnotation: (input) => invoke("remove_annotation", { input }),
     runItemTask: (input) => invoke("run_item_task", { input }),
     runCollectionTask: (input) => invoke("run_collection_task", { input }),
+    listenAiTaskStream: async (handler) => {
+      const unlisten = await listen<AITaskStreamEvent>("ai-task-stream", (event) => {
+        handler(event.payload);
+      });
+      return () => {
+        void unlisten();
+      };
+    },
     listTaskRuns: (input) =>
       invoke("list_task_runs", {
         itemId: input.item_id,
@@ -192,8 +201,5 @@ export async function createTauriApi(): Promise<AppApi> {
           input,
         }),
       ),
-    getClientLogDir: () => invoke("get_client_log_dir"),
-    revealClientLogDir: () => invoke("reveal_client_log_dir"),
-    appendClientEventLog: (input) => invoke("append_client_event_log", { input }),
   };
 }
