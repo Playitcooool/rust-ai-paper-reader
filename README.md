@@ -1,179 +1,139 @@
 # Paper Reader
 
-A desktop application for reading, organizing, and researching academic papers.
+<div align="center">
 
-## 论文阅读器
+**A desktop application for reading, organizing, and researching academic papers**
 
-一个用于阅读、整理和研究学术论文的桌面应用程序。
+[![Tauri v2](https://img.shields.io/badge/Tauri-v2-FFC107?style=flat&logo=tauri&logoColor=white)](https://tauri.app/)
+[![React 18](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react&logoColor=white)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.70+-CE422B?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat)]()
 
----
+[Features](#features) · [Tech Stack](#tech-stack) · [Getting Started](#getting-started) · [License](#license)
 
-## Features | 功能特点
-
-### Reading | 阅读
-- **Multi-format support** - Read PDF, DOCX, and EPUB files
-- **PDF focus mode** - Distraction-free PDF reading with page navigation and zoom
-- **Continuous scroll mode** - Smooth scrolling through PDF documents
-- **Full-text search** - Find content within documents
-
-### Library Management | 库管理
-- **Collections** - Organize papers into hierarchical collections
-- **Tags** - Label and filter papers with custom tags
-- **Metadata** - Track authors, publication year, and source
-- **Batch operations** - Move and tag multiple papers at once
-- **Drag & drop import** - Import files by dragging them into the app
-
-### AI Workspace | AI 工作区
-- **Per-paper AI tasks** - Summarize, translate, explain terminology, or ask questions about any paper
-- **Collection AI tasks** - Bulk summarize, generate theme maps, compare methods, draft reviews
-- **Research notes** - Save AI outputs as editable Markdown notes
-
-### Annotations | 批注
-- **Highlights** - Create highlights from PDF selections
-- **Annotation panel** - View all annotations or filter by current page
-- **Export** - Export notes to Markdown
+</div>
 
 ---
 
-## Tech Stack | 技术栈
+## Features
+
+### Reading
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-format** | Read PDF, DOCX, and EPUB files |
+| **PDF Focus Mode** | Distraction-free reading with page navigation and zoom |
+| **Continuous Scroll** | Smooth scrolling through documents |
+| **Full-text Search** | Find content within any document |
+
+### Library Management
+
+| Feature | Description |
+|---------|-------------|
+| **Hierarchical Collections** | Organize papers in nested folders |
+| **Custom Tags** | Label and filter papers with tags |
+| **Metadata** | Track authors, year, and source |
+| **Batch Operations** | Move and tag multiple papers at once |
+| **Drag & Drop Import** | Import files by dragging into the app |
+
+### AI Workspace
+
+| Task Type | Capabilities |
+|-----------|--------------|
+| **Per-Paper** | Summarize, translate, explain terminology, Q&A |
+| **Collection** | Bulk summarize, generate theme maps, compare methods, draft reviews |
+| **Notes** | Save AI outputs as editable Markdown |
+
+### Annotations
+
+| Feature | Description |
+|---------|-------------|
+| **Highlights** | Create highlights from PDF selections |
+| **Annotation Panel** | View and filter by page |
+| **Export** | Export notes to Markdown |
+
+---
+
+## Tech Stack
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Desktop Shell                          │
+│                      Tauri v2 (Rust)                       │
+├─────────────────────────────────────────────────────────────┤
+│                      Backend Core                           │
+│                   app-core (Rust crate)                    │
+├─────────────────────────────────────────────────────────────┤
+│  Database  │     AI Service    │  Document Parser            │
+│  SQLite    │  (OpenAI/Claude) │  PDF · DOCX · EPUB         │
+├─────────────────────────────────────────────────────────────┤
+│                      Frontend                               │
+│           React 18 + TypeScript + Vite                      │
+└─────────────────────────────────────────────────────────────┘
+```
 
 | Layer | Technology |
 |-------|------------|
 | Desktop Framework | [Tauri](https://tauri.app/) v2 |
-| Frontend | React 18 + TypeScript |
-| Build Tool | Vite |
-| PDF Rendering | pdf.js (pdfjs-dist) |
+| Frontend | React 18 + TypeScript + Vite |
+| PDF Rendering | pdf.js (frontend) + pdf_oxide (Rust backend) |
+| OCR | Tesseract (for scanned PDFs) |
+| Markdown | react-markdown + remark-gfm |
 | Testing | Vitest + Testing Library |
-| Backend Core | Rust (`app-core` crate) |
 
 ---
 
-## Getting Started | 开始使用
+## Getting Started
 
-### Prerequisites | 前置要求
+### Prerequisites
 
 - Node.js 18+
 - Rust 1.70+
-- pnpm (recommended) or npm
+- pnpm 8+
 
-### Install Dependencies | 安装依赖
+### Install
 
 ```bash
+# Install dependencies
 pnpm install
-```
 
-### Development | 开发
-
-```bash
-# Run frontend only (web mode)
-pnpm dev
-
-# Run full desktop app
+# Run in development mode
 pnpm tauri:dev
-```
 
-### Build | 构建
-
-```bash
-pnpm build          # Build frontend
-pnpm tauri:build   # Build desktop app
-```
-
-### Test | 测试
-
-```bash
+# Run tests
 pnpm test
+```
+
+### Build
+
+```bash
+# Build frontend
+pnpm build
+
+# Build desktop application
+pnpm tauri:build
 ```
 
 ---
 
-## Architecture | 架构
-
-```mermaid
-graph TB
-    subgraph Desktop Shell ["Desktop Shell (Tauri)"]
-        WebView["WebView<br/>(React Frontend)"]
-        Tauri["Tauri Commands<br/>(Rust)"]
-        Dialog["Native Dialog"]
-        FS["File System"]
-    end
-
-    subgraph Backend ["Backend (Rust)"]
-        AppCore["app-core crate"]
-        DB["Database"]
-        AI["AI Service"]
-        Parser["Document Parser<br/>(PDF/DOCX/EPUB)"]
-    end
-
-    subgraph Frontend ["Frontend (React)"]
-        App["App.tsx<br/>(State Management)"]
-        PdfReader["PdfReader"]
-        PdfContinuousReader["PdfContinuousReader"]
-        NormalizedReader["NormalizedReader"]
-        AIWorkspace["AI Workspace"]
-        LibraryPanel["Library Panel"]
-    end
-
-    WebView <-->|"invoke / events"| Tauri
-    Tauri <--> AppCore
-    AppCore <--> DB
-    AppCore <--> AI
-    AppCore <--> Parser
-    AppCore <--> FS
-    Dialog --> FS
-
-    App --> PdfReader
-    App --> PdfContinuousReader
-    App --> NormalizedReader
-    App --> LibraryPanel
-    App --> AIWorkspace
-```
-
-```mermaid
-flowchart LR
-    A[Import Files] --> B{Have Collection?}
-    B -->|No| C[Create Collection First]
-    B -->|Yes| D[Supported Format?]
-    D -->|PDF| E[Parse PDF]
-    D -->|DOCX| F[Parse DOCX]
-    D -->|EPUB| G[Parse EPUB]
-    D -->|Citation| H[Import Metadata]
-    E --> I[Store in Library]
-    F --> I
-    G --> I
-    H --> I
-    I --> J[Display in Collection]
-```
-
-## Project Structure | 项目结构
+## Project Structure
 
 ```
 paper-reader/
 ├── src/                      # React frontend
-│   ├── components/
-│   │   └── readers/         # PDF/DOCX/EPUB reader components
-│   ├── lib/                  # Contracts and API utilities
-│   ├── test/                 # Test utilities
-│   └── App.tsx               # Main application component
-├── src-tauri/               # Tauri/Rust backend
-│   └── Cargo.toml
+│   ├── components/readers/  # PDF/DOCX/EPUB reader components
+│   ├── lib/                 # API contracts and utilities
+│   ├── test/                # Test utilities
+│   └── App.tsx              # Main application
+├── src-tauri/               # Tauri desktop shell
 ├── crates/
-│   └── app-core/            # Core Rust application logic
-└── docs/                    # Documentation
+│   └── app-core/           # Core Rust logic
+└── docs/                   # Documentation
 ```
 
 ---
 
-## Keyboard Shortcuts | 键盘快捷键
+## License
 
-| Shortcut | Action |
-|----------|--------|
-| `Cmd/Ctrl + F` | Find in document |
-| `Escape` | Exit focus mode / Close search |
-| `Enter` (in search) | Go to next match |
-
----
-
-## License | 许可证
-
-Private - All rights reserved.
+MIT
