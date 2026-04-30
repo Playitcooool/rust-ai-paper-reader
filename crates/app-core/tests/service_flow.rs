@@ -6,7 +6,7 @@ use std::{
 };
 
 use app_core::service::{
-    AiCompletionRequest, AiTransport, AIProvider, ImportMode, LibraryService,
+    AiCompletionRequest, AiTransport, AIProvider, AISessionReferenceKind, ImportMode, LibraryService,
     UpdateAISettingsInput,
 };
 use flate2::{write::ZlibEncoder, Compression};
@@ -579,6 +579,44 @@ fn removing_items_deletes_managed_copy_but_preserves_linked_source() {
 
     service.remove_item(linked_result.imported[0].id).unwrap();
     assert!(linked.exists());
+}
+
+#[test]
+fn removing_item_clears_matching_ai_session_references() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "session-ref-item.pdf");
+    write_pdf_fixture(&pdf);
+
+    let item_id = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap()
+        .imported[0]
+        .id;
+    let session = service.create_ai_session().unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Item, item_id)
+        .unwrap();
+
+    service.remove_item(item_id).unwrap();
+
+    assert!(service.list_ai_session_references(session.id).unwrap().is_empty());
+}
+
+#[test]
+fn removing_collection_clears_matching_ai_session_references() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Empty", None).unwrap();
+    let session = service.create_ai_session().unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Collection, collection.id)
+        .unwrap();
+
+    service.remove_collection(collection.id).unwrap();
+
+    assert!(service.list_ai_session_references(session.id).unwrap().is_empty());
 }
 
 #[test]

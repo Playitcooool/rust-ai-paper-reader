@@ -178,7 +178,6 @@ describe("App reading workspace", () => {
 
     expect(await screen.findByRole("tree", { name: "Library resources" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New folder" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Rename Machine Learning/i })).toBeInTheDocument();
     expect(screen.getByRole("treeitem", { name: /Transformer Scaling Laws/i })).toBeInTheDocument();
     expect(container.querySelectorAll(".resource-tree-leading-icon")).toHaveLength(0);
     expect(screen.getByRole("button", { name: /Collapse Machine Learning/i })).toBeInTheDocument();
@@ -307,7 +306,7 @@ describe("App reading workspace", () => {
     expect(await screen.findByRole("textbox", { name: "Find in document" })).toHaveFocus();
   });
 
-  it("creates and renames collections inline in the tree", async () => {
+  it("creates and renames collections inline in the tree from root actions and the context menu", async () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
 
@@ -316,12 +315,31 @@ describe("App reading workspace", () => {
     await user.type(createInput, "Fresh Notes{enter}");
     expect(await screen.findByRole("treeitem", { name: /Fresh Notes/i })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Machine Learning" }));
-    await user.click(screen.getByRole("button", { name: /Rename Machine Learning/i }));
+    fireEvent.contextMenu(screen.getByRole("treeitem", { name: "Machine Learning" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     const renameInput = await screen.findByRole("textbox", { name: "Rename collection" });
     await user.clear(renameInput);
     await user.type(renameInput, "ML Library{enter}");
     expect(await screen.findByRole("treeitem", { name: /ML Library/i })).toBeInTheDocument();
+  });
+
+  it("shows resource context menus for collections and items", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    fireEvent.contextMenu(await screen.findByRole("treeitem", { name: "Machine Learning" }));
+    expect(screen.getByRole("menuitem", { name: "New Folder" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Rename" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("menuitem", { name: "New Folder" })).not.toBeInTheDocument();
+    });
+
+    fireEvent.contextMenu(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    expect(screen.getByRole("menuitem", { name: "Open" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
   });
 
   it("toggles the docked AI panel from workspace and focus", async () => {
@@ -361,7 +379,7 @@ describe("App reading workspace", () => {
     });
   });
 
-  it("renders session controls and reference chips in the AI panel", async () => {
+  it("renders compact session controls and reference chips in the AI panel", async () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
 
@@ -370,11 +388,16 @@ describe("App reading workspace", () => {
 
     expect(screen.getByRole("textbox", { name: "AI prompt" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Summarize" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Explain Terms" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Compare" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Theme Map" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review Draft" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New Session" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "History Sessions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add Reference" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Use Current Paper" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Transformer Scaling Laws ×/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add AI reference" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Reference" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use Current Paper" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Remove Transformer Scaling Laws/i })).toBeInTheDocument();
   });
 
   it("removes a highlight from the floating highlight action bar", async () => {
@@ -515,14 +538,56 @@ describe("App reading workspace", () => {
     expect((await screen.findAllByText("What is the key result?")).length).toBeGreaterThan(0);
     expect(await screen.findByText(/Reading Q&A: Transformer Scaling Laws/i)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Add Reference" }));
-    await user.click(screen.getAllByRole("button", { name: "Machine Learning" })[1]);
+    await user.click(screen.getByRole("button", { name: "Add AI reference" }));
+    expect(screen.getByRole("dialog", { name: "Add AI reference" })).toBeInTheDocument();
+    await user.click(within(screen.getByRole("dialog", { name: "Add AI reference" })).getByRole("button", { name: "Machine Learning" }));
     await user.clear(screen.getByRole("textbox", { name: "AI prompt" }));
     await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "Compare the papers.");
     await user.click(screen.getByRole("button", { name: "Send AI prompt" }));
 
     expect((await screen.findAllByText("Compare the papers.")).length).toBeGreaterThan(0);
     expect((await screen.findAllByText(/Reading Q&A/i)).length).toBeGreaterThan(0);
+  });
+
+  it("adds references from the compact popover and gates compare on two unique papers", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    expect(screen.getByRole("button", { name: "Compare" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Add AI reference" }));
+    const popover = screen.getByRole("dialog", { name: "Add AI reference" });
+    expect(within(popover).getByText("Current Paper")).toBeInTheDocument();
+    expect(within(popover).getByText("Papers")).toBeInTheDocument();
+    expect(within(popover).getByText("Collections")).toBeInTheDocument();
+    await user.click(within(popover).getByRole("button", { name: "Graph Neural Survey" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Compare" })).toBeEnabled();
+    });
+    expect(screen.getByRole("button", { name: /Remove Graph Neural Survey/i })).toBeInTheDocument();
+  });
+
+  it("deletes a paper from the resource context menu and clears matching ai references", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    expect(screen.getByRole("button", { name: /Remove Transformer Scaling Laws/i })).toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(screen.getByRole("dialog", { name: "Confirm delete" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("treeitem", { name: /Transformer Scaling Laws/i })).not.toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /Remove Transformer Scaling Laws/i })).not.toBeInTheDocument();
   });
 
   it("shows stream failures without corrupting task history", async () => {
@@ -540,8 +605,7 @@ describe("App reading workspace", () => {
     await user.click(screen.getByText("Task History"));
     const taskHistory = screen.getByText("Task History").closest("details");
     expect(taskHistory).not.toBeNull();
-    expect(within(taskHistory as HTMLDetailsElement).getByText("Ask")).toBeInTheDocument();
-    expect(within(taskHistory as HTMLDetailsElement).getByText("succeeded")).toBeInTheDocument();
+    expect(within(taskHistory as HTMLDetailsElement).getByText("No tasks yet.")).toBeInTheDocument();
     expect(within(taskHistory as HTMLDetailsElement).queryByText("Summarize")).not.toBeInTheDocument();
   });
 

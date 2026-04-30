@@ -420,7 +420,7 @@ impl LibraryService {
     }
 
     pub fn remove_collection(&self, collection_id: i64) -> Result<()> {
-        let conn = self.connect()?;
+        let mut conn = self.connect()?;
         let child_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM collections WHERE parent_id = ?1",
             [collection_id],
@@ -441,10 +441,24 @@ impl LibraryService {
             return Err(anyhow!("move or remove papers before deleting this collection"));
         }
 
-        let deleted = conn.execute("DELETE FROM collections WHERE id = ?1", [collection_id])?;
+        let tx = conn.transaction()?;
+        let affected_session_ids = session_reference_session_ids_for_target(
+            &tx,
+            AISessionReferenceKind::Collection.as_str(),
+            collection_id,
+        )?;
+        let deleted = tx.execute("DELETE FROM collections WHERE id = ?1", [collection_id])?;
         if deleted == 0 {
             return Err(anyhow!("collection does not exist"));
         }
+        tx.execute(
+            "DELETE FROM ai_session_references WHERE kind = ?1 AND target_id = ?2",
+            params![AISessionReferenceKind::Collection.as_str(), collection_id],
+        )?;
+        for session_id in affected_session_ids {
+            normalize_session_reference_sort_indexes_conn(&tx, session_id)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -941,8 +955,17 @@ impl LibraryService {
         }
 
         let tx = conn.transaction()?;
+        let affected_session_ids =
+            session_reference_session_ids_for_target(&tx, AISessionReferenceKind::Item.as_str(), item_id)?;
         tx.execute("DELETE FROM ai_artifacts WHERE item_id = ?1", [item_id])?;
         tx.execute("DELETE FROM ai_tasks WHERE item_id = ?1", [item_id])?;
+        tx.execute(
+            "DELETE FROM ai_session_references WHERE kind = ?1 AND target_id = ?2",
+            params![AISessionReferenceKind::Item.as_str(), item_id],
+        )?;
+        for session_id in affected_session_ids {
+            normalize_session_reference_sort_indexes_conn(&tx, session_id)?;
+        }
         tx.execute("DELETE FROM search_index WHERE item_id = ?1", [item_id])?;
         tx.execute("DELETE FROM items WHERE id = ?1", [item_id])?;
         tx.commit()?;
@@ -2198,6 +2221,41 @@ fn list_session_references_conn(conn: &Connection, session_id: i64) -> Result<Ve
     let rows = statement.query_map([session_id], map_ai_session_reference)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+fn session_reference_session_ids_for_target(
+    conn: &Connection,
+    kind: &str,
+    target_id: i64,
+) -> Result<Vec<i64>> {
+    let mut statement = conn.prepare(
+        "
+        SELECT DISTINCT session_id
+        FROM ai_session_references
+        WHERE kind = ?1 AND target_id = ?2
+        ORDER BY session_id ASC
+        ",
+    )?;
+    let rows = statement.query_map(params![kind, target_id], |row| row.get::<_, i64>(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn normalize_session_reference_sort_indexes_conn(conn: &Connection, session_id: i64) -> Result<()> {
+    conn.execute(
+        "
+        WITH ranked AS (
+            SELECT id, ROW_NUMBER() OVER (ORDER BY sort_index ASC, id ASC) - 1 AS next_sort_index
+            FROM ai_session_references
+            WHERE session_id = ?1
+        )
+        UPDATE ai_session_references
+        SET sort_index = (SELECT next_sort_index FROM ranked WHERE ranked.id = ai_session_references.id)
+        WHERE session_id = ?1
+        ",
+        [session_id],
+    )?;
+    Ok(())
 }
 
 fn child_collections_for_conn(conn: &Connection, parent_id: Option<i64>) -> Result<Vec<Collection>> {

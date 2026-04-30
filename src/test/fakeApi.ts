@@ -260,6 +260,33 @@ const touchSession = (sessionId: number, title?: string) => {
   session.updated_at = "2026-04-30 09:30:00";
 };
 
+const normalizeSessionReferenceSortIndexes = (sessionId: number) => {
+  state.sessionReferences
+    .filter((reference) => reference.session_id === sessionId)
+    .sort((left, right) => left.sort_index - right.sort_index)
+    .forEach((reference, index) => {
+      reference.sort_index = index;
+    });
+};
+
+const removeSessionReferencesMatching = (kind: AISessionReferenceKind, targetId: number) => {
+  const affectedSessionIds = Array.from(
+    new Set(
+      state.sessionReferences
+        .filter((reference) => reference.kind === kind && reference.target_id === targetId)
+        .map((reference) => reference.session_id),
+    ),
+  );
+  if (affectedSessionIds.length === 0) return;
+  state.sessionReferences = state.sessionReferences.filter(
+    (reference) => !(reference.kind === kind && reference.target_id === targetId),
+  );
+  for (const sessionId of affectedSessionIds) {
+    normalizeSessionReferenceSortIndexes(sessionId);
+    touchSession(sessionId);
+  }
+};
+
 const childCollectionIds = (collectionId: number): number[] => {
   const orderedChildren = state.collections
     .filter((collection) => collection.parent_id === collectionId)
@@ -572,6 +599,7 @@ export const fakeApi: AppApi = {
       throw new Error("Move or remove papers before deleting this collection.");
     }
     state.collections = state.collections.filter((entry) => entry.id !== input.collection_id);
+    removeSessionReferencesMatching("collection", input.collection_id);
     state.notes = state.notes.filter((note) => note.collection_id !== input.collection_id);
     state.tasks = state.tasks.filter((task) => task.collection_id !== input.collection_id);
     state.artifacts = state.artifacts.filter((artifact) => artifact.collection_id !== input.collection_id);
@@ -839,6 +867,7 @@ export const fakeApi: AppApi = {
     }
 
     state.items = state.items.filter((entry) => entry.id !== input.item_id);
+    removeSessionReferencesMatching("item", input.item_id);
     state.itemTags = state.itemTags.filter((entry) => entry.item_id !== input.item_id);
     state.annotations = state.annotations.filter((entry) => entry.item_id !== input.item_id);
 
@@ -1014,12 +1043,7 @@ export const fakeApi: AppApi = {
     const reference = state.sessionReferences.find((entry) => entry.id === referenceId);
     if (!reference) return;
     state.sessionReferences = state.sessionReferences.filter((entry) => entry.id !== referenceId);
-    state.sessionReferences
-      .filter((entry) => entry.session_id === reference.session_id)
-      .sort((left, right) => left.sort_index - right.sort_index)
-      .forEach((entry, index) => {
-        entry.sort_index = index;
-      });
+    normalizeSessionReferenceSortIndexes(reference.session_id);
     touchSession(reference.session_id);
   },
 

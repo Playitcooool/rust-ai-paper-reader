@@ -1,4 +1,9 @@
-import type { CSSProperties, ComponentProps, PointerEvent as ReactPointerEvent } from "react";
+import type {
+  CSSProperties,
+  ComponentProps,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -562,6 +567,14 @@ export default function App({ api }: { api: AppApi }) {
   const expandedAiReferenceItemIds = useMemo(
     () => expandSessionReferenceItemIds(aiSessionReferences, collections, libraryItems),
     [aiSessionReferences, collections, libraryItems],
+  );
+  const sortedReferenceItems = useMemo(
+    () => [...libraryItems].sort((left, right) => left.title.localeCompare(right.title)),
+    [libraryItems],
+  );
+  const sortedReferenceCollections = useMemo(
+    () => [...collections].sort((left, right) => left.name.localeCompare(right.name)),
+    [collections],
   );
   const aiReferenceHasCollection = useMemo(
     () => aiSessionReferences.some((reference) => reference.kind === "collection"),
@@ -1235,12 +1248,14 @@ export default function App({ api }: { api: AppApi }) {
     setCreatingCollectionParentId(parentId === null ? "root" : parentId);
     setRenamingCollectionId(null);
     setCollectionDraftName("");
+    setResourceContextMenu(null);
   }, []);
 
   const startRenameCollection = useCallback((collection: Collection) => {
     setRenamingCollectionId(collection.id);
     setCreatingCollectionParentId(null);
     setCollectionDraftName(collection.name);
+    setResourceContextMenu(null);
   }, []);
 
   const submitCollectionRename = useCallback(async () => {
@@ -1264,6 +1279,99 @@ export default function App({ api }: { api: AppApi }) {
     setRenamingCollectionId(null);
     setCollectionDraftName("");
   }, []);
+
+  const openResourceContextMenu = useCallback(
+    (
+      event: ReactMouseEvent<HTMLElement>,
+      detail: Exclude<ResourceContextMenuState, null>,
+    ) => {
+      event.preventDefault();
+      setResourceContextMenu(detail);
+      setIsReferencePickerOpen(false);
+    },
+    [],
+  );
+
+  const closeResourceContextMenu = useCallback(() => {
+    setResourceContextMenu(null);
+  }, []);
+
+  const handleRequestDeleteCollection = useCallback(
+    (collection: Collection) => {
+      setDeleteTarget({
+        kind: "collection",
+        targetId: collection.id,
+        label: collection.name,
+        parentCollectionId: collection.parent_id,
+      });
+      setResourceContextMenu(null);
+    },
+    [],
+  );
+
+  const handleRequestDeleteItem = useCallback((item: LibraryItem) => {
+    setDeleteTarget({
+      kind: "item",
+      targetId: item.id,
+      label: item.title,
+      parentCollectionId: item.collection_id,
+    });
+    setResourceContextMenu(null);
+  }, []);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    const runtimeApi = await getApi();
+
+    try {
+      if (deleteTarget.kind === "item") {
+        const deletedItemId = deleteTarget.targetId;
+        const isActiveDeletedPaper = activePaperId === deletedItemId;
+        const remainingOpenPaperIds = openPaperIds.filter((itemId) => itemId !== deletedItemId);
+
+        await runtimeApi.removeItem({ item_id: deletedItemId });
+        await loadLibrary();
+        if (activeAiSessionId) await refreshActiveAiSession(activeAiSessionId);
+
+        setOpenPaperIds(remainingOpenPaperIds);
+        setSelectedItemIds((current) => current.filter((itemId) => itemId !== deletedItemId));
+        setActivePaperId((current) => (current === deletedItemId ? remainingOpenPaperIds[remainingOpenPaperIds.length - 1] ?? null : current));
+
+        if (isActiveDeletedPaper) {
+          setWorkspaceMode("workspace");
+          setIsSidebarVisible(true);
+          setReaderView(null);
+          setAnnotations([]);
+          setPdfSelection(null);
+          setActivePdfHighlight(null);
+        }
+
+        setStatusMessage(`Deleted ${deleteTarget.label}.`);
+      } else {
+        await runtimeApi.removeCollection({ collection_id: deleteTarget.targetId });
+        await refreshCollections(deleteTarget.parentCollectionId);
+        if (deleteTarget.parentCollectionId === null && selectedCollectionId === deleteTarget.targetId) {
+          setSelectedCollectionId(null);
+        }
+        if (activeAiSessionId) await refreshActiveAiSession(activeAiSessionId);
+        setStatusMessage(`Deleted ${deleteTarget.label}.`);
+      }
+      setDeleteTarget(null);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : `Failed to delete ${deleteTarget.label}.`);
+      setDeleteTarget(null);
+    }
+  }, [
+    activeAiSessionId,
+    activePaperId,
+    deleteTarget,
+    getApi,
+    loadLibrary,
+    openPaperIds,
+    refreshActiveAiSession,
+    refreshCollections,
+    selectedCollectionId,
+  ]);
 
   const handleCreateTag = async () => {
     if (!activePaper) {
@@ -1724,6 +1832,15 @@ export default function App({ api }: { api: AppApi }) {
     return { allowedItemIds, allowedCollectionIds };
   }, [activeCollectionItems, collections, search]);
 
+  const contextMenuCollection =
+    resourceContextMenu?.kind === "collection"
+      ? collections.find((collection) => collection.id === resourceContextMenu.targetId) ?? null
+      : null;
+  const contextMenuItem =
+    resourceContextMenu?.kind === "item"
+      ? libraryItems.find((item) => item.id === resourceContextMenu.targetId) ?? null
+      : null;
+
   const renderInlineCollectionEditor = (parentId: number | null) => (
     <div className="resource-tree-row resource-tree-row-editing" role="none" key={`inline-editor-${parentId ?? "root"}`}>
       <input
@@ -1780,6 +1897,14 @@ export default function App({ api }: { api: AppApi }) {
               aria-expanded={isExpanded}
               aria-label={collection.name}
               style={{ paddingLeft: `${10 + depth * 18}px` }}
+              onContextMenu={(event) =>
+                openResourceContextMenu(event, {
+                  x: event.clientX,
+                  y: event.clientY,
+                  kind: "collection",
+                  targetId: collection.id,
+                })
+              }
             >
               <button
                 aria-label={isExpanded ? `Collapse ${collection.name}` : `Expand ${collection.name}`}
@@ -1817,16 +1942,6 @@ export default function App({ api }: { api: AppApi }) {
                   {collection.name}
                 </button>
               )}
-              {selectedCollectionId === collection.id && !isRenaming ? (
-                <button
-                  aria-label={`Rename ${collection.name}`}
-                  className="resource-tree-inline-action"
-                  type="button"
-                  onClick={() => startRenameCollection(collection)}
-                >
-                  ✎
-                </button>
-              ) : null}
             </div>
             {isExpanded ? (
               <div className="resource-tree-group" role="group">
@@ -1843,6 +1958,14 @@ export default function App({ api }: { api: AppApi }) {
                     style={{ paddingLeft: `${28 + depth * 18}px` }}
                     type="button"
                     onClick={() => activateItem(item)}
+                    onContextMenu={(event) =>
+                      openResourceContextMenu(event, {
+                        x: event.clientX,
+                        y: event.clientY,
+                        kind: "item",
+                        targetId: item.id,
+                      })
+                    }
                     onDoubleClick={() => {
                       if (item.attachment_format === "pdf") {
                         activateItem(item, { focusPdf: true });
@@ -1871,6 +1994,57 @@ export default function App({ api }: { api: AppApi }) {
         } as CSSProperties
       }
     >
+      {resourceContextMenu && (contextMenuCollection || contextMenuItem) ? (
+        <div
+          ref={resourceContextMenuRef}
+          aria-label="Resource actions"
+          className="floating-menu resource-context-menu"
+          role="menu"
+          style={{ left: resourceContextMenu.x, top: resourceContextMenu.y }}
+        >
+          {contextMenuCollection ? (
+            <>
+              <button className="nav-item" role="menuitem" type="button" onClick={() => startCreateCollection(contextMenuCollection.id)}>
+                New Folder
+              </button>
+              <button className="nav-item" role="menuitem" type="button" onClick={() => startRenameCollection(contextMenuCollection)}>
+                Rename
+              </button>
+              <button
+                className="nav-item resource-context-menu-delete"
+                role="menuitem"
+                type="button"
+                onClick={() => handleRequestDeleteCollection(contextMenuCollection)}
+              >
+                Delete
+              </button>
+            </>
+          ) : null}
+          {contextMenuItem ? (
+            <>
+              <button
+                className="nav-item"
+                role="menuitem"
+                type="button"
+                onClick={() => {
+                  activateItem(contextMenuItem);
+                  closeResourceContextMenu();
+                }}
+              >
+                Open
+              </button>
+              <button
+                className="nav-item resource-context-menu-delete"
+                role="menuitem"
+                type="button"
+                onClick={() => handleRequestDeleteItem(contextMenuItem)}
+              >
+                Delete
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       {isSidebarVisible ? (
         <aside className="sidebar">
           <div className="panel-header panel-header-row">
@@ -1935,7 +2109,7 @@ export default function App({ api }: { api: AppApi }) {
                   aria-label="New folder"
                   className="icon-button icon-button-small"
                   type="button"
-                  onClick={() => startCreateCollection(selectedCollectionId)}
+                  onClick={() => startCreateCollection(null)}
                 >
                   ＋
                 </button>
@@ -2507,58 +2681,6 @@ export default function App({ api }: { api: AppApi }) {
                 </select>
               </div>
 
-              <div className="ai-reference-bar">
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={() => setIsReferencePickerOpen((current) => !current)}
-                >
-                  Add Reference
-                </button>
-                {activePaper ? (
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => void handleAddAiReference("item", activePaper.id)}
-                  >
-                    Use Current Paper
-                  </button>
-                ) : null}
-                {aiSessionReferences.map((reference) => (
-                  <button
-                    key={reference.id}
-                    className="annotation-chip"
-                    type="button"
-                    onClick={() => void handleRemoveAiReference(reference.id)}
-                  >
-                    {reference.kind === "item"
-                      ? libraryItems.find((item) => item.id === reference.target_id)?.title ?? "Paper"
-                      : collections.find((collection) => collection.id === reference.target_id)?.name ?? "Collection"}
-                    {" ×"}
-                  </button>
-                ))}
-              </div>
-
-              {isReferencePickerOpen ? (
-                <div className="section-block">
-                  <p className="eyebrow">Papers</p>
-                  <div className="nav-list">
-                    {libraryItems.slice(0, 8).map((item) => (
-                      <button key={`ref-item-${item.id}`} className="nav-item" type="button" onClick={() => void handleAddAiReference("item", item.id)}>
-                        {item.title}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="eyebrow">Collections</p>
-                  <div className="nav-list">
-                    {collections.map((collection) => (
-                      <button key={`ref-collection-${collection.id}`} className="nav-item" type="button" onClick={() => void handleAddAiReference("collection", collection.id)}>
-                        {collection.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
             </div>
 
             <div className="ai-chat-history">
@@ -2718,6 +2840,87 @@ export default function App({ api }: { api: AppApi }) {
               ) : null}
 
               <div className="ai-composer">
+                <div className="ai-composer-header">
+                  <div className="ai-reference-chip-list" aria-label="Active AI references">
+                    {aiSessionReferences.map((reference) => (
+                      <span key={reference.id} className="annotation-chip ai-reference-chip">
+                        <span className="ai-reference-chip-label">
+                          {sessionReferenceLabel(reference, libraryItems, collections)}
+                        </span>
+                        <button
+                          aria-label={`Remove ${sessionReferenceLabel(reference, libraryItems, collections)}`}
+                          className="ai-reference-chip-remove"
+                          type="button"
+                          onClick={() => void handleRemoveAiReference(reference.id)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="ai-reference-picker-shell">
+                    <button
+                      ref={aiReferenceButtonRef}
+                      aria-label="Add AI reference"
+                      className="icon-button icon-button-small"
+                      type="button"
+                      onClick={() => setIsReferencePickerOpen((current) => !current)}
+                    >
+                      +
+                    </button>
+                    {isReferencePickerOpen ? (
+                      <div
+                        ref={aiReferencePopoverRef}
+                        className="ai-reference-popover"
+                        role="dialog"
+                        aria-label="Add AI reference"
+                      >
+                        {activePaper ? (
+                          <div className="ai-reference-popover-group">
+                            <p className="eyebrow">Current Paper</p>
+                            <button
+                              className="nav-item"
+                              type="button"
+                              onClick={() => void handleAddAiReference("item", activePaper.id)}
+                            >
+                              {activePaper.title}
+                            </button>
+                          </div>
+                        ) : null}
+                        <div className="ai-reference-popover-group">
+                          <p className="eyebrow">Papers</p>
+                          <div className="nav-list">
+                            {sortedReferenceItems.map((item) => (
+                              <button
+                                key={`ref-item-${item.id}`}
+                                className="nav-item"
+                                type="button"
+                                onClick={() => void handleAddAiReference("item", item.id)}
+                              >
+                                {item.title}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="ai-reference-popover-group">
+                          <p className="eyebrow">Collections</p>
+                          <div className="nav-list">
+                            {sortedReferenceCollections.map((collection) => (
+                              <button
+                                key={`ref-collection-${collection.id}`}
+                                className="nav-item"
+                                type="button"
+                                onClick={() => void handleAddAiReference("collection", collection.id)}
+                              >
+                                {collection.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
                 <textarea
                   aria-label="AI prompt"
                   className="note-editor ai-composer-input"
@@ -2746,6 +2949,30 @@ export default function App({ api }: { api: AppApi }) {
             </div>
           </aside>
         </>
+      ) : null}
+
+      {deleteTarget ? (
+        <div className="modal-scrim" role="presentation">
+          <section className="confirm-dialog" role="dialog" aria-label="Confirm delete">
+            <div>
+              <p className="eyebrow">Delete</p>
+              <h2>{deleteTarget.label}</h2>
+            </div>
+            <p>
+              {deleteTarget.kind === "item"
+                ? "This removes the paper from the library and clears any matching AI references."
+                : "This removes the collection and clears any matching AI references. Nested collections and papers must already be empty."}
+            </p>
+            <div className="settings-dialog-actions">
+              <button className="ghost-button" type="button" onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </button>
+              <button className="primary-button" type="button" onClick={() => void handleConfirmDelete()}>
+                Delete
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
 
       {isSettingsOpen ? (

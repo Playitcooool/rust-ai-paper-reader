@@ -178,6 +178,20 @@ textarea {
   overflow: hidden;
 }
 
+.floating-menu {
+  position: fixed;
+  z-index: 55;
+  min-width: 180px;
+  padding: 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.02)),
+    rgba(10, 12, 16, 0.94);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+}
+
 .manage-popover-body {
   display: grid;
   gap: 12px;
@@ -402,6 +416,40 @@ p {
   text-align: left;
 }
 
+.ai-reference-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding-right: 6px;
+}
+
+.ai-reference-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-reference-chip-remove {
+  border: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.ai-reference-chip-remove:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
 .annotation-panel,
 .annotation-list {
   display: grid;
@@ -458,7 +506,7 @@ p {
 .resource-tree-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
@@ -527,20 +575,6 @@ p {
 .resource-tree-collection-button {
   font-weight: 600;
   letter-spacing: 0.01em;
-}
-
-.resource-tree-inline-action {
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 6px;
-}
-
-.resource-tree-inline-action:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff4e8;
 }
 
 .resource-tree-row-editing {
@@ -1014,12 +1048,6 @@ p {
   gap: 8px;
 }
 
-.ai-reference-bar {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .ai-shell-header {
   display: grid;
   gap: 12px;
@@ -1148,11 +1176,55 @@ p {
 .ai-composer {
   display: grid;
   gap: 10px;
+  position: relative;
   padding: 12px;
   border-radius: 22px;
   border: 1px solid var(--panel-border);
   background: rgba(19, 22, 29, 0.98);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.02), 0 -10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.ai-composer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ai-reference-chip-list {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-reference-picker-shell {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.ai-reference-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: min(320px, calc(100vw - 48px));
+  max-height: min(360px, calc(100vh - 160px));
+  overflow: auto;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid var(--panel-border);
+  background: rgba(18, 21, 29, 0.98);
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.ai-reference-popover-group {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-reference-popover-group + .ai-reference-popover-group {
+  margin-top: 12px;
 }
 
 .ai-composer-input {
@@ -1549,6 +1621,30 @@ p {
     inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
+.confirm-dialog {
+  width: min(420px, calc(100vw - 32px));
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(16, 18, 24, 0.98);
+  box-shadow:
+    0 34px 90px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.resource-context-menu .nav-item {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+.resource-context-menu-delete {
+  color: #ffb4a7;
+}
+
 .settings-provider-tabs,
 .settings-provider-grid,
 .settings-provider-actions,
@@ -1750,7 +1846,7 @@ p {
   }
 
   .resource-tree-row {
-    grid-template-columns: 18px minmax(0, 1fr) auto;
+    grid-template-columns: 18px minmax(0, 1fr);
     gap: 8px;
     padding: 8px 10px;
   }
@@ -1758,5 +1854,13 @@ p {
   .resource-tree-item,
   .resource-tree-row-editing {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-composer-header {
+    flex-wrap: wrap;
+  }
+
+  .ai-reference-chip-list {
+    width: 100%;
   }
 }
