@@ -1,6 +1,10 @@
 import type {
   AIArtifact,
+  AIRunSessionTaskInput,
   AIProvider,
+  AISession,
+  AISessionReference,
+  AISessionReferenceKind,
   AISettings,
   AITaskStreamEvent,
   Annotation,
@@ -44,6 +48,8 @@ type MockState = {
   tasks: AITask[];
   artifacts: AIArtifact[];
   notes: ResearchNote[];
+  sessions: AISession[];
+  sessionReferences: AISessionReference[];
   aiSettings: AISettings & {
     openai_api_key: string;
     anthropic_api_key: string;
@@ -150,6 +156,7 @@ const initialState = (): MockState => ({
       id: 700,
       item_id: 1,
       collection_id: 1,
+      session_id: null,
       scope_item_ids: null,
       input_prompt: null,
       kind: "item.summarize",
@@ -167,6 +174,7 @@ const initialState = (): MockState => ({
       task_id: 700,
       item_id: 1,
       collection_id: 1,
+      session_id: null,
       scope_item_ids: null,
       kind: "item.summarize",
       markdown: richItemSummary(
@@ -180,10 +188,22 @@ const initialState = (): MockState => ({
     {
       id: 900,
       collection_id: 1,
+      session_id: null,
       title: "Machine Learning Review",
       markdown:
         "# Machine Learning Review\n\n## Evidence Map\n- Transformer Scaling Laws\n- Graph Neural Survey",
     },
+  ],
+  sessions: [
+    {
+      id: 910,
+      title: "Transformer Scaling Laws",
+      created_at: "2026-04-30 09:00:00",
+      updated_at: "2026-04-30 09:00:00",
+    },
+  ],
+  sessionReferences: [
+    { id: 911, session_id: 910, kind: "item", target_id: 1, sort_index: 0 },
   ],
   aiSettings: {
     active_provider: "openai",
@@ -232,6 +252,49 @@ const collectionName = (collectionId: number) =>
   state.collections.find((collection) => collection.id === collectionId)?.name ?? "Unknown";
 
 const noteTitle = (collectionId: number) => `${collectionName(collectionId)} Review`;
+
+const touchSession = (sessionId: number, title?: string) => {
+  const session = state.sessions.find((entry) => entry.id === sessionId);
+  if (!session) return;
+  if (title) session.title = title;
+  session.updated_at = "2026-04-30 09:30:00";
+};
+
+const childCollectionIds = (collectionId: number): number[] => {
+  const orderedChildren = state.collections
+    .filter((collection) => collection.parent_id === collectionId)
+    .sort((left, right) => left.name.localeCompare(right.name));
+  return orderedChildren.flatMap((collection) => [collection.id, ...childCollectionIds(collection.id)]);
+};
+
+const expandSessionReferenceItemIds = (references: AISessionReference[]) => {
+  const seen = new Set<number>();
+  const itemIds: number[] = [];
+
+  for (const reference of references.filter((entry) => entry.kind === "item")) {
+    const item = state.items.find((entry) => entry.id === reference.target_id);
+    if (!item || seen.has(item.id)) continue;
+    seen.add(item.id);
+    itemIds.push(item.id);
+  }
+
+  for (const reference of references.filter((entry) => entry.kind === "collection")) {
+    const collectionIds = [reference.target_id, ...childCollectionIds(reference.target_id)];
+    for (const collectionId of collectionIds) {
+      const collectionItemIds = state.items
+        .filter((item) => item.collection_id === collectionId)
+        .sort((left, right) => right.id - left.id)
+        .map((item) => item.id);
+      for (const itemId of collectionItemIds) {
+        if (seen.has(itemId)) continue;
+        seen.add(itemId);
+        itemIds.push(itemId);
+      }
+    }
+  }
+
+  return itemIds;
+};
 
 const importSeedPaths = [
   "/imports/fresh-import-paper.pdf",
@@ -386,6 +449,44 @@ const itemTaskOutput = (item: MockItemDetails, kind: string, prompt?: string) =>
       return `# Reading Q&A: ${item.title}\n\n## Question\n${prompt?.trim() || "No question provided."}\n\n## Answer\n${firstLine}\n\n## Evidence\nCollection: ${collectionName(item.collection_id)}`;
     default:
       return `# Summary: ${item.title}\n\nCollection: ${collectionName(item.collection_id)}\n\n${firstLine}`;
+  }
+};
+
+const sessionTaskOutput = (input: AIRunSessionTaskInput, references: AISessionReference[]) => {
+  const scopeItemIds = expandSessionReferenceItemIds(references);
+  const items = scopeItemIds
+    .map((itemId) => state.items.find((item) => item.id === itemId))
+    .filter((item): item is MockItemDetails => Boolean(item));
+  const singleDirectItem =
+    items.length === 1 &&
+    references.some((entry) => entry.kind === "item") &&
+    !references.some((entry) => entry.kind === "collection");
+  const firstItem = items[0];
+  const firstLine = firstItem?.plainText.split(".").shift()?.trim() ?? "No readable evidence was available.";
+  const evidenceMap = items
+    .map((item) => `- **${item.title}**: ${item.plainText.split(".").shift()?.trim() ?? item.title}`)
+    .join("\n");
+
+  switch (input.kind) {
+    case "session.summarize":
+      return singleDirectItem && firstItem
+        ? richItemSummary(firstItem.title, collectionName(firstItem.collection_id), firstLine)
+        : `# Summary Set\n\n## Paper Capsules\n${evidenceMap}\n\n## Synthesis\nThe session spans ${items.length} papers.`;
+    case "session.explain_terms":
+      return singleDirectItem && firstItem
+        ? `# Terminology Notes: ${firstItem.title}\n\n## Key Terms\n- Scaling law: ${firstLine}\n\n## Reading Tip\nUse this note to clarify repeated technical vocabulary.`
+        : `# Terminology Notes\n\n## Terms\n- Scaling law: ${firstLine}\n\n## Cross-Paper Usage\nTerms recur across ${items.length} papers.`;
+    case "session.theme_map":
+      return `# Theme Map\n\n## Themes\n${evidenceMap}\n\n## Theme Clusters\nTheme clusters across ${items.length} referenced papers.`;
+    case "session.compare":
+      return `# Comparison\n\n## Comparison Matrix\n${evidenceMap}\n\n## Method Notes\nComparison across ${items.length} unique papers.`;
+    case "session.review_draft":
+      return `# Review Draft\n\n## Evidence Map\n${evidenceMap}\n\n## Narrative\nThis draft groups the session evidence into a concise review scaffold.`;
+    case "session.ask":
+    default:
+      return singleDirectItem && firstItem
+        ? `# Reading Q&A: ${firstItem.title}\n\n## Question\n${input.prompt?.trim() || "No question provided."}\n\n## Answer\n${firstLine}\n\n## Evidence\nCollection: ${collectionName(firstItem.collection_id)}`
+        : `# Reading Q&A\n\n## Question\n${input.prompt?.trim() || "No question provided."}\n\n## Answer\n${firstLine}\n\n## Scope\n${items.length} papers in the session.`;
   }
 };
 
@@ -867,11 +968,156 @@ export const fakeApi: AppApi = {
     return publicAiSettings();
   },
 
+  async listAiSessions() {
+    return [...state.sessions].sort((left, right) => right.id - left.id);
+  },
+
+  async createAiSession() {
+    const session = {
+      id: state.nextId++,
+      title: "New Chat",
+      created_at: "2026-04-30 09:30:00",
+      updated_at: "2026-04-30 09:30:00",
+    } satisfies AISession;
+    state.sessions.unshift(session);
+    return session;
+  },
+
+  async listAiSessionReferences(sessionId) {
+    return state.sessionReferences
+      .filter((reference) => reference.session_id === sessionId)
+      .sort((left, right) => left.sort_index - right.sort_index);
+  },
+
+  async addAiSessionReference(input) {
+    const existing = state.sessionReferences.find(
+      (reference) =>
+        reference.session_id === input.session_id &&
+        reference.kind === input.kind &&
+        reference.target_id === input.target_id,
+    );
+    if (existing) return existing;
+    const sort_index = state.sessionReferences.filter((reference) => reference.session_id === input.session_id).length;
+    const reference = {
+      id: state.nextId++,
+      session_id: input.session_id,
+      kind: input.kind,
+      target_id: input.target_id,
+      sort_index,
+    } satisfies AISessionReference;
+    state.sessionReferences.push(reference);
+    touchSession(input.session_id);
+    return reference;
+  },
+
+  async removeAiSessionReference(referenceId) {
+    const reference = state.sessionReferences.find((entry) => entry.id === referenceId);
+    if (!reference) return;
+    state.sessionReferences = state.sessionReferences.filter((entry) => entry.id !== referenceId);
+    state.sessionReferences
+      .filter((entry) => entry.session_id === reference.session_id)
+      .sort((left, right) => left.sort_index - right.sort_index)
+      .forEach((entry, index) => {
+        entry.sort_index = index;
+      });
+    touchSession(reference.session_id);
+  },
+
   async listenAiTaskStream(handler) {
     aiStreamListeners.add(handler);
     return () => {
       aiStreamListeners.delete(handler);
     };
+  },
+
+  async runAiSessionTask(input) {
+    const references = state.sessionReferences
+      .filter((reference) => reference.session_id === input.session_id)
+      .sort((left, right) => left.sort_index - right.sort_index);
+    const scope_item_ids = expandSessionReferenceItemIds(references);
+    if (scope_item_ids.length === 0) {
+      throw new Error("session has no readable items");
+    }
+    if (input.kind === "session.compare" && scope_item_ids.length < 2) {
+      throw new Error("compare requires at least 2 unique papers");
+    }
+    const output = sessionTaskOutput(input, references);
+    if (input.stream_id) {
+      emitAiTaskStream({
+        stream_id: input.stream_id,
+        scope: "session",
+        kind: input.kind,
+        phase: "started",
+        input_prompt: input.prompt?.trim() || null,
+      });
+      await delay(0);
+      if (state.nextAiStreamFailure) {
+        const error = state.nextAiStreamFailure;
+        state.nextAiStreamFailure = null;
+        emitAiTaskStream({
+          stream_id: input.stream_id,
+          scope: "session",
+          kind: input.kind,
+          phase: "failed",
+          input_prompt: input.prompt?.trim() || null,
+          error,
+        });
+        throw new Error(error);
+      }
+      let streamed = "";
+      for (const chunk of chunkMarkdown(output)) {
+        streamed += chunk;
+        emitAiTaskStream({
+          stream_id: input.stream_id,
+          scope: "session",
+          kind: input.kind,
+          phase: "delta",
+          input_prompt: input.prompt?.trim() || null,
+          delta_markdown: chunk,
+          full_markdown: streamed,
+        });
+        await delay(0);
+      }
+    }
+    const primaryItem = state.items.find((item) => item.id === scope_item_ids[0]);
+    const session = state.sessions.find((entry) => entry.id === input.session_id);
+    const nextTitle =
+      session?.title === "New Chat" ? (input.prompt?.trim() || (input.kind === "session.summarize" ? "Summarize" : input.kind.replace("session.", ""))) : undefined;
+    touchSession(input.session_id, nextTitle);
+    const task = {
+      id: state.nextId++,
+      item_id: null,
+      collection_id: primaryItem?.collection_id ?? null,
+      session_id: input.session_id,
+      scope_item_ids: [...scope_item_ids],
+      input_prompt: input.prompt?.trim() || null,
+      kind: input.kind,
+      status: "succeeded",
+      output_markdown: output,
+    };
+    state.tasks.unshift(task);
+    state.artifacts.unshift({
+      id: state.nextId++,
+      task_id: task.id,
+      item_id: null,
+      collection_id: primaryItem?.collection_id ?? null,
+      session_id: input.session_id,
+      scope_item_ids: [...scope_item_ids],
+      kind: input.kind,
+      markdown: output,
+    });
+    if (input.stream_id) {
+      emitAiTaskStream({
+        stream_id: input.stream_id,
+        scope: "session",
+        kind: input.kind,
+        phase: "completed",
+        task_id: task.id,
+        input_prompt: input.prompt?.trim() || null,
+        full_markdown: output,
+      });
+    }
+    return task;
   },
 
   async runItemTask(input) {
@@ -921,6 +1167,7 @@ export const fakeApi: AppApi = {
       id: state.nextId++,
       item_id: item.id,
       collection_id: item.collection_id,
+      session_id: null,
       scope_item_ids: null,
       input_prompt: input.prompt?.trim() || null,
       kind: input.kind,
@@ -933,6 +1180,7 @@ export const fakeApi: AppApi = {
       task_id: task.id,
       item_id: item.id,
       collection_id: item.collection_id,
+      session_id: null,
       scope_item_ids: null,
       kind: input.kind,
       markdown: output,
@@ -1003,6 +1251,7 @@ export const fakeApi: AppApi = {
       id: state.nextId++,
       item_id: null,
       collection_id: input.collection_id,
+      session_id: null,
       scope_item_ids: [...input.scope_item_ids],
       input_prompt: input.prompt?.trim() || null,
       kind: input.kind,
@@ -1015,6 +1264,7 @@ export const fakeApi: AppApi = {
       task_id: task.id,
       item_id: null,
       collection_id: input.collection_id,
+      session_id: null,
       scope_item_ids: [...input.scope_item_ids],
       kind: input.kind,
       markdown: output,
@@ -1039,10 +1289,14 @@ export const fakeApi: AppApi = {
         return task.item_id === input.item_id;
       }
       if (input.collection_id !== undefined) {
-        return task.collection_id === input.collection_id && task.item_id === null;
+        return task.collection_id === input.collection_id && task.item_id === null && task.session_id === null;
       }
       return true;
     });
+  },
+
+  async listAiSessionTaskRuns(sessionId) {
+    return state.tasks.filter((task) => task.session_id === sessionId);
   },
 
   async getArtifact(input) {
@@ -1052,17 +1306,25 @@ export const fakeApi: AppApi = {
           return artifact.item_id === input.item_id;
         }
         if (input.collection_id !== undefined) {
-          return artifact.collection_id === input.collection_id && artifact.item_id === null;
+          return artifact.collection_id === input.collection_id && artifact.item_id === null && artifact.session_id === null;
         }
         return false;
       }) ?? null
     );
   },
 
+  async getAiSessionArtifact(sessionId) {
+    return state.artifacts.find((artifact) => artifact.session_id === sessionId) ?? null;
+  },
+
   async listNotes(collectionId) {
     return state.notes.filter((note) =>
       collectionId === undefined ? true : note.collection_id === collectionId,
     );
+  },
+
+  async listAiSessionNotes(sessionId) {
+    return state.notes.filter((note) => note.session_id === sessionId);
   },
 
   async createNoteFromArtifact(input) {
@@ -1073,11 +1335,16 @@ export const fakeApi: AppApi = {
     const note = {
       id: state.nextId++,
       collection_id: artifact.collection_id,
+      session_id: artifact.session_id,
       title: noteTitleFromArtifact(artifact.collection_id, artifact.markdown),
       markdown: artifact.markdown,
     };
     state.notes.unshift(note);
     return note;
+  },
+
+  async createAiSessionNoteFromArtifact(artifactId) {
+    return fakeApi.createNoteFromArtifact({ artifact_id: artifactId });
   },
 
   async updateNote(input) {

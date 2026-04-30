@@ -76,6 +76,7 @@ export type AITask = {
   id: number;
   item_id: number | null;
   collection_id: number | null;
+  session_id: number | null;
   scope_item_ids: number[] | null;
   input_prompt: string | null;
   kind: string;
@@ -85,7 +86,7 @@ export type AITask = {
 
 export type AITaskStreamEvent = {
   stream_id: string;
-  scope: "paper" | "collection";
+  scope: "paper" | "collection" | "session";
   kind: string;
   phase: "started" | "delta" | "completed" | "failed";
   task_id?: number;
@@ -100,9 +101,27 @@ export type AIArtifact = {
   task_id: number;
   item_id: number | null;
   collection_id: number | null;
+  session_id: number | null;
   scope_item_ids: number[] | null;
   kind: string;
   markdown: string;
+};
+
+export type AISession = {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AISessionReferenceKind = "item" | "collection";
+
+export type AISessionReference = {
+  id: number;
+  session_id: number;
+  kind: AISessionReferenceKind;
+  target_id: number;
+  sort_index: number;
 };
 
 export type AIProvider = "openai" | "anthropic";
@@ -131,9 +150,17 @@ export type UpdateAISettingsInput = {
 
 export type ResearchNote = {
   id: number;
-  collection_id: number;
+  collection_id: number | null;
+  session_id: number | null;
   title: string;
   markdown: string;
+};
+
+export type AIRunSessionTaskInput = {
+  session_id: number;
+  kind: string;
+  prompt?: string;
+  stream_id?: string;
 };
 
 export type OcrBbox = {
@@ -257,6 +284,20 @@ export type AppApi = {
   removeAnnotation: (input: { annotation_id: number }) => Promise<void>;
   getAiSettings: () => Promise<AISettings>;
   updateAiSettings: (input: UpdateAISettingsInput) => Promise<AISettings>;
+  listAiSessions: () => Promise<AISession[]>;
+  createAiSession: () => Promise<AISession>;
+  listAiSessionReferences: (sessionId: number) => Promise<AISessionReference[]>;
+  addAiSessionReference: (input: {
+    session_id: number;
+    kind: AISessionReferenceKind;
+    target_id: number;
+  }) => Promise<AISessionReference>;
+  removeAiSessionReference: (referenceId: number) => Promise<void>;
+  runAiSessionTask: (input: AIRunSessionTaskInput) => Promise<AITask>;
+  listAiSessionTaskRuns: (sessionId: number) => Promise<AITask[]>;
+  getAiSessionArtifact: (sessionId: number) => Promise<AIArtifact | null>;
+  listAiSessionNotes: (sessionId: number) => Promise<ResearchNote[]>;
+  createAiSessionNoteFromArtifact: (artifactId: number) => Promise<ResearchNote>;
   runItemTask: (input: {
     item_id: number;
     kind: string;

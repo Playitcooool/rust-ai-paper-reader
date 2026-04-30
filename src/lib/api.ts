@@ -149,6 +149,34 @@ export async function createTauriApi(): Promise<AppApi> {
     removeAnnotation: (input) => invoke("remove_annotation", { input }),
     getAiSettings: () => invoke("get_ai_settings"),
     updateAiSettings: (input) => invoke("update_ai_settings", { input }),
+    listAiSessions: () => invoke("list_ai_sessions"),
+    createAiSession: () => invoke("create_ai_session"),
+    listAiSessionReferences: (sessionId) =>
+      invoke("list_ai_session_references", {
+        sessionId,
+      }),
+    addAiSessionReference: (input) => invoke("add_ai_session_reference", { input }),
+    removeAiSessionReference: (referenceId) =>
+      invoke("remove_ai_session_reference", {
+        referenceId,
+      }),
+    runAiSessionTask: (input) => invoke("run_ai_session_task", { input }),
+    listAiSessionTaskRuns: (sessionId) =>
+      invoke("list_ai_session_task_runs", {
+        sessionId,
+      }),
+    getAiSessionArtifact: (sessionId) =>
+      invoke("get_ai_session_artifact", {
+        sessionId,
+      }),
+    listAiSessionNotes: (sessionId) =>
+      invoke("list_ai_session_notes", {
+        sessionId,
+      }),
+    createAiSessionNoteFromArtifact: (artifactId) =>
+      invoke("create_ai_session_note_from_artifact", {
+        artifactId,
+      }),
     runItemTask: (input) => invoke("run_item_task", { input }),
     runCollectionTask: (input) => invoke("run_collection_task", { input }),
     listenAiTaskStream: async (handler) => {

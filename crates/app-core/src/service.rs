@@ -84,6 +84,7 @@ pub struct AITask {
     pub id: i64,
     pub item_id: Option<i64>,
     pub collection_id: Option<i64>,
+    pub session_id: Option<i64>,
     pub scope_item_ids: Option<Vec<i64>>,
     pub input_prompt: Option<String>,
     pub kind: String,
@@ -97,9 +98,51 @@ pub struct AIArtifact {
     pub task_id: i64,
     pub item_id: Option<i64>,
     pub collection_id: Option<i64>,
+    pub session_id: Option<i64>,
     pub scope_item_ids: Option<Vec<i64>>,
     pub kind: String,
     pub markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AISession {
+    pub id: i64,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AISessionReferenceKind {
+    Item,
+    Collection,
+}
+
+impl AISessionReferenceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Item => "item",
+            Self::Collection => "collection",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "item" => Ok(Self::Item),
+            "collection" => Ok(Self::Collection),
+            _ => Err(anyhow!("unsupported session reference kind")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AISessionReference {
+    pub id: i64,
+    pub session_id: i64,
+    pub kind: AISessionReferenceKind,
+    pub target_id: i64,
+    pub sort_index: i64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,7 +195,8 @@ pub struct UpdateAISettingsInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchNote {
     pub id: i64,
-    pub collection_id: i64,
+    pub collection_id: Option<i64>,
+    pub session_id: Option<i64>,
     pub title: String,
     pub markdown: String,
 }
@@ -251,6 +295,7 @@ const EXTRACTOR_VERSION: i64 = 1;
 const ITEM_TASK_TEXT_LIMIT: usize = 18_000;
 const COLLECTION_ITEM_TEXT_LIMIT: usize = 4_000;
 const COLLECTION_TOTAL_TEXT_LIMIT: usize = 40_000;
+const DEFAULT_AI_SESSION_TITLE: &str = "New Chat";
 
 impl Default for HttpAiTransport {
     fn default() -> Self {
@@ -1338,14 +1383,14 @@ impl LibraryService {
 
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO ai_tasks(item_id, collection_id, kind, status, output_markdown, input_prompt)
-             VALUES (?1, ?2, ?3, 'succeeded', ?4, ?5)",
+            "INSERT INTO ai_tasks(item_id, collection_id, session_id, kind, status, output_markdown, input_prompt)
+             VALUES (?1, ?2, NULL, ?3, 'succeeded', ?4, ?5)",
             params![item_id, collection_id, kind, output, prompt_text],
         )?;
         let task_id = tx.last_insert_rowid();
         tx.execute(
-            "INSERT INTO ai_artifacts(task_id, item_id, collection_id, kind, markdown)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO ai_artifacts(task_id, item_id, collection_id, session_id, kind, markdown)
+             VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
             params![task_id, item_id, collection_id, kind, output],
         )?;
         tx.commit()?;
@@ -1354,6 +1399,7 @@ impl LibraryService {
             id: task_id,
             item_id: Some(item_id),
             collection_id: Some(collection_id),
+            session_id: None,
             scope_item_ids: None,
             input_prompt: prompt_text.map(str::to_owned),
             kind: kind.into(),
@@ -1368,26 +1414,27 @@ impl LibraryService {
 
     pub fn create_note_from_artifact(&self, artifact_id: i64) -> Result<ResearchNote> {
         let conn = self.connect()?;
-        let (collection_id, collection_name, markdown): (i64, String, String) = conn.query_row(
+        let (collection_id, session_id, collection_name, markdown): (Option<i64>, Option<i64>, String, String) = conn.query_row(
             "
-            SELECT a.collection_id, c.name, a.markdown
+            SELECT a.collection_id, a.session_id, COALESCE(c.name, 'Research Session'), a.markdown
             FROM ai_artifacts a
-            JOIN collections c ON c.id = a.collection_id
+            LEFT JOIN collections c ON c.id = a.collection_id
             WHERE a.id = ?1
             ",
             [artifact_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         let title = extract_markdown_heading(&markdown)
             .unwrap_or_else(|| format!("{collection_name} Note"));
         conn.execute(
-            "INSERT INTO research_notes(collection_id, title, markdown) VALUES (?1, ?2, ?3)",
-            params![collection_id, title, markdown],
+            "INSERT INTO research_notes(collection_id, session_id, title, markdown) VALUES (?1, ?2, ?3, ?4)",
+            params![collection_id, session_id, title, markdown],
         )?;
 
         Ok(ResearchNote {
             id: conn.last_insert_rowid(),
             collection_id,
+            session_id,
             title,
             markdown,
         })
@@ -1425,14 +1472,14 @@ impl LibraryService {
         let tx = conn.transaction()?;
         let scope_json = serde_json::to_string(scope_item_ids)?;
         tx.execute(
-            "INSERT INTO ai_tasks(collection_id, kind, status, output_markdown, scope_item_ids, input_prompt)
-             VALUES (?1, ?2, 'succeeded', ?3, ?4, ?5)",
+            "INSERT INTO ai_tasks(collection_id, session_id, kind, status, output_markdown, scope_item_ids, input_prompt)
+             VALUES (?1, NULL, ?2, 'succeeded', ?3, ?4, ?5)",
             params![collection_id, kind, markdown, scope_json, prompt_text],
         )?;
         let task_id = tx.last_insert_rowid();
         tx.execute(
-            "INSERT INTO ai_artifacts(task_id, collection_id, kind, markdown, scope_item_ids)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO ai_artifacts(task_id, collection_id, session_id, kind, markdown, scope_item_ids)
+             VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
             params![task_id, collection_id, kind, markdown, scope_json],
         )?;
         tx.commit()?;
@@ -1441,6 +1488,7 @@ impl LibraryService {
             id: task_id,
             item_id: None,
             collection_id: Some(collection_id),
+            session_id: None,
             scope_item_ids: Some(scope_item_ids.to_vec()),
             input_prompt: prompt_text.map(str::to_owned),
             kind: kind.into(),
@@ -1458,10 +1506,229 @@ impl LibraryService {
         self.run_collection_task(collection_id, "collection.review_draft", &item_ids, None)
     }
 
+    pub fn list_ai_sessions(&self) -> Result<Vec<AISession>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare(
+            "SELECT id, title, created_at, updated_at FROM ai_sessions ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map([], map_ai_session)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn create_ai_session(&self) -> Result<AISession> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO ai_sessions(title) VALUES (?1)",
+            [DEFAULT_AI_SESSION_TITLE],
+        )?;
+        let session_id = conn.last_insert_rowid();
+        conn.query_row(
+            "SELECT id, title, created_at, updated_at FROM ai_sessions WHERE id = ?1",
+            [session_id],
+            map_ai_session,
+        )
+        .map_err(Into::into)
+    }
+
+    pub fn list_ai_session_references(&self, session_id: i64) -> Result<Vec<AISessionReference>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare(
+            "SELECT id, session_id, kind, target_id, sort_index
+             FROM ai_session_references
+             WHERE session_id = ?1
+             ORDER BY sort_index ASC, id ASC",
+        )?;
+        let rows = statement.query_map([session_id], map_ai_session_reference)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn add_ai_session_reference(
+        &self,
+        session_id: i64,
+        kind: AISessionReferenceKind,
+        target_id: i64,
+    ) -> Result<AISessionReference> {
+        let conn = self.connect()?;
+        conn.query_row("SELECT id FROM ai_sessions WHERE id = ?1", [session_id], |row| row.get::<_, i64>(0))
+            .context("session does not exist")?;
+        match kind {
+            AISessionReferenceKind::Item => {
+                conn.query_row("SELECT id FROM items WHERE id = ?1", [target_id], |row| row.get::<_, i64>(0))
+                    .context("item does not exist")?;
+            }
+            AISessionReferenceKind::Collection => {
+                conn.query_row(
+                    "SELECT id FROM collections WHERE id = ?1",
+                    [target_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .context("collection does not exist")?;
+            }
+        }
+        let already = conn
+            .query_row(
+                "SELECT id FROM ai_session_references WHERE session_id = ?1 AND kind = ?2 AND target_id = ?3",
+                params![session_id, kind.as_str(), target_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if let Some(reference_id) = already {
+            return conn
+                .query_row(
+                    "SELECT id, session_id, kind, target_id, sort_index FROM ai_session_references WHERE id = ?1",
+                    [reference_id],
+                    map_ai_session_reference,
+                )
+                .map_err(Into::into);
+        }
+        let sort_index: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(sort_index), -1) + 1 FROM ai_session_references WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO ai_session_references(session_id, kind, target_id, sort_index) VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, kind.as_str(), target_id, sort_index],
+        )?;
+        touch_ai_session(&conn, session_id, None)?;
+        conn.query_row(
+            "SELECT id, session_id, kind, target_id, sort_index FROM ai_session_references WHERE id = ?1",
+            [conn.last_insert_rowid()],
+            map_ai_session_reference,
+        )
+        .map_err(Into::into)
+    }
+
+    pub fn remove_ai_session_reference(&self, reference_id: i64) -> Result<()> {
+        let conn = self.connect()?;
+        let session_id = conn
+            .query_row(
+                "SELECT session_id FROM ai_session_references WHERE id = ?1",
+                [reference_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(session_id) = session_id else {
+            return Ok(());
+        };
+        conn.execute("DELETE FROM ai_session_references WHERE id = ?1", [reference_id])?;
+        conn.execute(
+            "
+            WITH ranked AS (
+                SELECT id, ROW_NUMBER() OVER (ORDER BY sort_index ASC, id ASC) - 1 AS next_sort_index
+                FROM ai_session_references
+                WHERE session_id = ?1
+            )
+            UPDATE ai_session_references
+            SET sort_index = (SELECT next_sort_index FROM ranked WHERE ranked.id = ai_session_references.id)
+            WHERE session_id = ?1
+            ",
+            [session_id],
+        )?;
+        touch_ai_session(&conn, session_id, None)?;
+        Ok(())
+    }
+
+    pub fn run_ai_session_task(
+        &self,
+        session_id: i64,
+        kind: &str,
+        prompt: Option<&str>,
+    ) -> Result<AITask> {
+        let mut conn = self.connect()?;
+        let settings = load_ai_settings(&conn)?;
+        let references = list_session_references_conn(&conn, session_id)?;
+        let expanded = expand_session_references(&conn, &references)?;
+        if expanded.item_ids.is_empty() {
+            return Err(anyhow!("session has no readable items"));
+        }
+        if kind == "session.compare" && expanded.item_ids.len() < 2 {
+            return Err(anyhow!("compare requires at least 2 unique papers"));
+        }
+        let prompt_text = prompt.map(str::trim).filter(|value| !value.is_empty());
+        let prompt_body = build_session_prompt(&conn, kind, &expanded, prompt_text)?;
+        let request = self.build_provider_request(&settings, prompt_body)?;
+        let markdown = self.ai_transport.complete(request)?;
+        let display_title = derive_session_title(kind, prompt_text);
+        let session_title = conn.query_row("SELECT title FROM ai_sessions WHERE id = ?1", [session_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let primary_collection_id = expanded.primary_collection_id;
+        let scope_json = serde_json::to_string(&expanded.item_ids)?;
+
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO ai_tasks(item_id, collection_id, session_id, kind, status, output_markdown, scope_item_ids, input_prompt)
+             VALUES (NULL, ?1, ?2, ?3, 'succeeded', ?4, ?5, ?6)",
+            params![primary_collection_id, session_id, kind, markdown, scope_json, prompt_text],
+        )?;
+        let task_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO ai_artifacts(task_id, item_id, collection_id, session_id, kind, markdown, scope_item_ids)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6)",
+            params![task_id, primary_collection_id, session_id, kind, markdown, scope_json],
+        )?;
+        let next_title = if session_title == DEFAULT_AI_SESSION_TITLE {
+            display_title
+        } else {
+            None
+        };
+        touch_ai_session(&tx, session_id, next_title.as_deref())?;
+        tx.commit()?;
+
+        Ok(AITask {
+            id: task_id,
+            item_id: None,
+            collection_id: primary_collection_id,
+            session_id: Some(session_id),
+            scope_item_ids: Some(expanded.item_ids),
+            input_prompt: prompt_text.map(str::to_owned),
+            kind: kind.into(),
+            status: "succeeded".into(),
+            output_markdown: markdown,
+        })
+    }
+
+    pub fn list_ai_session_task_runs(&self, session_id: i64) -> Result<Vec<AITask>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare(
+            "SELECT id, item_id, collection_id, session_id, scope_item_ids, input_prompt, kind, status, output_markdown
+             FROM ai_tasks WHERE session_id = ?1 ORDER BY id DESC",
+        )?;
+        let rows = statement.query_map([session_id], map_ai_task)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn get_ai_session_artifact(&self, session_id: i64) -> Result<Option<AIArtifact>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare(
+            "SELECT id, task_id, item_id, collection_id, session_id, scope_item_ids, kind, markdown
+             FROM ai_artifacts WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        statement
+            .query_row([session_id], map_ai_artifact)
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn list_ai_session_notes(&self, session_id: i64) -> Result<Vec<ResearchNote>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare(
+            "SELECT id, collection_id, session_id, title, markdown
+             FROM research_notes WHERE session_id = ?1 ORDER BY id DESC",
+        )?;
+        let rows = statement.query_map([session_id], map_research_note)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     pub fn list_notes(&self, collection_id: Option<i64>) -> Result<Vec<ResearchNote>> {
         let conn = self.connect()?;
         let mut query =
-            "SELECT id, collection_id, title, markdown FROM research_notes".to_string();
+            "SELECT id, collection_id, session_id, title, markdown FROM research_notes".to_string();
         if collection_id.is_some() {
             query.push_str(" WHERE collection_id = ?1");
         }
@@ -1539,7 +1806,7 @@ impl LibraryService {
     ) -> Result<Vec<AITask>> {
         let conn = self.connect()?;
         let mut query =
-            "SELECT id, item_id, collection_id, scope_item_ids, input_prompt, kind, status, output_markdown FROM ai_tasks"
+            "SELECT id, item_id, collection_id, session_id, scope_item_ids, input_prompt, kind, status, output_markdown FROM ai_tasks"
                 .to_string();
         match (item_id, collection_id) {
             (Some(_), Some(_)) => query.push_str(" WHERE item_id = ?1 AND collection_id = ?2"),
@@ -1572,19 +1839,19 @@ impl LibraryService {
         let conn = self.connect()?;
         let query = match (item_id, collection_id) {
             (Some(_), Some(_)) => {
-                "SELECT id, task_id, item_id, collection_id, scope_item_ids, kind, markdown
+                "SELECT id, task_id, item_id, collection_id, session_id, scope_item_ids, kind, markdown
                  FROM ai_artifacts WHERE item_id = ?1 AND collection_id = ?2 ORDER BY id DESC LIMIT 1"
             }
             (Some(_), None) => {
-                "SELECT id, task_id, item_id, collection_id, scope_item_ids, kind, markdown
+                "SELECT id, task_id, item_id, collection_id, session_id, scope_item_ids, kind, markdown
                  FROM ai_artifacts WHERE item_id = ?1 ORDER BY id DESC LIMIT 1"
             }
             (None, Some(_)) => {
-                "SELECT id, task_id, item_id, collection_id, scope_item_ids, kind, markdown
+                "SELECT id, task_id, item_id, collection_id, session_id, scope_item_ids, kind, markdown
                  FROM ai_artifacts WHERE collection_id = ?1 AND item_id IS NULL ORDER BY id DESC LIMIT 1"
             }
             (None, None) => {
-                "SELECT id, task_id, item_id, collection_id, scope_item_ids, kind, markdown
+                "SELECT id, task_id, item_id, collection_id, session_id, scope_item_ids, kind, markdown
                  FROM ai_artifacts ORDER BY id DESC LIMIT 1"
             }
         };
@@ -1732,6 +1999,7 @@ impl LibraryService {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 item_id INTEGER NULL REFERENCES items(id),
                 collection_id INTEGER NULL REFERENCES collections(id),
+                session_id INTEGER NULL REFERENCES ai_sessions(id),
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
                 output_markdown TEXT NOT NULL,
@@ -1744,14 +2012,31 @@ impl LibraryService {
                 task_id INTEGER NOT NULL REFERENCES ai_tasks(id) ON DELETE CASCADE,
                 item_id INTEGER NULL REFERENCES items(id),
                 collection_id INTEGER NULL REFERENCES collections(id),
+                session_id INTEGER NULL REFERENCES ai_sessions(id),
                 kind TEXT NOT NULL,
                 markdown TEXT NOT NULL,
                 scope_item_ids TEXT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS ai_sessions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'New Chat',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_session_references(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                target_id INTEGER NOT NULL,
+                sort_index INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS research_notes(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                collection_id INTEGER NOT NULL REFERENCES collections(id),
+                collection_id INTEGER NULL REFERENCES collections(id),
+                session_id INTEGER NULL REFERENCES ai_sessions(id),
                 title TEXT NOT NULL,
                 markdown TEXT NOT NULL
             );
@@ -1794,7 +2079,10 @@ impl LibraryService {
         )?;
         ensure_column(&conn, "ai_tasks", "scope_item_ids", "TEXT NULL")?;
         ensure_column(&conn, "ai_tasks", "input_prompt", "TEXT NULL")?;
+        ensure_column(&conn, "ai_tasks", "session_id", "INTEGER NULL")?;
         ensure_column(&conn, "ai_artifacts", "scope_item_ids", "TEXT NULL")?;
+        ensure_column(&conn, "ai_artifacts", "session_id", "INTEGER NULL")?;
+        ensure_column(&conn, "research_notes", "session_id", "INTEGER NULL")?;
         conn.execute(
             "INSERT OR IGNORE INTO ai_settings(id) VALUES (1)",
             [],
@@ -1891,6 +2179,269 @@ fn defaulted_base_url(provider: AIProvider, value: &str) -> String {
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
+}
+
+#[derive(Debug)]
+struct SessionPromptExpansion {
+    item_ids: Vec<i64>,
+    has_collection_reference: bool,
+    primary_collection_id: Option<i64>,
+}
+
+fn list_session_references_conn(conn: &Connection, session_id: i64) -> Result<Vec<AISessionReference>> {
+    let mut statement = conn.prepare(
+        "SELECT id, session_id, kind, target_id, sort_index
+         FROM ai_session_references
+         WHERE session_id = ?1
+         ORDER BY sort_index ASC, id ASC",
+    )?;
+    let rows = statement.query_map([session_id], map_ai_session_reference)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn child_collections_for_conn(conn: &Connection, parent_id: Option<i64>) -> Result<Vec<Collection>> {
+    let query = if parent_id.is_some() {
+        "SELECT id, name, parent_id FROM collections WHERE parent_id = ?1 ORDER BY name ASC"
+    } else {
+        "SELECT id, name, parent_id FROM collections WHERE parent_id IS NULL ORDER BY name ASC"
+    };
+    let mut statement = conn.prepare(query)?;
+    let rows = if let Some(parent_id) = parent_id {
+        statement.query_map([parent_id], map_collection)?
+    } else {
+        statement.query_map([], map_collection)?
+    };
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn collect_collection_tree_ids(conn: &Connection, collection_id: i64, out: &mut Vec<i64>) -> Result<()> {
+    out.push(collection_id);
+    for child in child_collections_for_conn(conn, Some(collection_id))? {
+        collect_collection_tree_ids(conn, child.id, out)?;
+    }
+    Ok(())
+}
+
+fn expand_session_references(conn: &Connection, references: &[AISessionReference]) -> Result<SessionPromptExpansion> {
+    let mut item_ids = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut has_collection_reference = false;
+    let mut primary_collection_id = None;
+
+    for reference in references.iter().filter(|reference| reference.kind == AISessionReferenceKind::Item) {
+        let row = conn
+            .query_row(
+                "SELECT id, collection_id FROM items WHERE id = ?1",
+                [reference.target_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((item_id, collection_id)) = row else {
+            continue;
+        };
+        if seen.insert(item_id) {
+            if primary_collection_id.is_none() {
+                primary_collection_id = Some(collection_id);
+            }
+            item_ids.push(item_id);
+        }
+    }
+
+    for reference in references
+        .iter()
+        .filter(|reference| reference.kind == AISessionReferenceKind::Collection)
+    {
+        has_collection_reference = true;
+        let mut collection_tree_ids = Vec::new();
+        collect_collection_tree_ids(conn, reference.target_id, &mut collection_tree_ids)?;
+        for collection_id in collection_tree_ids {
+            let mut statement = conn.prepare(
+                "
+                SELECT id, collection_id
+                FROM items
+                WHERE collection_id = ?1
+                ORDER BY id DESC
+                ",
+            )?;
+            let rows = statement.query_map([collection_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (item_id, row_collection_id) = row?;
+                if seen.insert(item_id) {
+                    if primary_collection_id.is_none() {
+                        primary_collection_id = Some(row_collection_id);
+                    }
+                    item_ids.push(item_id);
+                }
+            }
+        }
+    }
+
+    Ok(SessionPromptExpansion {
+        item_ids,
+        has_collection_reference,
+        primary_collection_id,
+    })
+}
+
+fn derive_session_title(kind: &str, prompt: Option<&str>) -> Option<String> {
+    if let Some(prompt) = prompt {
+        let trimmed = prompt.trim();
+        if !trimmed.is_empty() {
+            return Some(truncate_chars(trimmed, 60));
+        }
+    }
+    let label = match kind {
+        "session.summarize" => "Summarize",
+        "session.explain_terms" => "Explain Terms",
+        "session.theme_map" => "Theme Map",
+        "session.compare" => "Compare",
+        "session.review_draft" => "Review Draft",
+        "session.ask" => "Ask",
+        _ => return None,
+    };
+    Some(label.to_string())
+}
+
+fn touch_ai_session(conn: &Connection, session_id: i64, title: Option<&str>) -> Result<()> {
+    if let Some(title) = title {
+        conn.execute(
+            "UPDATE ai_sessions SET title = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+            params![title, session_id],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE ai_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            [session_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn build_session_prompt(
+    conn: &Connection,
+    kind: &str,
+    expansion: &SessionPromptExpansion,
+    prompt: Option<&str>,
+) -> Result<String> {
+    if expansion.item_ids.len() == 1 && !expansion.has_collection_reference {
+        let item_id = expansion.item_ids[0];
+        let (collection_id, title, excerpt) = conn.query_row(
+            "
+            SELECT i.collection_id, i.title, e.plain_text
+            FROM items i
+            JOIN extracted_content e ON e.item_id = i.id
+            WHERE i.id = ?1
+            ",
+            [item_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        let collection_name: String = conn.query_row(
+            "SELECT name FROM collections WHERE id = ?1",
+            [collection_id],
+            |row| row.get(0),
+        )?;
+        let excerpt = truncate_chars(&excerpt, ITEM_TASK_TEXT_LIMIT);
+        return build_single_session_prompt(kind, &title, &collection_name, &excerpt, prompt);
+    }
+
+    let mut remaining = COLLECTION_TOTAL_TEXT_LIMIT;
+    let mut sections = Vec::new();
+    for item_id in &expansion.item_ids {
+        let row = conn
+            .query_row(
+                "
+                SELECT i.title, c.name, e.plain_text
+                FROM items i
+                JOIN collections c ON c.id = i.collection_id
+                JOIN extracted_content e ON e.item_id = i.id
+                WHERE i.id = ?1
+                ",
+                [item_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((title, collection_name, plain_text)) = row else {
+            continue;
+        };
+        if remaining == 0 {
+            break;
+        }
+        let clipped = truncate_chars(&plain_text, COLLECTION_ITEM_TEXT_LIMIT.min(remaining));
+        if clipped.trim().is_empty() {
+            continue;
+        }
+        remaining = remaining.saturating_sub(clipped.chars().count());
+        sections.push(format!("## {title}\nCollection: {collection_name}\n\n{clipped}"));
+    }
+    if sections.is_empty() {
+        return Err(anyhow!("session has no readable items"));
+    }
+    let task_instructions = match kind {
+        "session.summarize" => "# Summary Set\n\n## Paper Capsules\n- ...\n\n## Synthesis\n...",
+        "session.explain_terms" => "# Terminology Notes\n\n## Terms\n- term: explanation\n\n## Cross-Paper Usage\n...",
+        "session.theme_map" => "# Theme Map\n\n## Themes\n- ...\n\n## Theme Clusters\n...",
+        "session.compare" => "# Comparison\n\n## Comparison Matrix\n- ...\n\n## Method Notes\n...",
+        "session.review_draft" => "# Review Draft\n\n## Evidence Map\n- ...\n\n## Narrative\n...",
+        "session.ask" => "# Reading Q&A\n\n## Question\n...\n\n## Answer\n...\n\n## Scope\n...",
+        _ => return Err(anyhow!("unsupported session task kind")),
+    };
+    let prompt_suffix = if kind == "session.ask" {
+        format!("\nUser question:\n{}", prompt.unwrap_or("No question provided."))
+    } else {
+        String::new()
+    };
+    Ok(format!(
+        "You are assisting with a research reading workflow.\nReturn markdown only. Do not wrap the answer in code fences.\nPreserve the heading and section style shown below.\n\nTask kind: {kind}\n{}\n\nUse only this extracted evidence in the exact paper order provided:\n\n{}\n{}",
+        task_instructions,
+        sections.join("\n\n"),
+        prompt_suffix
+    ))
+}
+
+fn build_single_session_prompt(
+    kind: &str,
+    title: &str,
+    collection_name: &str,
+    excerpt: &str,
+    prompt: Option<&str>,
+) -> Result<String> {
+    let task_instructions = match kind {
+        "session.summarize" => "# Summary: {title}\n\nCollection: {collection}\n\n## Key Points\n- ...\n\n## Evidence\n- ...",
+        "session.explain_terms" => "# Terminology Notes: {title}\n\n## Key Terms\n- term: explanation\n\n## Reading Tip\n...",
+        "session.ask" => "# Reading Q&A: {title}\n\n## Question\n...\n\n## Answer\n...\n\n## Evidence\n- ...",
+        "session.compare" => return Err(anyhow!("compare requires at least 2 unique papers")),
+        "session.theme_map" => "# Theme Map: {title}\n\n## Themes\n- ...\n\n## Theme Clusters\n...",
+        "session.review_draft" => "# Review Draft: {title}\n\n## Evidence Map\n- ...\n\n## Narrative\n...",
+        _ => return Err(anyhow!("unsupported session task kind")),
+    };
+    Ok(format!(
+        "You are assisting with a research reading workflow.\nReturn markdown only. Do not wrap the answer in code fences.\nPreserve the heading and section style shown below.\n\nTarget title: {title}\nCollection: {collection_name}\nTask kind: {kind}\n{}\n\nUse only this extracted paper text:\n\"\"\"\n{}\n\"\"\"\n{}",
+        task_instructions
+            .replace("{title}", title)
+            .replace("{collection}", collection_name),
+        excerpt,
+        if kind == "session.ask" {
+            format!("\nUser question:\n{}", prompt.unwrap_or(""))
+        } else {
+            String::new()
+        }
+    ))
 }
 
 fn build_item_prompt(
@@ -2039,16 +2590,17 @@ fn map_research_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResearchNote> 
     Ok(ResearchNote {
         id: row.get(0)?,
         collection_id: row.get(1)?,
-        title: row.get(2)?,
-        markdown: row.get(3)?,
+        session_id: row.get(2)?,
+        title: row.get(3)?,
+        markdown: row.get(4)?,
     })
 }
 
 fn map_ai_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AITask> {
-    let raw_scope: Option<String> = row.get(3)?;
+    let raw_scope: Option<String> = row.get(4)?;
     let scope_item_ids = parse_scope_item_ids(raw_scope).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
-            3,
+            4,
             rusqlite::types::Type::Text,
             Box::new(error),
         )
@@ -2057,19 +2609,20 @@ fn map_ai_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AITask> {
         id: row.get(0)?,
         item_id: row.get(1)?,
         collection_id: row.get(2)?,
+        session_id: row.get(3)?,
         scope_item_ids,
-        input_prompt: row.get(4)?,
-        kind: row.get(5)?,
-        status: row.get(6)?,
-        output_markdown: row.get(7)?,
+        input_prompt: row.get(5)?,
+        kind: row.get(6)?,
+        status: row.get(7)?,
+        output_markdown: row.get(8)?,
     })
 }
 
 fn map_ai_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<AIArtifact> {
-    let raw_scope: Option<String> = row.get(4)?;
+    let raw_scope: Option<String> = row.get(5)?;
     let scope_item_ids = parse_scope_item_ids(raw_scope).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
-            4,
+            5,
             rusqlite::types::Type::Text,
             Box::new(error),
         )
@@ -2079,14 +2632,50 @@ fn map_ai_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<AIArtifact> {
         task_id: row.get(1)?,
         item_id: row.get(2)?,
         collection_id: row.get(3)?,
+        session_id: row.get(4)?,
         scope_item_ids,
-        kind: row.get(5)?,
-        markdown: row.get(6)?,
+        kind: row.get(6)?,
+        markdown: row.get(7)?,
+    })
+}
+
+fn map_ai_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<AISession> {
+    Ok(AISession {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+    })
+}
+
+fn map_ai_session_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<AISessionReference> {
+    let kind_raw: String = row.get(2)?;
+    let kind = AISessionReferenceKind::parse(&kind_raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())),
+        )
+    })?;
+    Ok(AISessionReference {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        kind,
+        target_id: row.get(3)?,
+        sort_index: row.get(4)?,
     })
 }
 
 fn parse_scope_item_ids(value: Option<String>) -> Result<Option<Vec<i64>>, serde_json::Error> {
     value.map(|raw| serde_json::from_str(&raw)).transpose()
+}
+
+fn map_collection(row: &rusqlite::Row<'_>) -> rusqlite::Result<Collection> {
+    Ok(Collection {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        parent_id: row.get(2)?,
+    })
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {

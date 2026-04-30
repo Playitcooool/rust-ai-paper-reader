@@ -8,7 +8,8 @@ use std::{
 
 use app_core::service::{
     Annotation, Collection, ImportBatchResult, ImportMode, LibraryItem, LibraryService, ReaderView,
-    ResearchNote, Tag, AISettings, UpdateAISettingsInput,
+    ResearchNote, Tag, AISettings, UpdateAISettingsInput, AISession, AISessionReference,
+    AISessionReferenceKind,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -150,6 +151,21 @@ struct RunCollectionTaskInput {
     collection_id: i64,
     kind: String,
     scope_item_ids: Vec<i64>,
+    prompt: Option<String>,
+    stream_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AddAiSessionReferenceInput {
+    session_id: i64,
+    kind: String,
+    target_id: i64,
+}
+
+#[derive(Deserialize)]
+struct RunAiSessionTaskInput {
+    session_id: i64,
+    kind: String,
     prompt: Option<String>,
     stream_id: Option<String>,
 }
@@ -1459,6 +1475,192 @@ fn run_collection_task(
 }
 
 #[tauri::command]
+fn list_ai_sessions(state: State<'_, AppState>) -> Result<Vec<AISession>, String> {
+    service(&state)?
+        .list_ai_sessions()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_ai_session(state: State<'_, AppState>) -> Result<AISession, String> {
+    service(&state)?
+        .create_ai_session()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_ai_session_references(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Vec<AISessionReference>, String> {
+    service(&state)?
+        .list_ai_session_references(session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn add_ai_session_reference(
+    state: State<'_, AppState>,
+    input: AddAiSessionReferenceInput,
+) -> Result<AISessionReference, String> {
+    let kind = AISessionReferenceKind::parse(&input.kind).map_err(|error| error.to_string())?;
+    service(&state)?
+        .add_ai_session_reference(input.session_id, kind, input.target_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn remove_ai_session_reference(
+    state: State<'_, AppState>,
+    reference_id: i64,
+) -> Result<(), String> {
+    service(&state)?
+        .remove_ai_session_reference(reference_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_ai_session_task(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    input: RunAiSessionTaskInput,
+) -> Result<app_core::service::AITask, String> {
+    if let Some(stream_id) = input.stream_id.as_deref() {
+        emit_ai_task_stream(
+            &app_handle,
+            stream_id,
+            "session",
+            &input.kind,
+            "started",
+            None,
+            input.prompt.clone(),
+            None,
+            None,
+            None,
+        );
+    }
+    match input.kind.as_str() {
+        "session.summarize"
+        | "session.explain_terms"
+        | "session.theme_map"
+        | "session.compare"
+        | "session.review_draft"
+        | "session.ask" => service(&state)?
+            .run_ai_session_task(input.session_id, &input.kind, input.prompt.as_deref())
+            .map(|task| {
+                if let Some(stream_id) = input.stream_id.as_deref() {
+                    let mut full_markdown = String::new();
+                    for chunk in split_markdown_chunks(&task.output_markdown) {
+                        if !full_markdown.is_empty() {
+                            full_markdown.push_str("\n\n");
+                        }
+                        full_markdown.push_str(&chunk);
+                        emit_ai_task_stream(
+                            &app_handle,
+                            stream_id,
+                            "session",
+                            &input.kind,
+                            "delta",
+                            None,
+                            task.input_prompt.clone(),
+                            Some(chunk),
+                            Some(full_markdown.clone()),
+                            None,
+                        );
+                    }
+                    emit_ai_task_stream(
+                        &app_handle,
+                        stream_id,
+                        "session",
+                        &input.kind,
+                        "completed",
+                        Some(task.id),
+                        task.input_prompt.clone(),
+                        None,
+                        Some(task.output_markdown.clone()),
+                        None,
+                    );
+                }
+                task
+            })
+            .map_err(|error| {
+                if let Some(stream_id) = input.stream_id.as_deref() {
+                    emit_ai_task_stream(
+                        &app_handle,
+                        stream_id,
+                        "session",
+                        &input.kind,
+                        "failed",
+                        None,
+                        input.prompt.clone(),
+                        None,
+                        None,
+                        Some(error.to_string()),
+                    );
+                }
+                error.to_string()
+            }),
+        _ => {
+            if let Some(stream_id) = input.stream_id.as_deref() {
+                emit_ai_task_stream(
+                    &app_handle,
+                    stream_id,
+                    "session",
+                    &input.kind,
+                    "failed",
+                    None,
+                    input.prompt.clone(),
+                    None,
+                    None,
+                    Some("unsupported session task".into()),
+                );
+            }
+            Err("unsupported session task".into())
+        }
+    }
+}
+
+#[tauri::command]
+fn list_ai_session_task_runs(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Vec<app_core::service::AITask>, String> {
+    service(&state)?
+        .list_ai_session_task_runs(session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_ai_session_artifact(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Option<app_core::service::AIArtifact>, String> {
+    service(&state)?
+        .get_ai_session_artifact(session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_ai_session_notes(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Vec<ResearchNote>, String> {
+    service(&state)?
+        .list_ai_session_notes(session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_ai_session_note_from_artifact(
+    state: State<'_, AppState>,
+    artifact_id: i64,
+) -> Result<ResearchNote, String> {
+    service(&state)?
+        .create_note_from_artifact(artifact_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn list_task_runs(
     state: State<'_, AppState>,
     item_id: Option<i64>,
@@ -1598,6 +1800,16 @@ fn main() {
             remove_annotation,
             get_ai_settings,
             update_ai_settings,
+            list_ai_sessions,
+            create_ai_session,
+            list_ai_session_references,
+            add_ai_session_reference,
+            remove_ai_session_reference,
+            run_ai_session_task,
+            list_ai_session_task_runs,
+            get_ai_session_artifact,
+            list_ai_session_notes,
+            create_ai_session_note_from_artifact,
             run_item_task,
             run_collection_task,
             list_task_runs,
