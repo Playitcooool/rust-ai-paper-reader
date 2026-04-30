@@ -1,5 +1,7 @@
 import type {
   AIArtifact,
+  AIProvider,
+  AISettings,
   AITaskStreamEvent,
   Annotation,
   AttachmentFormat,
@@ -20,6 +22,7 @@ import type {
   ReaderView,
   ResearchNote,
   Tag,
+  UpdateAISettingsInput,
 } from "../lib/contracts";
 
 type MockItemDetails = LibraryItem & {
@@ -41,6 +44,10 @@ type MockState = {
   tasks: AITask[];
   artifacts: AIArtifact[];
   notes: ResearchNote[];
+  aiSettings: AISettings & {
+    openai_api_key: string;
+    anthropic_api_key: string;
+  };
   nextId: number;
   importFileResults?: ImportBatchResult | null;
   importCitationResults?: ImportBatchResult | null;
@@ -178,6 +185,17 @@ const initialState = (): MockState => ({
         "# Machine Learning Review\n\n## Evidence Map\n- Transformer Scaling Laws\n- Graph Neural Survey",
     },
   ],
+  aiSettings: {
+    active_provider: "openai",
+    openai_model: "gpt-4.1-mini",
+    openai_base_url: "",
+    has_openai_api_key: true,
+    openai_api_key: "openai-secret",
+    anthropic_model: "claude-3-5-sonnet-latest",
+    anthropic_base_url: "",
+    has_anthropic_api_key: false,
+    anthropic_api_key: "",
+  },
   nextId: 1000,
   importFileResults: null,
   importCitationResults: null,
@@ -320,6 +338,16 @@ const extractHeading = (markdown: string) =>
 
 const noteTitleFromArtifact = (collectionId: number, markdown: string) =>
   extractHeading(markdown) || `${collectionName(collectionId)} Note`;
+
+const publicAiSettings = (): AISettings => ({
+  active_provider: state.aiSettings.active_provider,
+  openai_model: state.aiSettings.openai_model,
+  openai_base_url: state.aiSettings.openai_base_url,
+  has_openai_api_key: Boolean(state.aiSettings.openai_api_key),
+  anthropic_model: state.aiSettings.anthropic_model,
+  anthropic_base_url: state.aiSettings.anthropic_base_url,
+  has_anthropic_api_key: Boolean(state.aiSettings.anthropic_api_key),
+});
 
 const collectionTaskOutput = (collectionId: number, kind: string, scopeItemIds: number[]) => {
   const items = scopeItemIds
@@ -816,6 +844,27 @@ export const fakeApi: AppApi = {
 
   async removeAnnotation(input) {
     state.annotations = state.annotations.filter((annotation) => annotation.id !== input.annotation_id);
+  },
+
+  async getAiSettings() {
+    return publicAiSettings();
+  },
+
+  async updateAiSettings(input: UpdateAISettingsInput) {
+    state.aiSettings.active_provider = input.active_provider as AIProvider;
+    state.aiSettings.openai_model = input.openai_model;
+    state.aiSettings.openai_base_url = input.openai_base_url;
+    state.aiSettings.anthropic_model = input.anthropic_model;
+    state.aiSettings.anthropic_base_url = input.anthropic_base_url;
+    if (input.clear_openai_api_key) state.aiSettings.openai_api_key = "";
+    else if (input.openai_api_key && input.openai_api_key.trim()) state.aiSettings.openai_api_key = input.openai_api_key;
+    if (input.clear_anthropic_api_key) state.aiSettings.anthropic_api_key = "";
+    else if (input.anthropic_api_key && input.anthropic_api_key.trim()) {
+      state.aiSettings.anthropic_api_key = input.anthropic_api_key;
+    }
+    state.aiSettings.has_openai_api_key = Boolean(state.aiSettings.openai_api_key);
+    state.aiSettings.has_anthropic_api_key = Boolean(state.aiSettings.anthropic_api_key);
+    return publicAiSettings();
   },
 
   async listenAiTaskStream(handler) {

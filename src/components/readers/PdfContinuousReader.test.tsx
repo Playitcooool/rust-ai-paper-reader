@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PdfContinuousReader } from "./PdfContinuousReader";
@@ -402,6 +402,67 @@ describe("PdfContinuousReader", () => {
 
     await waitFor(() => expect(ocrPdfPage).toHaveBeenCalledTimes(1));
     expect(ocrPdfPage).toHaveBeenCalledWith(expect.objectContaining({ page_index0: 0 }));
+  });
+
+  it("activates persisted highlights with annotation ids", async () => {
+    const getPdfPageBundle = vi.fn().mockResolvedValue(makeBundle("Hello world"));
+    const getPdfDocumentInfo = vi.fn().mockResolvedValue(makeDocumentInfo());
+    const getPdfPageText = vi.fn().mockResolvedValue({ page_index0: 0, spans: [] });
+    const ocrPdfPage = vi.fn().mockResolvedValue({
+      primary_attachment_id: 101,
+      page_index0: 0,
+      lang: "eng+chi_sim",
+      config_version: "test",
+      lines: [],
+    });
+    const onHighlightActivate = vi.fn();
+
+    render(
+      <PdfContinuousReader
+        annotations={[
+          {
+            id: 12,
+            item_id: pdfView.item_id,
+            kind: "highlight",
+            body: "",
+            anchor: JSON.stringify({
+              type: "pdf_text",
+              page: 1,
+              startDivIndex: 0,
+              startOffset: 0,
+              endDivIndex: 0,
+              endOffset: 5,
+              quote: "Hello",
+              color: "yellow",
+            }),
+          },
+        ]}
+        getPdfDocumentInfo={getPdfDocumentInfo}
+        getPdfPageBundle={getPdfPageBundle}
+        getPdfPageText={getPdfPageText}
+        ocrPdfPage={ocrPdfPage}
+        onHighlightActivate={onHighlightActivate}
+        page={0}
+        view={pdfView}
+        zoom={100}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector(".pdf-annotation-highlight")).toBeTruthy();
+    });
+    const highlight = document.querySelector(".pdf-annotation-highlight") as HTMLElement;
+    expect(highlight.dataset.annotationId).toBe("12");
+    fireEvent.click(highlight);
+    expect(onHighlightActivate).toHaveBeenCalledWith({
+      annotationId: 12,
+      rect: expect.objectContaining({
+        left: expect.any(Number),
+        top: expect.any(Number),
+        right: expect.any(Number),
+        bottom: expect.any(Number),
+      }),
+    });
   });
 
 });

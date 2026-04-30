@@ -105,6 +105,30 @@ export type AIArtifact = {
   markdown: string;
 };
 
+export type AIProvider = "openai" | "anthropic";
+
+export type AISettings = {
+  active_provider: AIProvider;
+  openai_model: string;
+  openai_base_url: string;
+  has_openai_api_key: boolean;
+  anthropic_model: string;
+  anthropic_base_url: string;
+  has_anthropic_api_key: boolean;
+};
+
+export type UpdateAISettingsInput = {
+  active_provider: AIProvider;
+  openai_model: string;
+  openai_base_url: string;
+  openai_api_key?: string;
+  clear_openai_api_key?: boolean;
+  anthropic_model: string;
+  anthropic_base_url: string;
+  anthropic_api_key?: string;
+  clear_anthropic_api_key?: boolean;
+};
+
 export type ResearchNote = {
   id: number;
   collection_id: number;
@@ -231,6 +255,8 @@ export type AppApi = {
     body: string;
   }) => Promise<Annotation>;
   removeAnnotation: (input: { annotation_id: number }) => Promise<void>;
+  getAiSettings: () => Promise<AISettings>;
+  updateAiSettings: (input: UpdateAISettingsInput) => Promise<AISettings>;
   runItemTask: (input: {
     item_id: number;
     kind: string;

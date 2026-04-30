@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::{Cursor, Read, Seek},
+    sync::Arc,
     path::{Path, PathBuf},
     panic,
     time::Duration,
@@ -9,6 +10,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use html_escape::encode_safe;
 use lopdf::{Dictionary, Document as PdfDocument, Object};
+use reqwest::blocking::Client;
 use regex::Regex;
 use roxmltree::Document;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -100,6 +102,53 @@ pub struct AIArtifact {
     pub markdown: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AIProvider {
+    OpenAI,
+    Anthropic,
+}
+
+impl AIProvider {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAI => "openai",
+            Self::Anthropic => "anthropic",
+        }
+    }
+
+    fn default_base_url(self) -> &'static str {
+        match self {
+            Self::OpenAI => "https://api.openai.com/v1",
+            Self::Anthropic => "https://api.anthropic.com/v1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AISettings {
+    pub active_provider: AIProvider,
+    pub openai_model: String,
+    pub openai_base_url: String,
+    pub has_openai_api_key: bool,
+    pub anthropic_model: String,
+    pub anthropic_base_url: String,
+    pub has_anthropic_api_key: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateAISettingsInput {
+    pub active_provider: AIProvider,
+    pub openai_model: String,
+    pub openai_base_url: String,
+    pub openai_api_key: Option<String>,
+    pub clear_openai_api_key: Option<bool>,
+    pub anthropic_model: String,
+    pub anthropic_base_url: String,
+    pub anthropic_api_key: Option<String>,
+    pub clear_anthropic_api_key: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchNote {
     pub id: i64,
@@ -142,6 +191,36 @@ pub struct ImportBatchResult {
 pub struct LibraryService {
     db_path: PathBuf,
     files_dir: PathBuf,
+    ai_transport: Arc<dyn AiTransport>,
+}
+
+pub trait AiTransport: Send + Sync {
+    fn complete(&self, request: AiCompletionRequest) -> Result<String>;
+}
+
+#[derive(Clone)]
+struct HttpAiTransport {
+    client: Client,
+}
+
+#[derive(Debug, Clone)]
+pub struct AiCompletionRequest {
+    pub provider: AIProvider,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone)]
+struct StoredAISettings {
+    active_provider: AIProvider,
+    openai_model: String,
+    openai_base_url: String,
+    openai_api_key: String,
+    anthropic_model: String,
+    anthropic_base_url: String,
+    anthropic_api_key: String,
 }
 
 struct InferredMetadata {
@@ -169,14 +248,103 @@ impl ExtractedDocument {
 }
 
 const EXTRACTOR_VERSION: i64 = 1;
+const ITEM_TASK_TEXT_LIMIT: usize = 18_000;
+const COLLECTION_ITEM_TEXT_LIMIT: usize = 4_000;
+const COLLECTION_TOTAL_TEXT_LIMIT: usize = 40_000;
+
+impl Default for HttpAiTransport {
+    fn default() -> Self {
+        Self {
+            client: Client::builder()
+                .timeout(Duration::from_secs(90))
+                .build()
+                .expect("http client"),
+        }
+    }
+}
+
+impl AiTransport for HttpAiTransport {
+    fn complete(&self, request: AiCompletionRequest) -> Result<String> {
+        match request.provider {
+            AIProvider::OpenAI => self.complete_openai(request),
+            AIProvider::Anthropic => self.complete_anthropic(request),
+        }
+    }
+}
+
+impl HttpAiTransport {
+    fn complete_openai(&self, request: AiCompletionRequest) -> Result<String> {
+        let url = format!("{}/chat/completions", normalize_base_url(&request.base_url));
+        let response: serde_json::Value = self
+            .client
+            .post(url)
+            .bearer_auth(request.api_key)
+            .json(&serde_json::json!({
+                "model": request.model,
+                "messages": [{ "role": "user", "content": request.prompt }],
+                "temperature": 0.2,
+            }))
+            .send()?
+            .error_for_status()?
+            .json()?;
+        let content = response
+            .get("choices")
+            .and_then(|choices| choices.as_array())
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .and_then(extract_openai_content)
+            .ok_or_else(|| anyhow!("OpenAI response did not include assistant content"))?;
+        Ok(content.trim().to_string())
+    }
+
+    fn complete_anthropic(&self, request: AiCompletionRequest) -> Result<String> {
+        let url = format!("{}/messages", normalize_base_url(&request.base_url));
+        let response: serde_json::Value = self
+            .client
+            .post(url)
+            .header("x-api-key", request.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "model": request.model,
+                "max_tokens": 2048,
+                "messages": [{ "role": "user", "content": request.prompt }],
+            }))
+            .send()?
+            .error_for_status()?
+            .json()?;
+        let blocks = response
+            .get("content")
+            .and_then(|content| content.as_array())
+            .ok_or_else(|| anyhow!("Anthropic response did not include content blocks"))?;
+        let text = blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if text.trim().is_empty() {
+            return Err(anyhow!("Anthropic response did not include text content"));
+        }
+        Ok(text.trim().to_string())
+    }
+}
 
 impl LibraryService {
     pub fn new(root: &Path) -> Result<Self> {
+        Self::new_with_transport(root, Arc::new(HttpAiTransport::default()))
+    }
+
+    pub fn new_with_transport(root: &Path, ai_transport: Arc<dyn AiTransport>) -> Result<Self> {
         fs::create_dir_all(root)?;
         let files_dir = root.join("library-files");
         fs::create_dir_all(&files_dir)?;
         let db_path = root.join("library.db");
-        let service = Self { db_path, files_dir };
+        let service = Self {
+            db_path,
+            files_dir,
+            ai_transport,
+        };
         service.migrate()?;
         Ok(service)
     }
@@ -856,6 +1024,40 @@ impl LibraryService {
         Ok(())
     }
 
+    pub fn get_ai_settings(&self) -> Result<AISettings> {
+        let conn = self.connect()?;
+        let stored = load_ai_settings(&conn)?;
+        Ok(to_public_ai_settings(&stored))
+    }
+
+    pub fn update_ai_settings(&self, input: UpdateAISettingsInput) -> Result<AISettings> {
+        let conn = self.connect()?;
+        let current = load_ai_settings(&conn)?;
+        let next = StoredAISettings {
+            active_provider: input.active_provider,
+            openai_model: input.openai_model.trim().to_string(),
+            openai_base_url: input.openai_base_url.trim().to_string(),
+            openai_api_key: if input.clear_openai_api_key.unwrap_or(false) {
+                String::new()
+            } else if let Some(key) = input.openai_api_key.filter(|value| !value.trim().is_empty()) {
+                key
+            } else {
+                current.openai_api_key
+            },
+            anthropic_model: input.anthropic_model.trim().to_string(),
+            anthropic_base_url: input.anthropic_base_url.trim().to_string(),
+            anthropic_api_key: if input.clear_anthropic_api_key.unwrap_or(false) {
+                String::new()
+            } else if let Some(key) = input.anthropic_api_key.filter(|value| !value.trim().is_empty()) {
+                key
+            } else {
+                current.anthropic_api_key
+            },
+        };
+        save_ai_settings(&conn, &next)?;
+        Ok(to_public_ai_settings(&next))
+    }
+
     pub fn get_reader_view(&self, item_id: i64) -> Result<ReaderView> {
         let conn = self.connect()?;
         conn.query_row(
@@ -1057,8 +1259,50 @@ impl LibraryService {
         fs::read(&attachment_path).map_err(|_| anyhow!("failed to read primary attachment bytes"))
     }
 
+    fn build_provider_request(
+        &self,
+        settings: &StoredAISettings,
+        prompt: String,
+    ) -> Result<AiCompletionRequest> {
+        match settings.active_provider {
+            AIProvider::OpenAI => {
+                let model = settings.openai_model.trim();
+                let api_key = settings.openai_api_key.trim();
+                if model.is_empty() || api_key.is_empty() {
+                    return Err(anyhow!(
+                        "OpenAI is missing a saved API key or model. Open Settings and complete the active provider configuration."
+                    ));
+                }
+                Ok(AiCompletionRequest {
+                    provider: AIProvider::OpenAI,
+                    model: model.to_string(),
+                    base_url: defaulted_base_url(AIProvider::OpenAI, &settings.openai_base_url),
+                    api_key: api_key.to_string(),
+                    prompt,
+                })
+            }
+            AIProvider::Anthropic => {
+                let model = settings.anthropic_model.trim();
+                let api_key = settings.anthropic_api_key.trim();
+                if model.is_empty() || api_key.is_empty() {
+                    return Err(anyhow!(
+                        "Anthropic is missing a saved API key or model. Open Settings and complete the active provider configuration."
+                    ));
+                }
+                Ok(AiCompletionRequest {
+                    provider: AIProvider::Anthropic,
+                    model: model.to_string(),
+                    base_url: defaulted_base_url(AIProvider::Anthropic, &settings.anthropic_base_url),
+                    api_key: api_key.to_string(),
+                    prompt,
+                })
+            }
+        }
+    }
+
     pub fn run_item_task(&self, item_id: i64, kind: &str, prompt: Option<&str>) -> Result<AITask> {
         let mut conn = self.connect()?;
+        let settings = load_ai_settings(&conn)?;
         let (collection_id, title, excerpt) = conn.query_row(
             "
             SELECT i.collection_id, i.title, e.plain_text
@@ -1080,24 +1324,17 @@ impl LibraryService {
             [collection_id],
             |row| row.get(0),
         )?;
-        let first_line = excerpt.lines().next().unwrap_or("No content extracted.");
         let prompt_text = prompt.map(str::trim).filter(|value| !value.is_empty());
-        let output = match kind {
-            "item.summarize" => format!(
-                "# Summary: {title}\n\nCollection: {collection_name}\n\n{first_line}"
-            ),
-            "item.translate" => format!(
-                "# Translation: {title}\n\n## Translated Passage\n{first_line}\n\n## Notes\nTranslated from the active reader selection."
-            ),
-            "item.explain_term" => format!(
-                "# Terminology Notes: {title}\n\n## Key Terms\n- Scaling law: {first_line}\n\n## Reading Tip\nUse this note to clarify repeated technical vocabulary."
-            ),
-            "item.ask" => format!(
-                "# Reading Q&A: {title}\n\n## Question\n{}\n\n## Answer\n{first_line}\n\n## Evidence\nCollection: {collection_name}",
-                prompt_text.unwrap_or("No question provided.")
-            ),
-            _ => return Err(anyhow!("unsupported item task kind")),
-        };
+        let excerpt = truncate_chars(&excerpt, ITEM_TASK_TEXT_LIMIT);
+        let prompt_body = build_item_prompt(
+            kind,
+            &title,
+            &collection_name,
+            &excerpt,
+            prompt_text,
+        )?;
+        let request = self.build_provider_request(&settings, prompt_body)?;
+        let output = self.ai_transport.complete(request)?;
 
         let tx = conn.transaction()?;
         tx.execute(
@@ -1167,66 +1404,23 @@ impl LibraryService {
             return Err(anyhow!("collection has no readable items"));
         }
         let mut conn = self.connect()?;
+        let settings = load_ai_settings(&conn)?;
         let collection_name: String = conn.query_row(
             "SELECT name FROM collections WHERE id = ?1",
             [collection_id],
             |row| row.get(0),
         )?;
-        let sections = {
-            let mut sections = Vec::new();
-            for item_id in scope_item_ids {
-                let row = conn
-                    .query_row(
-                        "
-                        SELECT i.title, e.plain_text
-                        FROM items i
-                        JOIN extracted_content e ON e.item_id = i.id
-                        WHERE i.id = ?1 AND i.collection_id = ?2
-                        ",
-                        params![item_id, collection_id],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                    )
-                    .optional()?;
-                let Some((title, plain_text)) = row else {
-                    return Err(anyhow!(
-                        "scope contains items outside the target collection"
-                    ));
-                };
-                let key_sentence = plain_text.lines().next().unwrap_or("No content extracted.");
-                sections.push(format!("- **{title}**: {key_sentence}"));
-            }
-            sections
-        };
-
-        let evidence_map = sections.join("\n");
         let prompt_text = prompt.map(str::trim).filter(|value| !value.is_empty());
-        let markdown = match kind {
-            "collection.bulk_summarize" => format!(
-                "# Bulk Summary: {collection_name}\n\n## Paper Capsules\n{evidence_map}\n\n## Synthesis\nBulk summary across {} visible papers.",
-                sections.len()
-            ),
-            "collection.theme_map" => format!(
-                "# Theme Map: {collection_name}\n\n## Themes\n{evidence_map}\n\n## Theme Clusters\nTheme clusters across {} visible papers.",
-                sections.len()
-            ),
-            "collection.compare_methods" => format!(
-                "# Method Comparison: {collection_name}\n\n## Comparison Matrix\n{evidence_map}\n\n## Method Notes\nMethod comparison across {} visible papers.",
-                sections.len()
-            ),
-            "collection.review_draft" => format!(
-                "# Review Draft: {collection_name}\n\n## Evidence Map\n{evidence_map}\n\n## Narrative\nThis draft groups the imported papers into a concise literature review scaffold ready for editing."
-            ),
-            "collection.ask" => format!(
-                "# Collection Q&A: {collection_name}\n\n## Question\n{}\n\n## Answer\n{}\n\n## Scope\n{} papers in the current collection view.",
-                prompt_text.unwrap_or("No question provided."),
-                sections
-                    .first()
-                    .map(|section| section.replace("- **", "").replace("**: ", ": "))
-                    .unwrap_or_else(|| "No readable evidence was available.".into()),
-                sections.len()
-            ),
-            _ => return Err(anyhow!("unsupported collection task kind")),
-        };
+        let prompt_body = build_collection_prompt(
+            &conn,
+            collection_id,
+            &collection_name,
+            kind,
+            scope_item_ids,
+            prompt_text,
+        )?;
+        let request = self.build_provider_request(&settings, prompt_body)?;
+        let markdown = self.ai_transport.complete(request)?;
 
         let tx = conn.transaction()?;
         let scope_json = serde_json::to_string(scope_item_ids)?;
@@ -1562,6 +1756,17 @@ impl LibraryService {
                 markdown TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS ai_settings(
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                active_provider TEXT NOT NULL DEFAULT 'openai',
+                openai_model TEXT NOT NULL DEFAULT '',
+                openai_base_url TEXT NOT NULL DEFAULT '',
+                openai_api_key TEXT NOT NULL DEFAULT '',
+                anthropic_model TEXT NOT NULL DEFAULT '',
+                anthropic_base_url TEXT NOT NULL DEFAULT '',
+                anthropic_api_key TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
                 item_id UNINDEXED,
                 title,
@@ -1590,8 +1795,210 @@ impl LibraryService {
         ensure_column(&conn, "ai_tasks", "scope_item_ids", "TEXT NULL")?;
         ensure_column(&conn, "ai_tasks", "input_prompt", "TEXT NULL")?;
         ensure_column(&conn, "ai_artifacts", "scope_item_ids", "TEXT NULL")?;
+        conn.execute(
+            "INSERT OR IGNORE INTO ai_settings(id) VALUES (1)",
+            [],
+        )?;
         Ok(())
     }
+}
+
+fn to_public_ai_settings(settings: &StoredAISettings) -> AISettings {
+    AISettings {
+        active_provider: settings.active_provider,
+        openai_model: settings.openai_model.clone(),
+        openai_base_url: settings.openai_base_url.clone(),
+        has_openai_api_key: !settings.openai_api_key.trim().is_empty(),
+        anthropic_model: settings.anthropic_model.clone(),
+        anthropic_base_url: settings.anthropic_base_url.clone(),
+        has_anthropic_api_key: !settings.anthropic_api_key.trim().is_empty(),
+    }
+}
+
+fn load_ai_settings(conn: &Connection) -> Result<StoredAISettings> {
+    conn.query_row(
+        "SELECT active_provider, openai_model, openai_base_url, openai_api_key, anthropic_model, anthropic_base_url, anthropic_api_key FROM ai_settings WHERE id = 1",
+        [],
+        |row| {
+            let active_provider: String = row.get(0)?;
+            Ok(StoredAISettings {
+                active_provider: match parse_ai_provider(&active_provider) {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())),
+                        ))
+                    }
+                },
+                openai_model: row.get(1)?,
+                openai_base_url: row.get(2)?,
+                openai_api_key: row.get(3)?,
+                anthropic_model: row.get(4)?,
+                anthropic_base_url: row.get(5)?,
+                anthropic_api_key: row.get(6)?,
+            })
+        },
+    )
+    .map_err(Into::into)
+}
+
+fn save_ai_settings(conn: &Connection, settings: &StoredAISettings) -> Result<()> {
+    conn.execute(
+        "UPDATE ai_settings
+         SET active_provider = ?1,
+             openai_model = ?2,
+             openai_base_url = ?3,
+             openai_api_key = ?4,
+             anthropic_model = ?5,
+             anthropic_base_url = ?6,
+             anthropic_api_key = ?7
+         WHERE id = 1",
+        params![
+            settings.active_provider.as_str(),
+            settings.openai_model,
+            settings.openai_base_url,
+            settings.openai_api_key,
+            settings.anthropic_model,
+            settings.anthropic_base_url,
+            settings.anthropic_api_key
+        ],
+    )?;
+    Ok(())
+}
+
+fn parse_ai_provider(value: &str) -> Result<AIProvider> {
+    match value {
+        "openai" => Ok(AIProvider::OpenAI),
+        "anthropic" => Ok(AIProvider::Anthropic),
+        _ => Err(anyhow!("unsupported ai provider: {value}")),
+    }
+}
+
+fn normalize_base_url(value: &str) -> String {
+    value.trim_end_matches('/').to_string()
+}
+
+fn defaulted_base_url(provider: AIProvider, value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        provider.default_base_url().to_string()
+    } else {
+        normalize_base_url(trimmed)
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn build_item_prompt(
+    kind: &str,
+    title: &str,
+    collection_name: &str,
+    excerpt: &str,
+    prompt: Option<&str>,
+) -> Result<String> {
+    let task_instructions = match kind {
+        "item.summarize" => "# Summary: {title}\n\nCollection: {collection}\n\n## Key Points\n- ...\n\n## Evidence\n- ...",
+        "item.translate" => "# Translation: {title}\n\n## Translated Passage\n...\n\n## Notes\n...",
+        "item.explain_term" => "# Terminology Notes: {title}\n\n## Key Terms\n- term: explanation\n\n## Reading Tip\n...",
+        "item.ask" => "# Reading Q&A: {title}\n\n## Question\n...\n\n## Answer\n...\n\n## Evidence\n- ...",
+        _ => return Err(anyhow!("unsupported item task kind")),
+    };
+    let prompt_text = prompt.unwrap_or("");
+    Ok(format!(
+        "You are assisting with a research reading workflow.\nReturn markdown only. Do not wrap the answer in code fences.\nPreserve the heading and section style shown below.\n\nTarget title: {title}\nCollection: {collection_name}\nTask kind: {kind}\n{}\n\nUse only this extracted paper text:\n\"\"\"\n{}\n\"\"\"\n{}",
+        task_instructions
+            .replace("{title}", title)
+            .replace("{collection}", collection_name),
+        excerpt,
+        if kind == "item.ask" {
+            format!("\nUser question:\n{prompt_text}")
+        } else {
+            String::new()
+        }
+    ))
+}
+
+fn build_collection_prompt(
+    conn: &Connection,
+    collection_id: i64,
+    collection_name: &str,
+    kind: &str,
+    scope_item_ids: &[i64],
+    prompt: Option<&str>,
+) -> Result<String> {
+    let mut remaining = COLLECTION_TOTAL_TEXT_LIMIT;
+    let mut sections = Vec::new();
+    for item_id in scope_item_ids {
+        let row = conn
+            .query_row(
+                "
+                SELECT i.title, e.plain_text
+                FROM items i
+                JOIN extracted_content e ON e.item_id = i.id
+                WHERE i.id = ?1 AND i.collection_id = ?2
+                ",
+                params![item_id, collection_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((title, plain_text)) = row else {
+            return Err(anyhow!("scope contains items outside the target collection"));
+        };
+        if remaining == 0 {
+            break;
+        }
+        let clipped = truncate_chars(&plain_text, COLLECTION_ITEM_TEXT_LIMIT.min(remaining));
+        if clipped.trim().is_empty() {
+            continue;
+        }
+        remaining = remaining.saturating_sub(clipped.chars().count());
+        sections.push(format!("## {title}\n{clipped}"));
+    }
+    if sections.is_empty() {
+        return Err(anyhow!("collection has no readable items"));
+    }
+    let task_instructions = match kind {
+        "collection.bulk_summarize" => "# Bulk Summary: {collection}\n\n## Paper Capsules\n- ...\n\n## Synthesis\n...",
+        "collection.theme_map" => "# Theme Map: {collection}\n\n## Themes\n- ...\n\n## Theme Clusters\n...",
+        "collection.compare_methods" => "# Method Comparison: {collection}\n\n## Comparison Matrix\n- ...\n\n## Method Notes\n...",
+        "collection.review_draft" => "# Review Draft: {collection}\n\n## Evidence Map\n- ...\n\n## Narrative\n...",
+        "collection.ask" => "# Collection Q&A: {collection}\n\n## Question\n...\n\n## Answer\n...\n\n## Scope\n...",
+        _ => return Err(anyhow!("unsupported collection task kind")),
+    };
+    let prompt_suffix = if kind == "collection.ask" {
+        format!("\nUser question:\n{}", prompt.unwrap_or("No question provided."))
+    } else {
+        String::new()
+    };
+    Ok(format!(
+        "You are assisting with a research reading workflow.\nReturn markdown only. Do not wrap the answer in code fences.\nPreserve the heading and section style shown below.\n\nCollection: {collection_name}\nTask kind: {kind}\n{}\n\nUse only this extracted collection evidence in the exact item order provided:\n\n{}\n{}",
+        task_instructions.replace("{collection}", collection_name),
+        sections.join("\n\n"),
+        prompt_suffix
+    ))
+}
+
+fn extract_openai_content(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    value.as_array().map(|parts| {
+        parts
+            .iter()
+            .filter_map(|part| {
+                if part.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    part.get("text").and_then(|t| t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }).filter(|text| !text.trim().is_empty())
 }
 
 fn map_library_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {

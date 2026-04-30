@@ -13,6 +13,7 @@ import {
   buildPdfTextSelectionFromRange,
   parsePdfTextAnchor,
   type PdfTextAnchor,
+  type PdfSelectionRect,
   type PdfTextSelection,
 } from "./pdfSelection";
 import { installPdfJsTextLayerSelectionSupport } from "./pdfTextLayerSelectionSupport";
@@ -48,6 +49,7 @@ type PdfReaderProps = {
   activeSearchMatchIndex?: number;
   annotations?: Annotation[];
   onSelectionChange?: (selection: PdfTextSelection | null) => void;
+  onHighlightActivate?: (highlight: { annotationId: number; rect: PdfSelectionRect }) => void;
   onSearchMatchesChange?: (state: { total: number; activeIndex: number }) => void;
 };
 
@@ -65,6 +67,7 @@ export function PdfReader({
   activeSearchMatchIndex = 0,
   annotations = [],
   onSelectionChange,
+  onHighlightActivate,
   onSearchMatchesChange,
 }: PdfReaderProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -253,7 +256,10 @@ export function PdfReader({
     return annotations
       .map((annotation) => ({ annotation, anchor: parsePdfTextAnchor(annotation.anchor) }))
       .filter((entry) => entry.anchor && entry.anchor.page === pageNumber && entry.annotation.kind === "highlight")
-      .map((entry) => entry.anchor as PdfTextAnchor);
+      .map((entry) => ({
+        annotationId: entry.annotation.id,
+        anchor: entry.anchor as PdfTextAnchor,
+      }));
   }, [annotations, page, textEnabled]);
 
   useEffect(() => {
@@ -262,8 +268,12 @@ export function PdfReader({
     const plain = textDivStringsRef.current;
     if (divs.length === 0 || plain.length === 0) return;
 
-    const annotationRangesByDiv = new Map<number, Array<{ start: number; end: number; color?: string }>>();
-    for (const anchor of anchorsForPage) {
+    const annotationRangesByDiv = new Map<
+      number,
+      Array<{ start: number; end: number; color?: string; annotationId: number }>
+    >();
+    for (const entry of anchorsForPage) {
+      const anchor = entry.anchor;
       const startDiv = Math.max(0, Math.min(anchor.startDivIndex, divs.length - 1));
       const endDiv = Math.max(0, Math.min(anchor.endDivIndex, divs.length - 1));
       const fromDiv = Math.min(startDiv, endDiv);
@@ -275,7 +285,7 @@ export function PdfReader({
         const end = divIndex === endDiv ? Math.max(0, Math.min(anchor.endOffset, len)) : len;
         if (end <= start) continue;
         const current = annotationRangesByDiv.get(divIndex) ?? [];
-        current.push({ start, end, color: anchor.color });
+        current.push({ start, end, color: anchor.color, annotationId: entry.annotationId });
         annotationRangesByDiv.set(divIndex, current);
       }
     }
@@ -286,24 +296,35 @@ export function PdfReader({
     for (let divIndex = 0; divIndex < divs.length; divIndex += 1) {
       const div = divs[divIndex];
       const text = plain[divIndex] ?? "";
-      const paints = new Array<string | null>(text.length).fill(null);
+      const paints = new Array<{ color?: string; annotationId: number } | null>(text.length).fill(null);
       for (const range of annotationRangesByDiv.get(divIndex) ?? []) {
         const start = Math.max(0, Math.min(range.start, text.length));
         const end = Math.max(0, Math.min(range.end, text.length));
-        for (let i = start; i < end; i += 1) paints[i] = range.color ?? "__default";
+        for (let i = start; i < end; i += 1) paints[i] = { color: range.color, annotationId: range.annotationId };
       }
 
-      const annotationRanges: Array<{ start: number; end: number; color?: string }> = [];
+      const annotationRanges: Array<{ start: number; end: number; color?: string; annotationId: number }> = [];
       let paintCursor = 0;
       while (paintCursor < paints.length) {
-        const color = paints[paintCursor];
-        if (!color) {
+        const paint = paints[paintCursor];
+        if (!paint) {
           paintCursor += 1;
           continue;
         }
         let end = paintCursor + 1;
-        while (end < paints.length && paints[end] === color) end += 1;
-        annotationRanges.push({ start: paintCursor, end, color: color === "__default" ? undefined : color });
+        while (
+          end < paints.length &&
+          paints[end]?.annotationId === paint.annotationId &&
+          paints[end]?.color === paint.color
+        ) {
+          end += 1;
+        }
+        annotationRanges.push({
+          start: paintCursor,
+          end,
+          color: paint.color,
+          annotationId: paint.annotationId,
+        });
         paintCursor = end;
       }
 
@@ -323,7 +344,7 @@ export function PdfReader({
 
       const segments: Array<
         | { kind: "text"; value: string }
-        | { kind: "annotation"; value: string; color?: string }
+        | { kind: "annotation"; value: string; color?: string; annotationId: number }
         | { kind: "search"; value: string; hitIndex: number }
       > = [];
       const pushText = (value: string) => {
@@ -340,7 +361,14 @@ export function PdfReader({
         if (range.start > cursor) pushText(text.slice(cursor, range.start));
         const slice = text.slice(range.start, range.end);
         if (!slice) continue;
-        if (range.kind === "annotation") segments.push({ kind: "annotation", value: slice, color: range.color });
+        if (range.kind === "annotation") {
+          segments.push({
+            kind: "annotation",
+            value: slice,
+            color: range.color,
+            annotationId: range.annotationId,
+          });
+        }
         else segments.push({ kind: "search", value: slice, hitIndex: range.hitIndex });
         cursor = range.end;
       }
@@ -348,11 +376,11 @@ export function PdfReader({
 
       div.innerHTML = segments
         .map((segment) => {
-          if (segment.kind === "text") return escapeHtml(segment.value);
-          if (segment.kind === "annotation") {
-            const attr = segment.color ? ` data-color="${escapeHtml(segment.color)}"` : "";
-            return `<span class="pdf-annotation-highlight"${attr}>${escapeHtml(segment.value)}</span>`;
-          }
+        if (segment.kind === "text") return escapeHtml(segment.value);
+        if (segment.kind === "annotation") {
+          const colorAttr = segment.color ? ` data-color="${escapeHtml(segment.color)}"` : "";
+          return `<span class="pdf-annotation-highlight" data-annotation-id="${segment.annotationId}"${colorAttr}>${escapeHtml(segment.value)}</span>`;
+        }
           const active = segment.hitIndex === normalizedActive ? " pdf-search-hit-active" : "";
           return `<span class="pdf-search-hit${active}" data-hit-index="${segment.hitIndex}">${escapeHtml(segment.value)}</span>`;
         })
@@ -367,6 +395,36 @@ export function PdfReader({
       if (active) safeScrollIntoView(active, { block: "center" });
     }
   }, [activeSearchMatchIndex, anchorsForPage, searchMatches, status, textEnabled, textLayerEpoch]);
+
+  useEffect(() => {
+    if (!onHighlightActivate) return;
+    const host = textLayerHostRef.current;
+    if (!host) return;
+
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const highlight = target.closest(".pdf-annotation-highlight[data-annotation-id]") as HTMLElement | null;
+      if (!highlight || !host.contains(highlight)) return;
+      const annotationId = Number(highlight.dataset.annotationId);
+      if (!Number.isFinite(annotationId)) return;
+      const rect = highlight.getBoundingClientRect();
+      event.preventDefault();
+      event.stopPropagation();
+      onHighlightActivate({
+        annotationId,
+        rect: {
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+        },
+      });
+    };
+
+    host.addEventListener("click", onClick);
+    return () => host.removeEventListener("click", onClick);
+  }, [onHighlightActivate, textLayerEpoch]);
 
   useEffect(() => {
     if (!onSelectionChange) return;
@@ -433,15 +491,6 @@ export function PdfReader({
       className={`pdf-reader ${showChrome ? "pdf-reader-workspace" : "pdf-reader-focus"}`}
       data-testid="pdf-reader"
     >
-      {showChrome ? (
-        <div className="reader-location-bar">
-          <span className="meta-count">
-            {view.primary_attachment_path ? view.primary_attachment_path.split("/").pop() : "No attachment path"}
-          </span>
-          {effectiveZoom !== 100 ? <span className="meta-count">Zoom {effectiveZoom}%</span> : null}
-        </div>
-      ) : null}
-
       <div className={showChrome ? "citation-card" : "pdf-stage"} ref={stageRef}>
         {showChrome ? (
           <>

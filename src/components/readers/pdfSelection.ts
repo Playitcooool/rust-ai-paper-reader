@@ -70,19 +70,50 @@ export const selectionRectFromRange = (range: Range): PdfSelectionRect => {
   };
 };
 
-const offsetWithinDiv = (div: HTMLElement, container: Node, offset: number) => {
-  if (!div.contains(container)) return 0;
-  if (container.nodeType === Node.TEXT_NODE) {
-    const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
-    let node: Node | null = walker.nextNode();
-    let length = 0;
-    while (node) {
-      if (node === container) return length + offset;
-      length += (node.nodeValue ?? "").length;
-      node = walker.nextNode();
-    }
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+const globalOffsetWithinHost = (host: HTMLElement, container: Node, offset: number) => {
+  if (!host.contains(container) && host !== container) return null;
+  const range = document.createRange();
+  range.selectNodeContents(host);
+  try {
+    range.setEnd(container, offset);
+  } catch {
+    return null;
   }
-  return offset;
+  return range.toString().length;
+};
+
+const mapGlobalOffsetToDiv = (
+  globalOffset: number,
+  lengths: number[],
+  bias: "start" | "end",
+): { divIndex: number; offset: number } | null => {
+  if (lengths.length === 0) return null;
+  const totalLength = lengths.reduce((sum, length) => sum + length, 0);
+  const clamped = clamp(globalOffset, 0, totalLength);
+
+  let cursor = 0;
+  for (let divIndex = 0; divIndex < lengths.length; divIndex += 1) {
+    const length = lengths[divIndex];
+    const start = cursor;
+    const end = cursor + length;
+
+    if (bias === "start") {
+      if (clamped < end || (length === 0 && clamped === start)) {
+        return { divIndex, offset: clamp(clamped - start, 0, length) };
+      }
+      if (clamped === end && divIndex === lengths.length - 1) {
+        return { divIndex, offset: length };
+      }
+    } else if (clamped <= end) {
+      return { divIndex, offset: clamp(clamped - start, 0, length) };
+    }
+
+    cursor = end;
+  }
+
+  return { divIndex: lengths.length - 1, offset: lengths[lengths.length - 1] };
 };
 
 export const buildPdfTextSelectionFromRange = (input: {
@@ -94,22 +125,27 @@ export const buildPdfTextSelectionFromRange = (input: {
 }): PdfTextSelection | null => {
   const { quote, range, host, divs, pageNumber1 } = input;
   if (!quote || quote.trim().length === 0) return null;
-  if (!host.contains(range.startContainer) || !host.contains(range.endContainer)) return null;
+  if ((!host.contains(range.startContainer) && host !== range.startContainer) || (!host.contains(range.endContainer) && host !== range.endContainer)) {
+    return null;
+  }
   if (divs.length === 0) return null;
 
-  const startDivIndex = divs.findIndex((div) => div.contains(range.startContainer));
-  const endDivIndex = divs.findIndex((div) => div.contains(range.endContainer));
-  if (startDivIndex < 0 || endDivIndex < 0) return null;
+  const startGlobal = globalOffsetWithinHost(host, range.startContainer, range.startOffset);
+  const endGlobal = globalOffsetWithinHost(host, range.endContainer, range.endOffset);
+  if (startGlobal === null || endGlobal === null) return null;
 
-  const startOffset = offsetWithinDiv(divs[startDivIndex], range.startContainer, range.startOffset);
-  const endOffset = offsetWithinDiv(divs[endDivIndex], range.endContainer, range.endOffset);
+  const lengths = divs.map((div) => div.textContent?.length ?? 0);
+  const start = mapGlobalOffsetToDiv(Math.min(startGlobal, endGlobal), lengths, "start");
+  const end = mapGlobalOffsetToDiv(Math.max(startGlobal, endGlobal), lengths, "end");
+  if (!start || !end) return null;
+
   const anchor: PdfTextAnchor = {
     type: "pdf_text",
     page: pageNumber1,
-    startDivIndex,
-    startOffset,
-    endDivIndex,
-    endOffset,
+    startDivIndex: start.divIndex,
+    startOffset: start.offset,
+    endDivIndex: end.divIndex,
+    endOffset: end.offset,
     quote,
   };
   return { anchor: JSON.stringify(anchor), quote, rect: selectionRectFromRange(range) };

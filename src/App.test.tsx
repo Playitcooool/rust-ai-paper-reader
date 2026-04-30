@@ -42,6 +42,7 @@ vi.mock("./components/readers/PdfReader", () => {
     searchQuery,
     activeSearchMatchIndex = 0,
     onSearchMatchesChange,
+    onHighlightActivate: _onHighlightActivate,
   }: {
     view: { title: string; page_count: number | null };
     page: number;
@@ -49,6 +50,7 @@ vi.mock("./components/readers/PdfReader", () => {
     searchQuery?: string;
     activeSearchMatchIndex?: number;
     onSearchMatchesChange?: (state: { total: number; activeIndex: number }) => void;
+    onHighlightActivate?: (highlight: unknown) => void;
   }) {
     useEffect(() => {
       onPageCountChange?.(view.page_count ?? 1);
@@ -79,6 +81,7 @@ vi.mock("./components/readers/PdfContinuousReader", () => {
     page,
     onPageCountChange,
     onSelectionChange,
+    onHighlightActivate,
     searchQuery,
     activeSearchMatchIndex = 0,
     onSearchMatchesChange,
@@ -88,6 +91,7 @@ vi.mock("./components/readers/PdfContinuousReader", () => {
     onPageCountChange?: (pageCount: number) => void;
     searchQuery?: string;
     onSelectionChange?: (selection: unknown) => void;
+    onHighlightActivate?: (highlight: unknown) => void;
     activeSearchMatchIndex?: number;
     onSearchMatchesChange?: (state: { total: number; activeIndex: number }) => void;
   }) {
@@ -131,6 +135,18 @@ vi.mock("./components/readers/PdfContinuousReader", () => {
           }
         >
           Select
+        </button>
+        <button
+          type="button"
+          aria-label="Mock activate highlight"
+          onClick={() =>
+            onHighlightActivate?.({
+              annotationId: 500,
+              rect: { left: 100, top: 120, right: 190, bottom: 142 },
+            })
+          }
+        >
+          Activate highlight
         </button>
       </section>
     );
@@ -369,15 +385,80 @@ describe("App reading workspace", () => {
 
     expect(screen.getByRole("textbox", { name: "AI prompt" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Summarize document" })).toBeInTheDocument();
-    expect(screen.getAllByText("Current Paper").length).toBeGreaterThan(0);
+    expect(screen.getByRole("tab", { name: "Current Paper" })).toBeInTheDocument();
+    expect(screen.getAllByText("Current Paper")).toHaveLength(1);
     expect(screen.queryByText("Paper Scope")).not.toBeInTheDocument();
     expect(screen.queryByText("Collection Scope")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Current Collection" }));
-    expect(screen.getAllByText("Current Collection").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Current Collection")).toHaveLength(1);
     expect(screen.queryByText("Paper Scope")).not.toBeInTheDocument();
     expect(screen.queryByText("Collection Scope")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "AI prompt" })).toBeInTheDocument();
+  });
+
+  it("removes a highlight from the floating highlight action bar", async () => {
+    const user = userEvent.setup();
+    const removeAnnotationSpy = vi.spyOn(fakeApi, "removeAnnotation");
+    render(<App api={fakeApi} />);
+
+    await user.dblClick(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Mock activate highlight" }));
+    expect(await screen.findByRole("toolbar", { name: "PDF highlight actions" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove Highlight" }));
+
+    await waitFor(() => {
+      expect(removeAnnotationSpy).toHaveBeenCalledWith({ annotation_id: 500 });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("toolbar", { name: "PDF highlight actions" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("opens settings from the native menu and supports save plus clear-key actions", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__TAURI_INTERNALS__ = {
+      transformCallback: (callback: unknown) => callback,
+      invoke: vi.fn(async () => null),
+    };
+    const user = userEvent.setup();
+    const getAiSettingsSpy = vi.spyOn(fakeApi, "getAiSettings");
+    const updateAiSettingsSpy = vi.spyOn(fakeApi, "updateAiSettings");
+    render(<App api={fakeApi} />);
+
+    expect(await screen.findByRole("tree", { name: "Library resources" })).toBeInTheDocument();
+    menuListeners.get("menu:open-settings")?.();
+
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(getAiSettingsSpy).toHaveBeenCalled();
+
+    await user.clear(screen.getByLabelText("OpenAI model"));
+    await user.type(screen.getByLabelText("OpenAI model"), "gpt-4.1");
+    await user.type(screen.getByLabelText("OpenAI API key"), "new-openai-key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(updateAiSettingsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          active_provider: "openai",
+          openai_model: "gpt-4.1",
+          openai_api_key: "new-openai-key",
+        }),
+      );
+    });
+
+    menuListeners.get("menu:open-settings")?.();
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "Clear saved key" })[0]);
+
+    await waitFor(() => {
+      expect(updateAiSettingsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          clear_openai_api_key: true,
+        }),
+      );
+    });
   });
 
   it("keeps workspace pdf preview and ai composer inside the fixed-height layout", async () => {
@@ -483,7 +564,10 @@ describe("App reading workspace", () => {
 
   it("responds to native menu import events and native drag-and-drop", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).__TAURI_INTERNALS__ = {};
+    (window as any).__TAURI_INTERNALS__ = {
+      transformCallback: (callback: unknown) => callback,
+      invoke: vi.fn(async () => null),
+    };
 
     const importFiles = vi.fn((input: { collection_id: number; paths: string[] }) => fakeApi.importFiles(input as never));
     const pickImportPaths = vi.fn(async () => ["/Users/test/dragged.pdf"]);

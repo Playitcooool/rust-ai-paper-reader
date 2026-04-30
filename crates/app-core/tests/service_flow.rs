@@ -1,6 +1,14 @@
-use std::{fs, io::Write, path::{Path, PathBuf}};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
-use app_core::service::{ImportMode, LibraryService};
+use app_core::service::{
+    AiCompletionRequest, AiTransport, AIProvider, ImportMode, LibraryService,
+    UpdateAISettingsInput,
+};
 use flate2::{write::ZlibEncoder, Compression};
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -183,6 +191,31 @@ fn write_epub_fixture(path: &Path) {
     zip.start_file("OEBPS/chapter2.xhtml", stored).unwrap();
     zip.write_all(br#"<?xml version='1.0'?><html xmlns='http://www.w3.org/1999/xhtml'><body><h2>Chapter 2</h2><p>Operator ergonomics matter during failures.</p></body></html>"#).unwrap();
     zip.finish().unwrap();
+}
+
+#[derive(Default)]
+struct StubTransport {
+    requests: Mutex<Vec<AiCompletionRequest>>,
+}
+
+impl AiTransport for StubTransport {
+    fn complete(&self, request: AiCompletionRequest) -> anyhow::Result<String> {
+        let provider = request.provider;
+        let prompt = request.prompt.clone();
+        self.requests.lock().unwrap().push(request);
+        Ok(match provider {
+            AIProvider::OpenAI => format!(
+                "# Summary: OpenAI Path\n\n## Key Points\n- Routed through OpenAI\n\n## Echo\n{}",
+                prompt
+            ),
+            AIProvider::Anthropic => {
+                format!(
+                    "# Theme Map: Anthropic Path\n\n## Themes\n- Routed through Anthropic\n\n## Echo\n{}",
+                    prompt
+                )
+            }
+        })
+    }
 }
 
 #[test]
@@ -551,7 +584,7 @@ fn removing_items_deletes_managed_copy_but_preserves_linked_source() {
 #[test]
 fn item_ask_persists_input_prompt() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).unwrap();
+    let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
     let collection = service.create_collection("Inbox", None).unwrap();
     let pdf = fixture_path(root.path(), "ask-item.pdf");
     write_pdf_fixture(&pdf);
@@ -560,6 +593,19 @@ fn item_ask_persists_input_prompt() {
         .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
         .unwrap();
     let item_id = result.imported[0].id;
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: None,
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
 
     let task = service
         .run_item_task(item_id, "item.ask", Some("What is the core claim?"))
@@ -575,7 +621,7 @@ fn item_ask_persists_input_prompt() {
 #[test]
 fn collection_ask_persists_input_prompt_and_scope() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).unwrap();
+    let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
     let collection = service.create_collection("Review", None).unwrap();
     let pdf_a = fixture_path(root.path(), "collection-ask-a.pdf");
     let pdf_b = fixture_path(root.path(), "collection-ask-b.pdf");
@@ -586,6 +632,19 @@ fn collection_ask_persists_input_prompt_and_scope() {
         .import_files(collection.id, &[pdf_a, pdf_b], ImportMode::ManagedCopy)
         .unwrap();
     let scope_item_ids = result.imported.iter().map(|item| item.id).collect::<Vec<_>>();
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: None,
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
 
     let task = service
         .run_collection_task(
@@ -607,7 +666,7 @@ fn collection_ask_persists_input_prompt_and_scope() {
 #[test]
 fn legacy_ai_tasks_keep_null_input_prompt() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).unwrap();
+    let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
     let collection = service.create_collection("Inbox", None).unwrap();
     let pdf = fixture_path(root.path(), "summary-item.pdf");
     write_pdf_fixture(&pdf);
@@ -616,10 +675,137 @@ fn legacy_ai_tasks_keep_null_input_prompt() {
         .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
         .unwrap();
     let item_id = result.imported[0].id;
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: None,
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
 
     let task = service.run_item_task(item_id, "item.summarize", None).unwrap();
     assert_eq!(task.input_prompt, None);
 
     let listed = service.list_task_runs(Some(item_id), None).unwrap();
     assert_eq!(listed[0].input_prompt, None);
+}
+
+#[test]
+fn ai_settings_persist_without_returning_raw_keys() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+
+    let settings = service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "claude-3-5-sonnet-latest".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: Some("anthropic-secret".into()),
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
+
+    assert_eq!(settings.active_provider, AIProvider::OpenAI);
+    assert!(settings.has_openai_api_key);
+    assert!(settings.has_anthropic_api_key);
+    assert_eq!(settings.openai_base_url, "");
+
+    let loaded = service.get_ai_settings().unwrap();
+    assert!(loaded.has_openai_api_key);
+    assert!(loaded.has_anthropic_api_key);
+    assert_eq!(loaded.openai_model, "gpt-4.1-mini");
+  }
+
+#[test]
+fn missing_active_provider_configuration_fails_without_persisting_tasks() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new(root.path()).unwrap();
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "missing-config.pdf");
+    write_pdf_fixture(&pdf);
+
+    let result = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap();
+    let item_id = result.imported[0].id;
+
+    let error = service.run_item_task(item_id, "item.summarize", None).unwrap_err();
+    assert!(error.to_string().contains("OpenAI is missing"));
+    assert!(service.list_task_runs(Some(item_id), None).unwrap().is_empty());
+    assert!(service.get_latest_artifact(Some(item_id), None).unwrap().is_none());
+}
+
+#[test]
+fn provider_backed_item_and_collection_tasks_route_and_persist() {
+    let root = tempdir().unwrap();
+    let transport = Arc::new(StubTransport::default());
+    let service = LibraryService::new_with_transport(root.path(), transport.clone()).unwrap();
+    let collection = service.create_collection("Machine Learning", None).unwrap();
+    let pdf_a = fixture_path(root.path(), "provider-a.pdf");
+    let pdf_b = fixture_path(root.path(), "provider-b.pdf");
+    write_pdf_fixture(&pdf_a);
+    write_pdf_fixture(&pdf_b);
+
+    let result = service
+        .import_files(collection.id, &[pdf_a, pdf_b], ImportMode::ManagedCopy)
+        .unwrap();
+    let item_id = result.imported[0].id;
+    let scope_item_ids = result.imported.iter().map(|item| item.id).collect::<Vec<_>>();
+
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: None,
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
+
+    let item_task = service.run_item_task(item_id, "item.summarize", None).unwrap();
+    assert!(item_task.output_markdown.contains("OpenAI Path"));
+
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::Anthropic,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: None,
+            clear_openai_api_key: None,
+            anthropic_model: "claude-3-5-sonnet-latest".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: Some("anthropic-secret".into()),
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
+
+    let collection_task = service
+        .run_collection_task(collection.id, "collection.theme_map", &scope_item_ids, None)
+        .unwrap();
+    assert!(collection_task.output_markdown.contains("Anthropic Path"));
+
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].provider, AIProvider::OpenAI);
+    assert_eq!(requests[1].provider, AIProvider::Anthropic);
+
+    let artifact = service
+        .get_latest_artifact(None, Some(collection.id))
+        .unwrap()
+        .expect("artifact");
+    assert!(artifact.markdown.contains("Anthropic Path"));
 }

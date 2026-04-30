@@ -17,6 +17,7 @@ import {
   buildPdfTextSelectionFromRange,
   parsePdfTextAnchor,
   type PdfTextAnchor,
+  type PdfSelectionRect,
   type PdfTextSelection,
 } from "./pdfSelection";
 import { installPdfJsTextLayerSelectionSupport } from "./pdfTextLayerSelectionSupport";
@@ -77,6 +78,7 @@ type PdfContinuousReaderProps = {
   activeSearchMatchIndex?: number;
   annotations?: Annotation[];
   onSelectionChange?: (selection: PdfTextSelection | null) => void;
+  onHighlightActivate?: (highlight: { annotationId: number; rect: PdfSelectionRect }) => void;
   onSearchMatchesChange?: (state: { total: number; activeIndex: number }) => void;
 };
 
@@ -178,6 +180,7 @@ export function PdfContinuousReader({
   activeSearchMatchIndex = 0,
   annotations = [],
   onSelectionChange,
+  onHighlightActivate,
   onSearchMatchesChange,
 }: PdfContinuousReaderProps) {
   const scrollRootRef = useRef<HTMLElement | null>(null);
@@ -836,7 +839,10 @@ export function PdfContinuousReader({
     return annotations
       .map((annotation) => ({ annotation, anchor: parsePdfTextAnchor(annotation.anchor) }))
       .filter((entry) => entry.anchor && entry.annotation.kind === "highlight")
-      .map((entry) => entry.anchor as PdfTextAnchor);
+      .map((entry) => ({
+        annotationId: entry.annotation.id,
+        anchor: entry.anchor as PdfTextAnchor,
+      }));
   }, [annotations, textEnabled]);
 
   useEffect(() => {
@@ -854,8 +860,12 @@ export function PdfContinuousReader({
       const plain = textDivStringsByIndexRef.current.get(pageIndex) ?? [];
       if (!host || divs.length === 0 || plain.length === 0) continue;
 
-      const annotationRangesByDiv = new Map<number, Array<{ start: number; end: number; color?: string }>>();
-      for (const anchor of anchorsForActivePage) {
+      const annotationRangesByDiv = new Map<
+        number,
+        Array<{ start: number; end: number; color?: string; annotationId: number }>
+      >();
+      for (const entry of anchorsForActivePage) {
+        const anchor = entry.anchor;
         const anchorPage = anchor.page - 1;
         if (anchorPage !== pageIndex) continue;
         const startDiv = Math.max(0, Math.min(anchor.startDivIndex, divs.length - 1));
@@ -869,7 +879,7 @@ export function PdfContinuousReader({
           const end = divIndex === endDiv ? Math.max(0, Math.min(anchor.endOffset, len)) : len;
           if (end <= start) continue;
           const current = annotationRangesByDiv.get(divIndex) ?? [];
-          current.push({ start, end, color: anchor.color });
+          current.push({ start, end, color: anchor.color, annotationId: entry.annotationId });
           annotationRangesByDiv.set(divIndex, current);
         }
       }
@@ -878,24 +888,35 @@ export function PdfContinuousReader({
       for (let divIndex = 0; divIndex < divs.length; divIndex += 1) {
         const div = divs[divIndex];
         const text = plain[divIndex] ?? "";
-        const paints = new Array<string | null>(text.length).fill(null);
+        const paints = new Array<{ color?: string; annotationId: number } | null>(text.length).fill(null);
         for (const range of annotationRangesByDiv.get(divIndex) ?? []) {
           const start = Math.max(0, Math.min(range.start, text.length));
           const end = Math.max(0, Math.min(range.end, text.length));
-          for (let i = start; i < end; i += 1) paints[i] = range.color ?? "__default";
+          for (let i = start; i < end; i += 1) paints[i] = { color: range.color, annotationId: range.annotationId };
         }
 
-        const annotationRanges: Array<{ start: number; end: number; color?: string }> = [];
+        const annotationRanges: Array<{ start: number; end: number; color?: string; annotationId: number }> = [];
         let paintCursor = 0;
         while (paintCursor < paints.length) {
-          const color = paints[paintCursor];
-          if (!color) {
+          const paint = paints[paintCursor];
+          if (!paint) {
             paintCursor += 1;
             continue;
           }
           let end = paintCursor + 1;
-          while (end < paints.length && paints[end] === color) end += 1;
-          annotationRanges.push({ start: paintCursor, end, color: color === "__default" ? undefined : color });
+          while (
+            end < paints.length &&
+            paints[end]?.annotationId === paint.annotationId &&
+            paints[end]?.color === paint.color
+          ) {
+            end += 1;
+          }
+          annotationRanges.push({
+            start: paintCursor,
+            end,
+            color: paint.color,
+            annotationId: paint.annotationId,
+          });
           paintCursor = end;
         }
 
@@ -917,7 +938,7 @@ export function PdfContinuousReader({
 
         const segments: Array<
           | { kind: "text"; value: string }
-          | { kind: "annotation"; value: string; color?: string }
+          | { kind: "annotation"; value: string; color?: string; annotationId: number }
           | { kind: "search"; value: string; hitIndex: number }
         > = [];
         const pushText = (value: string) => {
@@ -934,7 +955,14 @@ export function PdfContinuousReader({
           if (range.start > cursor) pushText(text.slice(cursor, range.start));
           const slice = text.slice(range.start, range.end);
           if (!slice) continue;
-          if (range.kind === "annotation") segments.push({ kind: "annotation", value: slice, color: range.color });
+          if (range.kind === "annotation") {
+            segments.push({
+              kind: "annotation",
+              value: slice,
+              color: range.color,
+              annotationId: range.annotationId,
+            });
+          }
           else segments.push({ kind: "search", value: slice, hitIndex: range.hitIndex });
           cursor = range.end;
         }
@@ -944,8 +972,8 @@ export function PdfContinuousReader({
           .map((segment) => {
             if (segment.kind === "text") return escapeHtml(segment.value);
             if (segment.kind === "annotation") {
-              const attr = segment.color ? ` data-color="${escapeHtml(segment.color)}"` : "";
-              return `<span class="pdf-annotation-highlight"${attr}>${escapeHtml(segment.value)}</span>`;
+              const colorAttr = segment.color ? ` data-color="${escapeHtml(segment.color)}"` : "";
+              return `<span class="pdf-annotation-highlight" data-annotation-id="${segment.annotationId}"${colorAttr}>${escapeHtml(segment.value)}</span>`;
             }
             const active = segment.hitIndex === normalizedActive ? " pdf-search-hit-active" : "";
             return `<span class="pdf-search-hit${active}" data-hit-index="${segment.hitIndex}">${escapeHtml(segment.value)}</span>`;
@@ -964,6 +992,38 @@ export function PdfContinuousReader({
       }
     }
   }, [activeSearchMatchIndex, anchorsForActivePage, searchMatches, textEnabled, textLayerEpoch, textLayerReadyByPage]);
+
+  useEffect(() => {
+    if (!onHighlightActivate) return;
+    const hosts = Array.from(textLayerHostByIndexRef.current.values());
+    if (hosts.length === 0) return;
+
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const highlight = target.closest(".pdf-annotation-highlight[data-annotation-id]") as HTMLElement | null;
+      if (!highlight) return;
+      const annotationId = Number(highlight.dataset.annotationId);
+      if (!Number.isFinite(annotationId)) return;
+      const rect = highlight.getBoundingClientRect();
+      event.preventDefault();
+      event.stopPropagation();
+      onHighlightActivate({
+        annotationId,
+        rect: {
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+        },
+      });
+    };
+
+    for (const host of hosts) host.addEventListener("click", onClick);
+    return () => {
+      for (const host of hosts) host.removeEventListener("click", onClick);
+    };
+  }, [onHighlightActivate, textLayerEpoch, textLayerReadyByPage]);
 
   const closestPageIndex = (node: Node) => {
     const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ReaderView } from "../../lib/contracts";
@@ -104,6 +104,7 @@ describe("PdfReader", () => {
 
   it("renders persisted highlight anchors on top of Rust spans", async () => {
     const getPdfPageBundle = vi.fn().mockResolvedValue(makeBundle("Hello world"));
+    const onHighlightActivate = vi.fn();
     const highlightAnchor = JSON.stringify({
       type: "pdf_text",
       page: 1,
@@ -128,6 +129,7 @@ describe("PdfReader", () => {
         ]}
         getPdfDocumentInfo={getPdfDocumentInfo}
         getPdfPageBundle={getPdfPageBundle}
+        onHighlightActivate={onHighlightActivate}
         page={0}
         view={pdfView}
         zoom={100}
@@ -136,6 +138,19 @@ describe("PdfReader", () => {
 
     await waitFor(() => {
       expect(document.querySelector(".pdf-annotation-highlight")).toBeTruthy();
+    });
+    const highlight = document.querySelector(".pdf-annotation-highlight") as HTMLElement;
+    expect(highlight.dataset.annotationId).toBe("7");
+
+    fireEvent.click(highlight);
+    expect(onHighlightActivate).toHaveBeenCalledWith({
+      annotationId: 7,
+      rect: expect.objectContaining({
+        left: expect.any(Number),
+        top: expect.any(Number),
+        right: expect.any(Number),
+        bottom: expect.any(Number),
+      }),
     });
   });
 });

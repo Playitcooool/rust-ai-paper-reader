@@ -8,7 +8,7 @@ use std::{
 
 use app_core::service::{
     Annotation, Collection, ImportBatchResult, ImportMode, LibraryItem, LibraryService, ReaderView,
-    ResearchNote, Tag,
+    ResearchNote, Tag, AISettings, UpdateAISettingsInput,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -95,6 +95,19 @@ struct CreateAnnotationInput {
 #[derive(Deserialize)]
 struct RemoveAnnotationInput {
     annotation_id: i64,
+}
+
+#[derive(Deserialize)]
+struct UpdateAiSettingsPayload {
+    active_provider: String,
+    openai_model: String,
+    openai_base_url: String,
+    openai_api_key: Option<String>,
+    clear_openai_api_key: Option<bool>,
+    anthropic_model: String,
+    anthropic_base_url: String,
+    anthropic_api_key: Option<String>,
+    clear_anthropic_api_key: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1214,6 +1227,37 @@ fn remove_annotation(
 }
 
 #[tauri::command]
+fn get_ai_settings(state: State<'_, AppState>) -> Result<AISettings, String> {
+    service(&state)?
+        .get_ai_settings()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn update_ai_settings(
+    state: State<'_, AppState>,
+    input: UpdateAiSettingsPayload,
+) -> Result<AISettings, String> {
+    service(&state)?
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: match input.active_provider.as_str() {
+                "openai" => app_core::service::AIProvider::OpenAI,
+                "anthropic" => app_core::service::AIProvider::Anthropic,
+                _ => return Err("unsupported ai provider".into()),
+            },
+            openai_model: input.openai_model,
+            openai_base_url: input.openai_base_url,
+            openai_api_key: input.openai_api_key,
+            clear_openai_api_key: input.clear_openai_api_key,
+            anthropic_model: input.anthropic_model,
+            anthropic_base_url: input.anthropic_base_url,
+            anthropic_api_key: input.anthropic_api_key,
+            clear_anthropic_api_key: input.clear_anthropic_api_key,
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn run_item_task(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -1509,7 +1553,10 @@ fn main() {
                 .separator()
                 .quit()
                 .build()?;
-            let menu = MenuBuilder::new(app).item(&file_menu).build()?;
+            let app_menu = SubmenuBuilder::new(app, "Paper Reader")
+                .text("open_settings", "Settings…")
+                .build()?;
+            let menu = MenuBuilder::new(app).item(&app_menu).item(&file_menu).build()?;
             app.set_menu(menu)?;
             app.on_menu_event(|app_handle, event| match event.id().0.as_str() {
                 "import_documents" => {
@@ -1517,6 +1564,9 @@ fn main() {
                 }
                 "import_citations" => {
                     let _ = app_handle.emit("menu:import-citations", ());
+                }
+                "open_settings" => {
+                    let _ = app_handle.emit("menu:open-settings", ());
                 }
                 _ => {}
             });
@@ -1546,6 +1596,8 @@ fn main() {
             create_annotation,
             list_annotations,
             remove_annotation,
+            get_ai_settings,
+            update_ai_settings,
             run_item_task,
             run_collection_task,
             list_task_runs,

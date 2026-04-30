@@ -11,8 +11,10 @@ import { isTauriRuntime } from "./lib/api";
 import { getRuntimePolyfillDiagnostics } from "./lib/runtimePolyfills";
 import type {
   AIArtifact,
+  AISettings,
   AITask,
   AITaskStreamEvent,
+  AIProvider,
   Annotation,
   AppApi,
   Collection,
@@ -21,6 +23,7 @@ import type {
   ReaderView,
   ResearchNote,
   Tag,
+  UpdateAISettingsInput,
 } from "./lib/contracts";
 
 type AiPanelMode = "paper" | "collection";
@@ -164,6 +167,10 @@ type AiPendingMessage = {
 
 type AiDockState = Record<AiDockSection, boolean>;
 type AiPendingByScope = Record<AiPanelMode, AiPendingMessage | null>;
+type ActivePdfHighlight = {
+  annotationId: number;
+  rect: { left: number; top: number; right: number; bottom: number };
+};
 
 const initialAiDockState = (): Record<AiPanelMode, AiDockState> => ({
   paper: { artifacts: false, history: false, notes: false },
@@ -177,6 +184,22 @@ const initialAiPendingByScope = (): AiPendingByScope => ({
 
 const createStreamId = () =>
   globalThis.crypto?.randomUUID?.() ?? `stream-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+const emptyAiSettingsDraft = (): UpdateAISettingsInput => ({
+  active_provider: "openai",
+  openai_model: "",
+  openai_base_url: "",
+  anthropic_model: "",
+  anthropic_base_url: "",
+});
+
+const draftFromAiSettings = (settings: AISettings): UpdateAISettingsInput => ({
+  active_provider: settings.active_provider,
+  openai_model: settings.openai_model,
+  openai_base_url: settings.openai_base_url,
+  anthropic_model: settings.anthropic_model,
+  anthropic_base_url: settings.anthropic_base_url,
+});
 
 const markdownComponents = {
   a: (props: ComponentProps<"a">) => <a {...props} rel="noreferrer" target="_blank" />,
@@ -297,14 +320,21 @@ export default function App({ api }: { api: AppApi }) {
   const [reportedActiveSearchMatchIndex, setReportedActiveSearchMatchIndex] = useState(-1);
   const [pdfPageCounts, setPdfPageCounts] = useState<Record<number, number>>({});
   const [pdfSelection, setPdfSelection] = useState<PdfTextSelection | null>(null);
+  const [activePdfHighlight, setActivePdfHighlight] = useState<ActivePdfHighlight | null>(null);
   const [isManageOpen, setIsManageOpen] = useState(false);
   const [creatingCollectionParentId, setCreatingCollectionParentId] = useState<number | "root" | null>(null);
   const [collectionDraftName, setCollectionDraftName] = useState("");
   const [renamingCollectionId, setRenamingCollectionId] = useState<number | null>(null);
   const [aiComposerValue, setAiComposerValue] = useState("");
   const [areQuickActionsVisible, setAreQuickActionsVisible] = useState(true);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [aiSettings, setAiSettings] = useState<AISettings | null>(null);
+  const [aiSettingsDraft, setAiSettingsDraft] = useState<UpdateAISettingsInput>(emptyAiSettingsDraft);
+  const [openAiApiKeyDraft, setOpenAiApiKeyDraft] = useState("");
+  const [anthropicApiKeyDraft, setAnthropicApiKeyDraft] = useState("");
   const manageButtonRef = useRef<HTMLButtonElement | null>(null);
   const managePopoverRef = useRef<HTMLDivElement | null>(null);
+  const highlightActionBarRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // Probe polyfills (useful for debugging) but do not write client logs to disk anymore.
@@ -849,6 +879,51 @@ export default function App({ api }: { api: AppApi }) {
     );
   };
 
+  const openSettingsDialog = useCallback(async () => {
+    const runtimeApi = await getApi();
+    const settings = await runtimeApi.getAiSettings();
+    setAiSettings(settings);
+    setAiSettingsDraft(draftFromAiSettings(settings));
+    setOpenAiApiKeyDraft("");
+    setAnthropicApiKeyDraft("");
+    setIsSettingsOpen(true);
+  }, [getApi]);
+
+  const closeSettingsDialog = useCallback(() => {
+    setIsSettingsOpen(false);
+    setOpenAiApiKeyDraft("");
+    setAnthropicApiKeyDraft("");
+  }, []);
+
+  const handleSaveAiSettings = useCallback(async () => {
+    const runtimeApi = await getApi();
+    const next = await runtimeApi.updateAiSettings({
+      ...aiSettingsDraft,
+      openai_api_key: openAiApiKeyDraft.trim() ? openAiApiKeyDraft : undefined,
+      anthropic_api_key: anthropicApiKeyDraft.trim() ? anthropicApiKeyDraft : undefined,
+    });
+    setAiSettings(next);
+    setAiSettingsDraft(draftFromAiSettings(next));
+    setOpenAiApiKeyDraft("");
+    setAnthropicApiKeyDraft("");
+    setIsSettingsOpen(false);
+    setStatusMessage("Saved AI settings.");
+  }, [aiSettingsDraft, anthropicApiKeyDraft, getApi, openAiApiKeyDraft]);
+
+  const handleClearSavedKey = useCallback(async (provider: AIProvider) => {
+    const runtimeApi = await getApi();
+    const next = await runtimeApi.updateAiSettings({
+      ...aiSettingsDraft,
+      clear_openai_api_key: provider === "openai" ? true : undefined,
+      clear_anthropic_api_key: provider === "anthropic" ? true : undefined,
+    });
+    setAiSettings(next);
+    setAiSettingsDraft(draftFromAiSettings(next));
+    if (provider === "openai") setOpenAiApiKeyDraft("");
+    else setAnthropicApiKeyDraft("");
+    setStatusMessage(`${provider === "openai" ? "OpenAI" : "Anthropic"} API key cleared.`);
+  }, [aiSettingsDraft, getApi]);
+
   // Native (desktop) menu events.
   useEffect(() => {
     importDocumentsRef.current = () => {
@@ -863,18 +938,23 @@ export default function App({ api }: { api: AppApi }) {
     if (!isTauriRuntime()) return;
     let unlistenDocs: null | (() => void) = null;
     let unlistenCitations: null | (() => void) = null;
+    let unlistenSettings: null | (() => void) = null;
 
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       unlistenDocs = await listen("menu:import-documents", () => importDocumentsRef.current());
       unlistenCitations = await listen("menu:import-citations", () => importCitationsRef.current());
+      unlistenSettings = await listen("menu:open-settings", () => {
+        void openSettingsDialog();
+      });
     })();
 
     return () => {
       unlistenDocs?.();
       unlistenCitations?.();
+      unlistenSettings?.();
     };
-  }, []);
+  }, [openSettingsDialog]);
 
   // Native drag & drop (desktop): uses absolute file paths provided by Tauri.
   useEffect(() => {
@@ -1227,6 +1307,10 @@ export default function App({ api }: { api: AppApi }) {
     clearDomSelection();
   }, [clearDomSelection]);
 
+  const dismissActivePdfHighlight = useCallback(() => {
+    setActivePdfHighlight(null);
+  }, []);
+
   const addColorToPdfAnchor = useCallback((anchor: string, color: PdfHighlightColor) => {
     try {
       const parsed = JSON.parse(anchor) as { type?: string; color?: unknown };
@@ -1251,6 +1335,20 @@ export default function App({ api }: { api: AppApi }) {
     setStatusMessage("Created highlight.");
     dismissPdfSelection();
   }, [activePaper, addColorToPdfAnchor, dismissPdfSelection, getApi, pdfSelection, pdfTextToolsEnabled, workspaceMode]);
+
+  const handleActivatePdfHighlight = useCallback((highlight: ActivePdfHighlight) => {
+    dismissPdfSelection();
+    setActivePdfHighlight(highlight);
+  }, [dismissPdfSelection]);
+
+  const handleRemoveActivePdfHighlight = useCallback(async () => {
+    if (!activePdfHighlight) return;
+    const runtimeApi = await getApi();
+    await runtimeApi.removeAnnotation({ annotation_id: activePdfHighlight.annotationId });
+    setAnnotations((current) => current.filter((annotation) => annotation.id !== activePdfHighlight.annotationId));
+    setActivePdfHighlight(null);
+    setStatusMessage("Removed highlight.");
+  }, [activePdfHighlight, getApi]);
 
   const handleReaderPageSubmit = () => {
     const parsed = Number(readerPageInput.trim());
@@ -1307,6 +1405,27 @@ export default function App({ api }: { api: AppApi }) {
     return { left: `${left}px`, top: `${top}px` } as const;
   }, [pdfSelection, showPdfFocusHighlightBar]);
 
+  const showActivePdfHighlightBar = Boolean(activePdfHighlight);
+  const activePdfHighlightBarStyle = useMemo(() => {
+    if (!activePdfHighlight) return {};
+
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+    const BAR_WIDTH_PX = 172;
+    const BAR_HEIGHT_PX = 44;
+    const GAP_PX = 10;
+    const PADDING_PX = 12;
+
+    const rect = activePdfHighlight.rect;
+    let left = rect.right + GAP_PX;
+    let top = rect.top - BAR_HEIGHT_PX - GAP_PX;
+    if (top < PADDING_PX) top = rect.bottom + GAP_PX;
+
+    left = clamp(left, PADDING_PX, window.innerWidth - BAR_WIDTH_PX - PADDING_PX);
+    top = clamp(top, PADDING_PX, window.innerHeight - BAR_HEIGHT_PX - PADDING_PX);
+
+    return { left: `${left}px`, top: `${top}px` } as const;
+  }, [activePdfHighlight]);
+
   useEffect(() => {
     if (!showPdfFocusHighlightBar) return;
 
@@ -1331,6 +1450,40 @@ export default function App({ api }: { api: AppApi }) {
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
   }, [dismissPdfSelection, showPdfFocusHighlightBar]);
+
+  useEffect(() => {
+    if (!showActivePdfHighlightBar) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      dismissActivePdfHighlight();
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const bar = highlightActionBarRef.current;
+      if (bar && bar.contains(target)) return;
+      const highlight = target instanceof Element
+        ? target.closest(".pdf-annotation-highlight[data-annotation-id]")
+        : null;
+      if (highlight) return;
+      dismissActivePdfHighlight();
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [dismissActivePdfHighlight, showActivePdfHighlightBar]);
+
+  useEffect(() => {
+    setActivePdfHighlight(null);
+    setPdfSelection(null);
+  }, [activePaper?.id]);
 
   const treeSearchFilter = useMemo(() => {
     const normalized = search.trim().toLowerCase();
@@ -1842,7 +1995,11 @@ export default function App({ api }: { api: AppApi }) {
                     setReaderSearchMatchCount(total);
                     setReportedActiveSearchMatchIndex(activeIndex);
                   }}
-                  onSelectionChange={(selection) => setPdfSelection(selection)}
+                  onSelectionChange={(selection) => {
+                    setPdfSelection(selection);
+                    if (selection) setActivePdfHighlight(null);
+                  }}
+                  onHighlightActivate={handleActivatePdfHighlight}
                   onActivePageChange={(pageIndex0) => {
                     setReaderPageClamped(pageIndex0);
                   }}
@@ -1956,6 +2113,7 @@ export default function App({ api }: { api: AppApi }) {
                   page={0}
                   view={readerView}
                   zoom={readerZoom}
+                  onHighlightActivate={handleActivatePdfHighlight}
                   onPageCountChange={(pageCount) => {
                     setPdfPageCounts((current) =>
                       current[activePaper.id] === pageCount
@@ -2047,6 +2205,20 @@ export default function App({ api }: { api: AppApi }) {
         ) : null}
       </main>
 
+      {showActivePdfHighlightBar ? (
+        <div
+          className="pdf-highlight-action-bar"
+          ref={highlightActionBarRef}
+          role="toolbar"
+          aria-label="PDF highlight actions"
+          style={activePdfHighlightBarStyle}
+        >
+          <button type="button" className="ghost-button" onClick={() => void handleRemoveActivePdfHighlight()}>
+            Remove Highlight
+          </button>
+        </div>
+      ) : null}
+
       {isAiPanelOpen ? (
         <aside className="ai-shell" aria-label="AI panel">
           <div className="ai-shell-header">
@@ -2083,12 +2255,6 @@ export default function App({ api }: { api: AppApi }) {
           </div>
 
           <div className="ai-chat-history">
-            <article className="ai-message ai-message-system">
-              <div className="ai-message-meta">
-                <strong>{aiPanelMode === "paper" ? "Current Paper" : "Current Collection"}</strong>
-              </div>
-            </article>
-
             {aiPanelTasks.map((task) => (
               <article key={task.id} className="ai-thread-entry">
                 {task.input_prompt ? (
@@ -2301,6 +2467,142 @@ export default function App({ api }: { api: AppApi }) {
             </div>
           </div>
         </aside>
+      ) : null}
+
+      {isSettingsOpen ? (
+        <div className="modal-scrim" role="presentation">
+          <section className="settings-dialog" role="dialog" aria-label="Settings">
+            <div className="panel-header panel-header-row">
+              <div>
+                <p className="eyebrow">Settings</p>
+                <h2>AI Providers</h2>
+              </div>
+              <button className="ghost-button" type="button" onClick={closeSettingsDialog}>
+                Cancel
+              </button>
+            </div>
+
+            <div className="settings-provider-tabs" role="tablist" aria-label="Active AI provider">
+              {(["openai", "anthropic"] as const).map((provider) => (
+                <button
+                  key={provider}
+                  aria-selected={aiSettingsDraft.active_provider === provider}
+                  className={`reader-tab ${aiSettingsDraft.active_provider === provider ? "reader-tab-active" : ""}`}
+                  role="tab"
+                  type="button"
+                  onClick={() => setAiSettingsDraft((current) => ({ ...current, active_provider: provider }))}
+                >
+                  {provider === "openai" ? "OpenAI" : "Anthropic"}
+                </button>
+              ))}
+            </div>
+
+            <div className="settings-provider-grid">
+              <div className="settings-provider-card">
+                <p className="eyebrow">OpenAI</p>
+                <label className="settings-field">
+                  <span>Model</span>
+                  <input
+                    aria-label="OpenAI model"
+                    value={aiSettingsDraft.openai_model}
+                    onChange={(event) =>
+                      setAiSettingsDraft((current) => ({ ...current, openai_model: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Base URL</span>
+                  <input
+                    aria-label="OpenAI base URL"
+                    placeholder="https://api.openai.com/v1"
+                    value={aiSettingsDraft.openai_base_url}
+                    onChange={(event) =>
+                      setAiSettingsDraft((current) => ({ ...current, openai_base_url: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>API key</span>
+                  <input
+                    aria-label="OpenAI API key"
+                    type="password"
+                    value={openAiApiKeyDraft}
+                    placeholder={aiSettings?.has_openai_api_key ? "Saved key present" : ""}
+                    onChange={(event) => setOpenAiApiKeyDraft(event.target.value)}
+                  />
+                </label>
+                <div className="settings-provider-actions">
+                  <span className="meta-count">
+                    {aiSettings?.has_openai_api_key ? "Saved key" : "No saved key"}
+                  </span>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => void handleClearSavedKey("openai")}
+                  >
+                    Clear saved key
+                  </button>
+                </div>
+              </div>
+
+              <div className="settings-provider-card">
+                <p className="eyebrow">Anthropic</p>
+                <label className="settings-field">
+                  <span>Model</span>
+                  <input
+                    aria-label="Anthropic model"
+                    value={aiSettingsDraft.anthropic_model}
+                    onChange={(event) =>
+                      setAiSettingsDraft((current) => ({ ...current, anthropic_model: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Base URL</span>
+                  <input
+                    aria-label="Anthropic base URL"
+                    placeholder="https://api.anthropic.com/v1"
+                    value={aiSettingsDraft.anthropic_base_url}
+                    onChange={(event) =>
+                      setAiSettingsDraft((current) => ({ ...current, anthropic_base_url: event.target.value }))
+                    }
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>API key</span>
+                  <input
+                    aria-label="Anthropic API key"
+                    type="password"
+                    value={anthropicApiKeyDraft}
+                    placeholder={aiSettings?.has_anthropic_api_key ? "Saved key present" : ""}
+                    onChange={(event) => setAnthropicApiKeyDraft(event.target.value)}
+                  />
+                </label>
+                <div className="settings-provider-actions">
+                  <span className="meta-count">
+                    {aiSettings?.has_anthropic_api_key ? "Saved key" : "No saved key"}
+                  </span>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => void handleClearSavedKey("anthropic")}
+                  >
+                    Clear saved key
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="settings-dialog-actions">
+              <button className="ghost-button" type="button" onClick={closeSettingsDialog}>
+                Cancel
+              </button>
+              <button className="primary-button" type="button" onClick={() => void handleSaveAiSettings()}>
+                Save
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
     </div>
   );
