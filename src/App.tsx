@@ -41,9 +41,7 @@ const READER_ZOOM_STEP = 10;
 const sessionActions = [
   { label: "Summarize", kind: "session.summarize" },
   { label: "Explain Terms", kind: "session.explain_terms" },
-  { label: "Theme Map", kind: "session.theme_map" },
   { label: "Compare", kind: "session.compare" },
-  { label: "Review Draft", kind: "session.review_draft" },
 ];
 
 const taskLabel = (kind: string) =>
@@ -173,6 +171,22 @@ type ActivePdfHighlight = {
   annotationId: number;
   rect: { left: number; top: number; right: number; bottom: number };
 };
+type ResourceContextMenuState =
+  | {
+      x: number;
+      y: number;
+      kind: "collection" | "item";
+      targetId: number;
+    }
+  | null;
+type DeleteTargetState =
+  | {
+      kind: "collection" | "item";
+      targetId: number;
+      label: string;
+      parentCollectionId: number | null;
+    }
+  | null;
 
 const initialAiDockState = (): AiDockState => ({
   artifacts: false,
@@ -320,6 +334,15 @@ const expandSessionReferenceItemIds = (
 const itemCountForCollection = (libraryItems: LibraryItem[], collectionId: number) =>
   libraryItems.filter((item) => item.collection_id === collectionId).length;
 
+const sessionReferenceLabel = (
+  reference: AISessionReference,
+  libraryItems: LibraryItem[],
+  collections: Collection[],
+) =>
+  reference.kind === "item"
+    ? libraryItems.find((item) => item.id === reference.target_id)?.title ?? "Paper"
+    : collections.find((collection) => collection.id === reference.target_id)?.name ?? "Collection";
+
 const isTypingTarget = (target: EventTarget | null) =>
   target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable);
 
@@ -388,6 +411,8 @@ export default function App({ api }: { api: AppApi }) {
   const [creatingCollectionParentId, setCreatingCollectionParentId] = useState<number | "root" | null>(null);
   const [collectionDraftName, setCollectionDraftName] = useState("");
   const [renamingCollectionId, setRenamingCollectionId] = useState<number | null>(null);
+  const [resourceContextMenu, setResourceContextMenu] = useState<ResourceContextMenuState>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTargetState>(null);
   const [aiComposerValue, setAiComposerValue] = useState("");
   const [areQuickActionsVisible, setAreQuickActionsVisible] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -398,7 +423,10 @@ export default function App({ api }: { api: AppApi }) {
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const manageButtonRef = useRef<HTMLButtonElement | null>(null);
   const managePopoverRef = useRef<HTMLDivElement | null>(null);
+  const resourceContextMenuRef = useRef<HTMLDivElement | null>(null);
   const highlightActionBarRef = useRef<HTMLDivElement | null>(null);
+  const aiReferenceButtonRef = useRef<HTMLButtonElement | null>(null);
+  const aiReferencePopoverRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // Probe polyfills (useful for debugging) but do not write client logs to disk anymore.
@@ -432,6 +460,58 @@ export default function App({ api }: { api: AppApi }) {
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
   }, [isManageOpen]);
+
+  useEffect(() => {
+    if (!resourceContextMenu) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setResourceContextMenu(null);
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const menu = resourceContextMenuRef.current;
+      if (menu && menu.contains(target)) return;
+      setResourceContextMenu(null);
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [resourceContextMenu]);
+
+  useEffect(() => {
+    if (!isReferencePickerOpen) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setIsReferencePickerOpen(false);
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const popover = aiReferencePopoverRef.current;
+      const button = aiReferenceButtonRef.current;
+      if (popover && popover.contains(target)) return;
+      if (button && button.contains(target)) return;
+      setIsReferencePickerOpen(false);
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [isReferencePickerOpen]);
 
   const hasCollections = collections.length > 0;
 

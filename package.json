@@ -1,7 +1,13 @@
 {
   "name": "paper-reader",
-  "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
+  "description": "A desktop application for reading, organizing, and researching academic papers",
+  "author": "Your Name",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/paper-reader"
+  },
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "node -e \"console.error('Tauri-only app: use `npm run tauri:dev` (desktop) instead of `npm run dev`.'); process.exit(1)\"",

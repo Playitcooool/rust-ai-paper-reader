@@ -134,6 +134,12 @@ paper-reader/
 
 ---
 
+## Screenshots
+
+> Coming soon
+
+---
+
 ## License
 
 MIT
