@@ -7,7 +7,7 @@ use std::{
 
 use app_core::service::{
     AiCompletionRequest, AiTransport, AIProvider, AISessionReferenceKind, ImportMode, LibraryService,
-    UpdateAISettingsInput,
+    MemorySecretStore, UpdateAISettingsInput,
 };
 use flate2::{write::ZlibEncoder, Compression};
 use rusqlite::Connection;
@@ -16,6 +16,11 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 fn fixture_path(root: &Path, name: &str) -> PathBuf {
     root.join(name)
+}
+
+fn service_with_transport(root: &Path, transport: Arc<dyn AiTransport>) -> LibraryService {
+    LibraryService::new_with_secret_store(root, transport, Arc::new(MemorySecretStore::default()))
+        .unwrap()
 }
 
 fn write_pdf_fixture(path: &Path) {
@@ -449,7 +454,7 @@ fn duplicate_imports_report_duplicate_without_creating_new_items() {
     write_pdf_fixture(&pdf);
 
     let first = service
-        .import_files(collection.id, &[pdf.clone()], ImportMode::ManagedCopy)
+        .import_files(collection.id, std::slice::from_ref(&pdf), ImportMode::ManagedCopy)
         .unwrap();
     let second = service
         .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
@@ -471,7 +476,7 @@ fn linked_files_can_be_marked_missing_and_relinked() {
     write_epub_fixture(&original);
 
     let result = service
-        .import_files(collection.id, &[original.clone()], ImportMode::LinkedFile)
+        .import_files(collection.id, std::slice::from_ref(&original), ImportMode::LinkedFile)
         .unwrap();
     let attachment_id = result.imported[0].primary_attachment_id;
 
@@ -501,7 +506,7 @@ fn reads_primary_pdf_attachment_bytes_for_managed_and_linked_files() {
         .import_files(collection.id, &[managed], ImportMode::ManagedCopy)
         .unwrap();
     let linked_result = service
-        .import_files(collection.id, &[linked.clone()], ImportMode::LinkedFile)
+        .import_files(collection.id, std::slice::from_ref(&linked), ImportMode::LinkedFile)
         .unwrap();
 
     let managed_bytes = service
@@ -526,7 +531,7 @@ fn read_primary_attachment_bytes_rejects_missing_non_pdf_and_unknown_attachments
     let missing_pdf = fixture_path(root.path(), "missing.pdf");
     write_pdf_fixture(&missing_pdf);
     let missing_result = service
-        .import_files(collection.id, &[missing_pdf.clone()], ImportMode::LinkedFile)
+        .import_files(collection.id, std::slice::from_ref(&missing_pdf), ImportMode::LinkedFile)
         .unwrap();
     fs::remove_file(&missing_pdf).unwrap();
 
@@ -568,7 +573,7 @@ fn removing_items_deletes_managed_copy_but_preserves_linked_source() {
         .import_files(collection.id, &[managed], ImportMode::ManagedCopy)
         .unwrap();
     let linked_result = service
-        .import_files(collection.id, &[linked.clone()], ImportMode::LinkedFile)
+        .import_files(collection.id, std::slice::from_ref(&linked), ImportMode::LinkedFile)
         .unwrap();
 
     let managed_reader = service.get_reader_view(managed_result.imported[0].id).unwrap();
@@ -622,7 +627,7 @@ fn removing_collection_clears_matching_ai_session_references() {
 #[test]
 fn removing_collection_recursively_clears_descendant_items_and_related_records() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
     let parent = service.create_collection("Machine Learning", None).unwrap();
     let child = service.create_collection("Scaling Papers", Some(parent.id)).unwrap();
     let sibling = service.create_collection("Systems", None).unwrap();
@@ -707,9 +712,148 @@ fn removing_collection_recursively_clears_descendant_items_and_related_records()
 }
 
 #[test]
+fn removing_item_prunes_cascaded_records_and_session_scope_item_ids() {
+    let root = tempdir().unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf_a = fixture_path(root.path(), "scope-a.pdf");
+    let pdf_b = fixture_path(root.path(), "scope-b.pdf");
+    write_pdf_fixture(&pdf_a);
+    write_partial_pdf_fixture(&pdf_b);
+
+    let result = service
+        .import_files(collection.id, &[pdf_a, pdf_b], ImportMode::ManagedCopy)
+        .unwrap();
+    let item_a = result.imported[0].id;
+    let item_b = result.imported[1].id;
+
+    let tag = service.create_tag("reading-list").unwrap();
+    service.assign_tag(item_a, tag.id).unwrap();
+    service
+        .create_annotation(
+            item_a,
+            "page=1".to_string(),
+            "highlight".to_string(),
+            "Keep this paragraph.".to_string(),
+        )
+        .unwrap();
+    let session = service.create_ai_session().unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Item, item_a)
+        .unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Item, item_b)
+        .unwrap();
+
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: None,
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
+
+    let task = service
+        .run_ai_session_task(session.id, "session.compare", None)
+        .unwrap();
+    assert_eq!(task.scope_item_ids, Some(vec![item_a, item_b]));
+
+    service.remove_item(item_a).unwrap();
+
+    let conn = Connection::open(root.path().join("library.db")).unwrap();
+    let attachments: i64 = conn
+        .query_row("SELECT COUNT(*) FROM attachments WHERE item_id = ?1", [item_a], |row| row.get(0))
+        .unwrap();
+    let extracted_content: i64 = conn
+        .query_row("SELECT COUNT(*) FROM extracted_content WHERE item_id = ?1", [item_a], |row| row.get(0))
+        .unwrap();
+    let annotations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM annotations WHERE item_id = ?1", [item_a], |row| row.get(0))
+        .unwrap();
+    let item_tags: i64 = conn
+        .query_row("SELECT COUNT(*) FROM item_tags WHERE item_id = ?1", [item_a], |row| row.get(0))
+        .unwrap();
+    assert_eq!(attachments, 0);
+    assert_eq!(extracted_content, 0);
+    assert_eq!(annotations, 0);
+    assert_eq!(item_tags, 0);
+
+    let session_tasks = service.list_ai_session_task_runs(session.id).unwrap();
+    assert_eq!(session_tasks.len(), 1);
+    assert_eq!(session_tasks[0].scope_item_ids, Some(vec![item_b]));
+    let artifact = service.get_ai_session_artifact(session.id).unwrap().expect("session artifact");
+    assert_eq!(artifact.scope_item_ids, Some(vec![item_b]));
+}
+
+#[test]
+fn removing_collection_prunes_session_scope_item_ids_for_descendant_items() {
+    let root = tempdir().unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
+    let parent = service.create_collection("Parent", None).unwrap();
+    let child = service.create_collection("Child", Some(parent.id)).unwrap();
+    let keep = service.create_collection("Keep", None).unwrap();
+    let child_pdf = fixture_path(root.path(), "child-session.pdf");
+    let keep_pdf = fixture_path(root.path(), "keep-session.pdf");
+    write_pdf_fixture(&child_pdf);
+    write_partial_pdf_fixture(&keep_pdf);
+
+    let child_item_id = service
+        .import_files(child.id, &[child_pdf], ImportMode::ManagedCopy)
+        .unwrap()
+        .imported[0]
+        .id;
+    let keep_item_id = service
+        .import_files(keep.id, &[keep_pdf], ImportMode::ManagedCopy)
+        .unwrap()
+        .imported[0]
+        .id;
+    let session = service.create_ai_session().unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Item, child_item_id)
+        .unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Item, keep_item_id)
+        .unwrap();
+
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: None,
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
+    service
+        .run_ai_session_task(session.id, "session.compare", None)
+        .unwrap();
+
+    service.remove_collection(parent.id).unwrap();
+
+    let session_tasks = service.list_ai_session_task_runs(session.id).unwrap();
+    assert!(session_tasks.iter().all(|task| {
+        task.scope_item_ids
+            .as_ref()
+            .is_none_or(|scope_item_ids| scope_item_ids == &vec![keep_item_id])
+    }));
+    let artifact = service.get_ai_session_artifact(session.id).unwrap();
+    assert!(artifact.as_ref().is_none_or(|entry| entry.scope_item_ids == Some(vec![keep_item_id])));
+}
+
+#[test]
 fn item_ask_persists_input_prompt() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
     let collection = service.create_collection("Inbox", None).unwrap();
     let pdf = fixture_path(root.path(), "ask-item.pdf");
     write_pdf_fixture(&pdf);
@@ -746,7 +890,7 @@ fn item_ask_persists_input_prompt() {
 #[test]
 fn collection_ask_persists_input_prompt_and_scope() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
     let collection = service.create_collection("Review", None).unwrap();
     let pdf_a = fixture_path(root.path(), "collection-ask-a.pdf");
     let pdf_b = fixture_path(root.path(), "collection-ask-b.pdf");
@@ -791,7 +935,7 @@ fn collection_ask_persists_input_prompt_and_scope() {
 #[test]
 fn legacy_ai_tasks_keep_null_input_prompt() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
     let collection = service.create_collection("Inbox", None).unwrap();
     let pdf = fixture_path(root.path(), "summary-item.pdf");
     write_pdf_fixture(&pdf);
@@ -824,7 +968,7 @@ fn legacy_ai_tasks_keep_null_input_prompt() {
 #[test]
 fn ai_settings_persist_without_returning_raw_keys() {
     let root = tempdir().unwrap();
-    let service = LibraryService::new(root.path()).unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
 
     let settings = service
         .update_ai_settings(UpdateAISettingsInput {
@@ -849,7 +993,18 @@ fn ai_settings_persist_without_returning_raw_keys() {
     assert!(loaded.has_openai_api_key);
     assert!(loaded.has_anthropic_api_key);
     assert_eq!(loaded.openai_model, "gpt-4.1-mini");
-  }
+
+    let conn = Connection::open(root.path().join("library.db")).unwrap();
+    let stored_keys: (String, String) = conn
+        .query_row(
+            "SELECT openai_api_key, anthropic_api_key FROM ai_settings WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_keys.0, "");
+    assert_eq!(stored_keys.1, "");
+}
 
 #[test]
 fn missing_active_provider_configuration_fails_without_persisting_tasks() {
@@ -874,7 +1029,7 @@ fn missing_active_provider_configuration_fails_without_persisting_tasks() {
 fn provider_backed_item_and_collection_tasks_route_and_persist() {
     let root = tempdir().unwrap();
     let transport = Arc::new(StubTransport::default());
-    let service = LibraryService::new_with_transport(root.path(), transport.clone()).unwrap();
+    let service = service_with_transport(root.path(), transport.clone());
     let collection = service.create_collection("Machine Learning", None).unwrap();
     let pdf_a = fixture_path(root.path(), "provider-a.pdf");
     let pdf_b = fixture_path(root.path(), "provider-b.pdf");

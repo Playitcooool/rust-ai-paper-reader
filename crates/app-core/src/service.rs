@@ -1,9 +1,10 @@
 use std::{
+    collections::HashSet,
     fs,
     io::{Cursor, Read, Seek},
-    sync::Arc,
     path::{Path, PathBuf},
     panic,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -236,6 +237,7 @@ pub struct LibraryService {
     db_path: PathBuf,
     files_dir: PathBuf,
     ai_transport: Arc<dyn AiTransport>,
+    secret_store: Arc<dyn SecretStore>,
 }
 
 pub trait AiTransport: Send + Sync {
@@ -267,6 +269,39 @@ struct StoredAISettings {
     anthropic_api_key: String,
 }
 
+pub trait SecretStore: Send + Sync {
+    fn get(&self, key: &str) -> Result<Option<String>>;
+    fn set(&self, key: &str, value: &str) -> Result<()>;
+    fn delete(&self, key: &str) -> Result<()>;
+}
+
+#[derive(Default)]
+pub struct MemorySecretStore {
+    values: Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl SecretStore for MemorySecretStore {
+    fn get(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.values.lock().unwrap().get(key).cloned())
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<()> {
+        self.values
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        self.values.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct SystemSecretStore;
+
 struct InferredMetadata {
     title: Option<String>,
     authors: String,
@@ -296,6 +331,23 @@ const ITEM_TASK_TEXT_LIMIT: usize = 18_000;
 const COLLECTION_ITEM_TEXT_LIMIT: usize = 4_000;
 const COLLECTION_TOTAL_TEXT_LIMIT: usize = 40_000;
 const DEFAULT_AI_SESSION_TITLE: &str = "New Chat";
+const AI_SECRET_SERVICE: &str = "com.codex.paper-reader.ai";
+const OPENAI_API_KEY_SECRET: &str = "openai";
+const ANTHROPIC_API_KEY_SECRET: &str = "anthropic";
+
+impl SecretStore for SystemSecretStore {
+    fn get(&self, key: &str) -> Result<Option<String>> {
+        get_system_secret(key)
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<()> {
+        set_system_secret(key, value)
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        delete_system_secret(key)
+    }
+}
 
 impl Default for HttpAiTransport {
     fn default() -> Self {
@@ -375,12 +427,84 @@ impl HttpAiTransport {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn keyring_entry(secret_name: &str) -> Result<keyring::Entry> {
+    keyring::Entry::new(AI_SECRET_SERVICE, secret_name)
+        .map_err(|error| anyhow!("failed to initialize secure storage for {secret_name}: {error}"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn get_system_secret(secret_name: &str) -> Result<Option<String>> {
+    let entry = keyring_entry(secret_name)?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(anyhow!(
+            "failed to read secure storage for {secret_name}: {error}"
+        )),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn get_system_secret(_secret_name: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn set_system_secret(secret_name: &str, value: &str) -> Result<()> {
+    let entry = keyring_entry(secret_name)?;
+    entry
+        .set_password(value)
+        .map_err(|error| anyhow!("failed to write secure storage for {secret_name}: {error}"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn set_system_secret(_secret_name: &str, _value: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn delete_system_secret(secret_name: &str) -> Result<()> {
+    let entry = keyring_entry(secret_name)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(anyhow!(
+            "failed to delete secure storage for {secret_name}: {error}"
+        )),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn delete_system_secret(_secret_name: &str) -> Result<()> {
+    Ok(())
+}
+
 impl LibraryService {
     pub fn new(root: &Path) -> Result<Self> {
-        Self::new_with_transport(root, Arc::new(HttpAiTransport::default()))
+        Self::new_with_dependencies(
+            root,
+            Arc::new(HttpAiTransport::default()),
+            Arc::new(SystemSecretStore),
+        )
     }
 
     pub fn new_with_transport(root: &Path, ai_transport: Arc<dyn AiTransport>) -> Result<Self> {
+        Self::new_with_dependencies(root, ai_transport, Arc::new(SystemSecretStore))
+    }
+
+    pub fn new_with_secret_store(
+        root: &Path,
+        ai_transport: Arc<dyn AiTransport>,
+        secret_store: Arc<dyn SecretStore>,
+    ) -> Result<Self> {
+        Self::new_with_dependencies(root, ai_transport, secret_store)
+    }
+
+    fn new_with_dependencies(
+        root: &Path,
+        ai_transport: Arc<dyn AiTransport>,
+        secret_store: Arc<dyn SecretStore>,
+    ) -> Result<Self> {
         fs::create_dir_all(root)?;
         let files_dir = root.join("library-files");
         fs::create_dir_all(&files_dir)?;
@@ -389,6 +513,7 @@ impl LibraryService {
             db_path,
             files_dir,
             ai_transport,
+            secret_store,
         };
         service.migrate()?;
         Ok(service)
@@ -455,6 +580,7 @@ impl LibraryService {
         delete_by_either_column_in_clause(&tx, "ai_artifacts", "item_id", &item_ids, "collection_id", &collection_ids)?;
         delete_by_either_column_in_clause(&tx, "ai_tasks", "item_id", &item_ids, "collection_id", &collection_ids)?;
         delete_by_column_in_clause(&tx, "search_index", "item_id", &item_ids)?;
+        prune_scope_item_ids_for_removed_items(&tx, &item_ids)?;
         delete_by_column_in_clause(&tx, "items", "id", &item_ids)?;
         delete_by_column_in_clause(&tx, "collections", "id", &collection_ids)?;
         for session_id in affected_session_ids {
@@ -977,6 +1103,7 @@ impl LibraryService {
             normalize_session_reference_sort_indexes_conn(&tx, session_id)?;
         }
         tx.execute("DELETE FROM search_index WHERE item_id = ?1", [item_id])?;
+        prune_scope_item_ids_for_removed_items(&tx, &[item_id])?;
         tx.execute("DELETE FROM items WHERE id = ?1", [item_id])?;
         tx.commit()?;
 
@@ -1104,13 +1231,13 @@ impl LibraryService {
 
     pub fn get_ai_settings(&self) -> Result<AISettings> {
         let conn = self.connect()?;
-        let stored = load_ai_settings(&conn)?;
+        let stored = self.load_ai_settings(&conn)?;
         Ok(to_public_ai_settings(&stored))
     }
 
     pub fn update_ai_settings(&self, input: UpdateAISettingsInput) -> Result<AISettings> {
         let conn = self.connect()?;
-        let current = load_ai_settings(&conn)?;
+        let current = self.load_ai_settings(&conn)?;
         let next = StoredAISettings {
             active_provider: input.active_provider,
             openai_model: input.openai_model.trim().to_string(),
@@ -1132,7 +1259,7 @@ impl LibraryService {
                 current.anthropic_api_key
             },
         };
-        save_ai_settings(&conn, &next)?;
+        self.save_ai_settings(&conn, &next)?;
         Ok(to_public_ai_settings(&next))
     }
 
@@ -1380,7 +1507,7 @@ impl LibraryService {
 
     pub fn run_item_task(&self, item_id: i64, kind: &str, prompt: Option<&str>) -> Result<AITask> {
         let mut conn = self.connect()?;
-        let settings = load_ai_settings(&conn)?;
+        let settings = self.load_ai_settings(&conn)?;
         let (collection_id, title, excerpt) = conn.query_row(
             "
             SELECT i.collection_id, i.title, e.plain_text
@@ -1484,7 +1611,7 @@ impl LibraryService {
             return Err(anyhow!("collection has no readable items"));
         }
         let mut conn = self.connect()?;
-        let settings = load_ai_settings(&conn)?;
+        let settings = self.load_ai_settings(&conn)?;
         let collection_name: String = conn.query_row(
             "SELECT name FROM collections WHERE id = ?1",
             [collection_id],
@@ -1671,7 +1798,7 @@ impl LibraryService {
         prompt: Option<&str>,
     ) -> Result<AITask> {
         let mut conn = self.connect()?;
-        let settings = load_ai_settings(&conn)?;
+        let settings = self.load_ai_settings(&conn)?;
         let references = list_session_references_conn(&conn, session_id)?;
         let expanded = expand_session_references(&conn, &references)?;
         if expanded.item_ids.is_empty() {
@@ -1962,7 +2089,58 @@ impl LibraryService {
         let conn = Connection::open(&self.db_path)?;
         // Background repair tasks can overlap with UI reads; tolerate short-lived locks.
         conn.busy_timeout(Duration::from_secs(5))?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(conn)
+    }
+
+    fn load_ai_settings(&self, conn: &Connection) -> Result<StoredAISettings> {
+        let mut settings = load_ai_settings_row(conn)?;
+        let mut migrated_legacy_keys = false;
+
+        settings.openai_api_key = match self.secret_store.get(OPENAI_API_KEY_SECRET)? {
+            Some(value) => value,
+            None if !settings.openai_api_key.trim().is_empty() => {
+                self.secret_store
+                    .set(OPENAI_API_KEY_SECRET, &settings.openai_api_key)?;
+                migrated_legacy_keys = true;
+                settings.openai_api_key.clone()
+            }
+            None => String::new(),
+        };
+
+        settings.anthropic_api_key = match self.secret_store.get(ANTHROPIC_API_KEY_SECRET)? {
+            Some(value) => value,
+            None if !settings.anthropic_api_key.trim().is_empty() => {
+                self.secret_store
+                    .set(ANTHROPIC_API_KEY_SECRET, &settings.anthropic_api_key)?;
+                migrated_legacy_keys = true;
+                settings.anthropic_api_key.clone()
+            }
+            None => String::new(),
+        };
+
+        if migrated_legacy_keys {
+            clear_legacy_ai_keys(conn)?;
+        }
+
+        Ok(settings)
+    }
+
+    fn save_ai_settings(&self, conn: &Connection, settings: &StoredAISettings) -> Result<()> {
+        if settings.openai_api_key.trim().is_empty() {
+            self.secret_store.delete(OPENAI_API_KEY_SECRET)?;
+        } else {
+            self.secret_store
+                .set(OPENAI_API_KEY_SECRET, settings.openai_api_key.trim())?;
+        }
+        if settings.anthropic_api_key.trim().is_empty() {
+            self.secret_store.delete(ANTHROPIC_API_KEY_SECRET)?;
+        } else {
+            self.secret_store
+                .set(ANTHROPIC_API_KEY_SECRET, settings.anthropic_api_key.trim())?;
+        }
+        save_ai_settings_row(conn, settings)?;
+        Ok(())
     }
 
     fn migrate(&self) -> Result<()> {
@@ -2136,7 +2314,7 @@ fn to_public_ai_settings(settings: &StoredAISettings) -> AISettings {
     }
 }
 
-fn load_ai_settings(conn: &Connection) -> Result<StoredAISettings> {
+fn load_ai_settings_row(conn: &Connection) -> Result<StoredAISettings> {
     conn.query_row(
         "SELECT active_provider, openai_model, openai_base_url, openai_api_key, anthropic_model, anthropic_base_url, anthropic_api_key FROM ai_settings WHERE id = 1",
         [],
@@ -2165,7 +2343,7 @@ fn load_ai_settings(conn: &Connection) -> Result<StoredAISettings> {
     .map_err(Into::into)
 }
 
-fn save_ai_settings(conn: &Connection, settings: &StoredAISettings) -> Result<()> {
+fn save_ai_settings_row(conn: &Connection, settings: &StoredAISettings) -> Result<()> {
     conn.execute(
         "UPDATE ai_settings
          SET active_provider = ?1,
@@ -2180,11 +2358,22 @@ fn save_ai_settings(conn: &Connection, settings: &StoredAISettings) -> Result<()
             settings.active_provider.as_str(),
             settings.openai_model,
             settings.openai_base_url,
-            settings.openai_api_key,
+            "",
             settings.anthropic_model,
             settings.anthropic_base_url,
-            settings.anthropic_api_key
+            ""
         ],
+    )?;
+    Ok(())
+}
+
+fn clear_legacy_ai_keys(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE ai_settings
+         SET openai_api_key = '',
+             anthropic_api_key = ''
+         WHERE id = 1",
+        [],
     )?;
     Ok(())
 }
@@ -2269,8 +2458,7 @@ fn normalize_session_reference_sort_indexes_conn(conn: &Connection, session_id: 
 }
 
 fn placeholders(count: usize) -> String {
-    std::iter::repeat("?")
-        .take(count)
+    std::iter::repeat_n("?", count)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -2417,7 +2605,52 @@ fn delete_by_either_column_in_clause(
     }
 
     let sql = format!("DELETE FROM {table} WHERE {}", clauses.join(" OR "));
-    conn.execute(&sql, params_from_iter(values.into_iter()))?;
+    conn.execute(&sql, params_from_iter(values))?;
+    Ok(())
+}
+
+fn prune_scope_item_ids_for_removed_items(conn: &Connection, removed_item_ids: &[i64]) -> Result<()> {
+    if removed_item_ids.is_empty() {
+        return Ok(());
+    }
+
+    let removed = removed_item_ids.iter().copied().collect::<HashSet<_>>();
+    prune_scope_item_ids_column(conn, "ai_tasks", &removed)?;
+    prune_scope_item_ids_column(conn, "ai_artifacts", &removed)?;
+    Ok(())
+}
+
+fn prune_scope_item_ids_column(
+    conn: &Connection,
+    table: &str,
+    removed_item_ids: &HashSet<i64>,
+) -> Result<()> {
+    let sql = format!("SELECT id, scope_item_ids FROM {table} WHERE scope_item_ids IS NOT NULL");
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    let mut updates = Vec::new();
+    for row in rows {
+        let (id, raw_scope) = row?;
+        let scope_item_ids: Vec<i64> = serde_json::from_str(&raw_scope)?;
+        let next_scope_item_ids = scope_item_ids
+            .into_iter()
+            .filter(|item_id| !removed_item_ids.contains(item_id))
+            .collect::<Vec<_>>();
+        let next_scope_raw = if next_scope_item_ids.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&next_scope_item_ids)?)
+        };
+        updates.push((id, next_scope_raw));
+    }
+
+    let update_sql = format!("UPDATE {table} SET scope_item_ids = ?1 WHERE id = ?2");
+    for (id, raw_scope) in updates {
+        conn.execute(&update_sql, params![raw_scope, id])?;
+    }
     Ok(())
 }
 
