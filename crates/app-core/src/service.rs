@@ -13,7 +13,7 @@ use lopdf::{Dictionary, Document as PdfDocument, Object};
 use reqwest::blocking::Client;
 use regex::Regex;
 use roxmltree::Document;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use sha2::{Digest, Sha256};
@@ -421,44 +421,54 @@ impl LibraryService {
 
     pub fn remove_collection(&self, collection_id: i64) -> Result<()> {
         let mut conn = self.connect()?;
-        let child_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM collections WHERE parent_id = ?1",
-            [collection_id],
-            |row| row.get(0),
-        )?;
-        if child_count > 0 {
-            return Err(anyhow!(
-                "remove or move nested collections before deleting this collection"
-            ));
-        }
-
-        let item_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM items WHERE collection_id = ?1",
-            [collection_id],
-            |row| row.get(0),
-        )?;
-        if item_count > 0 {
-            return Err(anyhow!("move or remove papers before deleting this collection"));
-        }
-
-        let tx = conn.transaction()?;
-        let affected_session_ids = session_reference_session_ids_for_target(
-            &tx,
-            AISessionReferenceKind::Collection.as_str(),
-            collection_id,
-        )?;
-        let deleted = tx.execute("DELETE FROM collections WHERE id = ?1", [collection_id])?;
-        if deleted == 0 {
+        let collection_ids = collection_subtree_ids_conn(&conn, collection_id)?;
+        if collection_ids.is_empty() {
             return Err(anyhow!("collection does not exist"));
         }
-        tx.execute(
-            "DELETE FROM ai_session_references WHERE kind = ?1 AND target_id = ?2",
-            params![AISessionReferenceKind::Collection.as_str(), collection_id],
+        let item_ids = item_ids_for_collection_ids_conn(&conn, &collection_ids)?;
+        let managed_paths = managed_attachment_paths_for_item_ids_conn(&conn, &item_ids)?;
+        let tx = conn.transaction()?;
+        let mut affected_session_ids = session_reference_session_ids_for_targets(
+            &tx,
+            AISessionReferenceKind::Collection.as_str(),
+            &collection_ids,
         )?;
+        affected_session_ids.extend(session_reference_session_ids_for_targets(
+            &tx,
+            AISessionReferenceKind::Item.as_str(),
+            &item_ids,
+        )?);
+        affected_session_ids.sort_unstable();
+        affected_session_ids.dedup();
+
+        delete_session_references_for_targets(
+            &tx,
+            AISessionReferenceKind::Collection.as_str(),
+            &collection_ids,
+        )?;
+        delete_session_references_for_targets(
+            &tx,
+            AISessionReferenceKind::Item.as_str(),
+            &item_ids,
+        )?;
+        delete_by_column_in_clause(&tx, "research_notes", "collection_id", &collection_ids)?;
+        delete_by_either_column_in_clause(&tx, "ai_artifacts", "item_id", &item_ids, "collection_id", &collection_ids)?;
+        delete_by_either_column_in_clause(&tx, "ai_tasks", "item_id", &item_ids, "collection_id", &collection_ids)?;
+        delete_by_column_in_clause(&tx, "search_index", "item_id", &item_ids)?;
+        delete_by_column_in_clause(&tx, "items", "id", &item_ids)?;
+        delete_by_column_in_clause(&tx, "collections", "id", &collection_ids)?;
         for session_id in affected_session_ids {
             normalize_session_reference_sort_indexes_conn(&tx, session_id)?;
         }
         tx.commit()?;
+
+        for path in managed_paths {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
         Ok(())
     }
 
@@ -2255,6 +2265,159 @@ fn normalize_session_reference_sort_indexes_conn(conn: &Connection, session_id: 
         ",
         [session_id],
     )?;
+    Ok(())
+}
+
+fn placeholders(count: usize) -> String {
+    std::iter::repeat("?")
+        .take(count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn collection_subtree_ids_conn(conn: &Connection, root_id: i64) -> Result<Vec<i64>> {
+    let exists = conn
+        .query_row("SELECT id FROM collections WHERE id = ?1", [root_id], |row| {
+            row.get::<_, i64>(0)
+        })
+        .optional()?;
+    if exists.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut ids = Vec::new();
+    let mut stack = vec![root_id];
+    while let Some(collection_id) = stack.pop() {
+        ids.push(collection_id);
+        let mut statement =
+            conn.prepare("SELECT id FROM collections WHERE parent_id = ?1 ORDER BY name ASC, id ASC")?;
+        let rows = statement.query_map([collection_id], |row| row.get::<_, i64>(0))?;
+        let children = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        for child_id in children.into_iter().rev() {
+            stack.push(child_id);
+        }
+    }
+
+    Ok(ids)
+}
+
+fn item_ids_for_collection_ids_conn(conn: &Connection, collection_ids: &[i64]) -> Result<Vec<i64>> {
+    if collection_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT id FROM items WHERE collection_id IN ({}) ORDER BY id ASC",
+        placeholders(collection_ids.len())
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(collection_ids.iter().copied()), |row| {
+        row.get::<_, i64>(0)
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn managed_attachment_paths_for_item_ids_conn(conn: &Connection, item_ids: &[i64]) -> Result<Vec<String>> {
+    if item_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT path FROM attachments WHERE import_mode = ?1 AND item_id IN ({}) ORDER BY id ASC",
+        placeholders(item_ids.len())
+    );
+    let mut params = vec![ImportMode::ManagedCopy.as_str().to_string()];
+    params.extend(item_ids.iter().map(ToString::to_string));
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| row.get::<_, String>(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn session_reference_session_ids_for_targets(
+    conn: &Connection,
+    kind: &str,
+    target_ids: &[i64],
+) -> Result<Vec<i64>> {
+    if target_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "
+        SELECT DISTINCT session_id
+        FROM ai_session_references
+        WHERE kind = ?1 AND target_id IN ({})
+        ORDER BY session_id ASC
+        ",
+        placeholders(target_ids.len())
+    );
+    let mut values = vec![kind.to_string()];
+    values.extend(target_ids.iter().map(ToString::to_string));
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(values.iter()), |row| row.get::<_, i64>(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn delete_session_references_for_targets(
+    conn: &Connection,
+    kind: &str,
+    target_ids: &[i64],
+) -> Result<()> {
+    if target_ids.is_empty() {
+        return Ok(());
+    }
+    let sql = format!(
+        "DELETE FROM ai_session_references WHERE kind = ?1 AND target_id IN ({})",
+        placeholders(target_ids.len())
+    );
+    let mut values = vec![kind.to_string()];
+    values.extend(target_ids.iter().map(ToString::to_string));
+    conn.execute(&sql, params_from_iter(values.iter()))?;
+    Ok(())
+}
+
+fn delete_by_column_in_clause(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    ids: &[i64],
+) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let sql = format!(
+        "DELETE FROM {table} WHERE {column} IN ({})",
+        placeholders(ids.len())
+    );
+    conn.execute(&sql, params_from_iter(ids.iter().copied()))?;
+    Ok(())
+}
+
+fn delete_by_either_column_in_clause(
+    conn: &Connection,
+    table: &str,
+    left_column: &str,
+    left_ids: &[i64],
+    right_column: &str,
+    right_ids: &[i64],
+) -> Result<()> {
+    if left_ids.is_empty() && right_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut clauses = Vec::new();
+    let mut values = Vec::new();
+    if !left_ids.is_empty() {
+        clauses.push(format!("{left_column} IN ({})", placeholders(left_ids.len())));
+        values.extend(left_ids.iter().copied());
+    }
+    if !right_ids.is_empty() {
+        clauses.push(format!("{right_column} IN ({})", placeholders(right_ids.len())));
+        values.extend(right_ids.iter().copied());
+    }
+
+    let sql = format!("DELETE FROM {table} WHERE {}", clauses.join(" OR "));
+    conn.execute(&sql, params_from_iter(values.into_iter()))?;
     Ok(())
 }
 

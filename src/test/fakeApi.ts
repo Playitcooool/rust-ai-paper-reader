@@ -287,6 +287,25 @@ const removeSessionReferencesMatching = (kind: AISessionReferenceKind, targetId:
   }
 };
 
+const removeSessionReferencesMatchingAny = (kind: AISessionReferenceKind, targetIds: number[]) => {
+  const targetIdSet = new Set(targetIds);
+  const affectedSessionIds = Array.from(
+    new Set(
+      state.sessionReferences
+        .filter((reference) => reference.kind === kind && targetIdSet.has(reference.target_id))
+        .map((reference) => reference.session_id),
+    ),
+  );
+  if (affectedSessionIds.length === 0) return;
+  state.sessionReferences = state.sessionReferences.filter(
+    (reference) => !(reference.kind === kind && targetIdSet.has(reference.target_id)),
+  );
+  for (const sessionId of affectedSessionIds) {
+    normalizeSessionReferenceSortIndexes(sessionId);
+    touchSession(sessionId);
+  }
+};
+
 const childCollectionIds = (collectionId: number): number[] => {
   const orderedChildren = state.collections
     .filter((collection) => collection.parent_id === collectionId)
@@ -588,21 +607,39 @@ export const fakeApi: AppApi = {
   },
 
   async removeCollection(input) {
-    const hasChildren = state.collections.some(
-      (collection) => collection.parent_id === input.collection_id,
+    const collection = state.collections.find((entry) => entry.id === input.collection_id);
+    if (!collection) {
+      throw new Error(`Unknown collection ${input.collection_id}`);
+    }
+    const deletedCollectionIds = [input.collection_id, ...childCollectionIds(input.collection_id)];
+    const deletedCollectionIdSet = new Set(deletedCollectionIds);
+    const deletedItemIds = state.items
+      .filter((item) => deletedCollectionIdSet.has(item.collection_id))
+      .map((item) => item.id);
+    const deletedItemIdSet = new Set(deletedItemIds);
+    const deletedTaskIds = state.tasks
+      .filter(
+        (task) =>
+          (task.item_id !== null && deletedItemIdSet.has(task.item_id)) ||
+          (task.collection_id !== null && deletedCollectionIdSet.has(task.collection_id)),
+      )
+      .map((task) => task.id);
+    const deletedTaskIdSet = new Set(deletedTaskIds);
+
+    state.collections = state.collections.filter((entry) => !deletedCollectionIdSet.has(entry.id));
+    state.items = state.items.filter((entry) => !deletedItemIdSet.has(entry.id));
+    state.itemTags = state.itemTags.filter((entry) => !deletedItemIdSet.has(entry.item_id));
+    state.annotations = state.annotations.filter((entry) => !deletedItemIdSet.has(entry.item_id));
+    removeSessionReferencesMatchingAny("collection", deletedCollectionIds);
+    removeSessionReferencesMatchingAny("item", deletedItemIds);
+    state.notes = state.notes.filter((note) => note.collection_id === null || !deletedCollectionIdSet.has(note.collection_id));
+    state.tasks = state.tasks.filter((task) => !deletedTaskIdSet.has(task.id));
+    state.artifacts = state.artifacts.filter(
+      (artifact) =>
+        !deletedTaskIdSet.has(artifact.task_id) &&
+        (artifact.item_id === null || !deletedItemIdSet.has(artifact.item_id)) &&
+        (artifact.collection_id === null || !deletedCollectionIdSet.has(artifact.collection_id)),
     );
-    if (hasChildren) {
-      throw new Error("Remove or move nested collections before deleting this collection.");
-    }
-    const hasItems = state.items.some((item) => item.collection_id === input.collection_id);
-    if (hasItems) {
-      throw new Error("Move or remove papers before deleting this collection.");
-    }
-    state.collections = state.collections.filter((entry) => entry.id !== input.collection_id);
-    removeSessionReferencesMatching("collection", input.collection_id);
-    state.notes = state.notes.filter((note) => note.collection_id !== input.collection_id);
-    state.tasks = state.tasks.filter((task) => task.collection_id !== input.collection_id);
-    state.artifacts = state.artifacts.filter((artifact) => artifact.collection_id !== input.collection_id);
   },
 
   async listTags(collectionId) {

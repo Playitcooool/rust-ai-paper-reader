@@ -620,6 +620,93 @@ fn removing_collection_clears_matching_ai_session_references() {
 }
 
 #[test]
+fn removing_collection_recursively_clears_descendant_items_and_related_records() {
+    let root = tempdir().unwrap();
+    let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
+    let parent = service.create_collection("Machine Learning", None).unwrap();
+    let child = service.create_collection("Scaling Papers", Some(parent.id)).unwrap();
+    let sibling = service.create_collection("Systems", None).unwrap();
+    let parent_pdf = fixture_path(root.path(), "parent.pdf");
+    let child_pdf = fixture_path(root.path(), "child.pdf");
+    let sibling_epub = fixture_path(root.path(), "sibling.epub");
+    write_pdf_fixture(&parent_pdf);
+    write_partial_pdf_fixture(&child_pdf);
+    write_epub_fixture(&sibling_epub);
+
+    let parent_item_id = service
+        .import_files(parent.id, &[parent_pdf], ImportMode::ManagedCopy)
+        .unwrap()
+        .imported[0]
+        .id;
+    let child_item_id = service
+        .import_files(child.id, &[child_pdf], ImportMode::ManagedCopy)
+        .unwrap()
+        .imported[0]
+        .id;
+    let sibling_item_id = service
+        .import_files(sibling.id, &[sibling_epub], ImportMode::ManagedCopy)
+        .unwrap()
+        .imported[0]
+        .id;
+
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: None,
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
+
+    let session = service.create_ai_session().unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Collection, parent.id)
+        .unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Item, child_item_id)
+        .unwrap();
+    let collection_task = service
+        .run_collection_task(child.id, "collection.theme_map", &[child_item_id], None)
+        .unwrap();
+    let note = service
+        .create_note_from_artifact(
+            service
+                .get_latest_artifact(None, Some(child.id))
+                .unwrap()
+                .expect("collection artifact")
+                .id,
+        )
+        .unwrap();
+
+    service.remove_collection(parent.id).unwrap();
+
+    let collections = service.list_collections().unwrap();
+    assert_eq!(collections.len(), 1);
+    assert_eq!(collections[0].id, sibling.id);
+
+    let items = service.list_items(None).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, sibling_item_id);
+    assert!(items.iter().all(|item| item.id != parent_item_id && item.id != child_item_id));
+
+    assert!(service.list_ai_session_references(session.id).unwrap().is_empty());
+    assert!(service.list_task_runs(None, Some(child.id)).unwrap().is_empty());
+    assert!(service.get_latest_artifact(None, Some(child.id)).unwrap().is_none());
+    assert!(service.list_notes(Some(child.id)).unwrap().is_empty());
+    assert!(service
+        .list_notes(None)
+        .unwrap()
+        .iter()
+        .all(|entry| entry.id != note.id));
+    assert_eq!(collection_task.collection_id, Some(child.id));
+}
+
+#[test]
 fn item_ask_persists_input_prompt() {
     let root = tempdir().unwrap();
     let service = LibraryService::new_with_transport(root.path(), Arc::new(StubTransport::default())).unwrap();
