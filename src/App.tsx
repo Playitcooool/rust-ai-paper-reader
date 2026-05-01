@@ -192,6 +192,23 @@ type DeleteTargetState =
       parentCollectionId: number | null;
     }
   | null;
+type AiReferencePickerResult =
+  | {
+      key: string;
+      kind: "item";
+      targetId: number;
+      label: string;
+      meta: string | null;
+      badges: string[];
+    }
+  | {
+      key: string;
+      kind: "collection";
+      targetId: number;
+      label: string;
+      meta: string | null;
+      badges: string[];
+    };
 
 const initialAiDockState = (): AiDockState => ({
   artifacts: false,
@@ -390,6 +407,10 @@ export default function App({ api }: { api: AppApi }) {
   const [sidebarWidth, setSidebarWidth] = useState(() => readStoredNumber(SIDEBAR_WIDTH_KEY, 300));
   const [aiPanelWidth, setAiPanelWidth] = useState(() => readStoredNumber(AI_PANEL_WIDTH_KEY, 360));
   const [isReferencePickerOpen, setIsReferencePickerOpen] = useState(false);
+  const [aiReferenceQuery, setAiReferenceQuery] = useState("");
+  const [aiReferenceSearchResults, setAiReferenceSearchResults] = useState<LibraryItem[]>([]);
+  const [aiReferenceSearchLoading, setAiReferenceSearchLoading] = useState(false);
+  const [aiReferenceSearchError, setAiReferenceSearchError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [itemSort, setItemSort] = useState<ItemSort>("recent");
   const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>("all");
@@ -432,6 +453,14 @@ export default function App({ api }: { api: AppApi }) {
   const highlightActionBarRef = useRef<HTMLDivElement | null>(null);
   const aiReferenceButtonRef = useRef<HTMLButtonElement | null>(null);
   const aiReferencePopoverRef = useRef<HTMLDivElement | null>(null);
+  const aiReferenceSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const aiReferenceSearchRequestIdRef = useRef(0);
+  const closeAiReferencePicker = useCallback(() => {
+    setIsReferencePickerOpen(false);
+  }, []);
+  const toggleAiReferencePicker = useCallback(() => {
+    setIsReferencePickerOpen((current) => !current);
+  }, []);
 
   useEffect(() => {
     // Probe polyfills (useful for debugging) but do not write client logs to disk anymore.
@@ -497,7 +526,7 @@ export default function App({ api }: { api: AppApi }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      setIsReferencePickerOpen(false);
+      closeAiReferencePicker();
     };
 
     const onPointerDown = (event: PointerEvent) => {
@@ -507,7 +536,7 @@ export default function App({ api }: { api: AppApi }) {
       const button = aiReferenceButtonRef.current;
       if (popover && popover.contains(target)) return;
       if (button && button.contains(target)) return;
-      setIsReferencePickerOpen(false);
+      closeAiReferencePicker();
     };
 
     window.addEventListener("keydown", onKeyDown, true);
@@ -516,6 +545,11 @@ export default function App({ api }: { api: AppApi }) {
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
+  }, [closeAiReferencePicker, isReferencePickerOpen]);
+
+  useEffect(() => {
+    if (!isReferencePickerOpen) return;
+    aiReferenceSearchInputRef.current?.focus();
   }, [isReferencePickerOpen]);
 
   const hasCollections = collections.length > 0;
@@ -568,16 +602,17 @@ export default function App({ api }: { api: AppApi }) {
     () => expandSessionReferenceItemIds(aiSessionReferences, collections, libraryItems),
     [aiSessionReferences, collections, libraryItems],
   );
-  const sortedReferenceItems = useMemo(
-    () => [...libraryItems].sort((left, right) => left.title.localeCompare(right.title)),
-    [libraryItems],
-  );
   const sortedReferenceCollections = useMemo(
     () => [...collections].sort((left, right) => left.name.localeCompare(right.name)),
     [collections],
   );
-  const aiReferenceHasCollection = useMemo(
-    () => aiSessionReferences.some((reference) => reference.kind === "collection"),
+  const aiReferenceItemIds = useMemo(
+    () => new Set(aiSessionReferences.filter((reference) => reference.kind === "item").map((reference) => reference.target_id)),
+    [aiSessionReferences],
+  );
+  const aiReferenceCollectionIds = useMemo(
+    () =>
+      new Set(aiSessionReferences.filter((reference) => reference.kind === "collection").map((reference) => reference.target_id)),
     [aiSessionReferences],
   );
   const activePaperMetadata = activePaper ? formatItemMetadata(activePaper) : null;
@@ -753,6 +788,51 @@ export default function App({ api }: { api: AppApi }) {
   useEffect(() => {
     setAreQuickActionsVisible(true);
   }, [activeAiSessionId]);
+
+  useEffect(() => {
+    if (!isReferencePickerOpen) {
+      aiReferenceSearchRequestIdRef.current += 1;
+      setAiReferenceQuery("");
+      setAiReferenceSearchResults([]);
+      setAiReferenceSearchLoading(false);
+      setAiReferenceSearchError(null);
+      return;
+    }
+
+    const query = aiReferenceQuery.trim();
+    if (!query) {
+      aiReferenceSearchRequestIdRef.current += 1;
+      setAiReferenceSearchResults([]);
+      setAiReferenceSearchLoading(false);
+      setAiReferenceSearchError(null);
+      return;
+    }
+
+    const requestId = aiReferenceSearchRequestIdRef.current + 1;
+    aiReferenceSearchRequestIdRef.current = requestId;
+    let cancelled = false;
+    setAiReferenceSearchLoading(true);
+    setAiReferenceSearchError(null);
+
+    void (async () => {
+      try {
+        const runtimeApi = await getApi();
+        const results = await runtimeApi.searchItems(query);
+        if (cancelled || aiReferenceSearchRequestIdRef.current !== requestId) return;
+        setAiReferenceSearchResults(results);
+        setAiReferenceSearchLoading(false);
+      } catch (error) {
+        if (cancelled || aiReferenceSearchRequestIdRef.current !== requestId) return;
+        setAiReferenceSearchResults([]);
+        setAiReferenceSearchLoading(false);
+        setAiReferenceSearchError(error instanceof Error ? error.message : "Search failed.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [aiReferenceQuery, getApi, isReferencePickerOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1593,6 +1673,10 @@ export default function App({ api }: { api: AppApi }) {
         target_id: targetId,
       });
       await refreshActiveAiSession(activeAiSessionId);
+      setAiReferenceQuery("");
+      setAiReferenceSearchResults([]);
+      setAiReferenceSearchLoading(false);
+      setAiReferenceSearchError(null);
       setIsReferencePickerOpen(false);
     },
     [activeAiSessionId, getApi, refreshActiveAiSession],
@@ -1704,6 +1788,57 @@ export default function App({ api }: { api: AppApi }) {
 
   const aiPanelCanSend = expandedAiReferenceItemIds.length > 0 && aiPending?.status !== "streaming";
   const compareEnabled = expandedAiReferenceItemIds.length >= 2 && aiPending?.status !== "streaming";
+  const filteredReferenceCollections = useMemo(() => {
+    const query = aiReferenceQuery.trim().toLowerCase();
+    return sortedReferenceCollections.filter((collection) =>
+      query.length === 0 ? true : collection.name.toLowerCase().includes(query),
+    );
+  }, [aiReferenceQuery, sortedReferenceCollections]);
+  const aiReferencePickerResults = useMemo<AiReferencePickerResult[]>(() => {
+    const output: AiReferencePickerResult[] = [];
+    const seen = new Set<string>();
+    const pushResult = (entry: AiReferencePickerResult) => {
+      if (seen.has(entry.key)) return;
+      seen.add(entry.key);
+      output.push(entry);
+    };
+
+    if (activePaper) {
+      pushResult({
+        key: `current-${activePaper.id}`,
+        kind: "item",
+        targetId: activePaper.id,
+        label: activePaper.title,
+        meta: formatItemMetadata(activePaper),
+        badges: ["Current", "Paper"],
+      });
+    }
+
+    for (const item of aiReferenceSearchResults) {
+      pushResult({
+        key: `item-${item.id}`,
+        kind: "item",
+        targetId: item.id,
+        label: item.title,
+        meta: formatItemMetadata(item),
+        badges: ["Paper"],
+      });
+    }
+
+    for (const collection of filteredReferenceCollections) {
+      pushResult({
+        key: `collection-${collection.id}`,
+        kind: "collection",
+        targetId: collection.id,
+        label: collection.name,
+        meta: `${itemCountForCollection(libraryItems, collection.id)} papers`,
+        badges: ["Collection"],
+      });
+    }
+
+    return output;
+  }, [activePaper, aiReferenceSearchResults, filteredReferenceCollections, libraryItems]);
+
 
   const pdfFocusHighlightBarRef = useRef<HTMLDivElement | null>(null);
   const showPdfFocusHighlightBar = Boolean(
@@ -2653,23 +2788,11 @@ export default function App({ api }: { api: AppApi }) {
           ) : null}
           <aside className="ai-shell" aria-label="AI panel">
             <div className="ai-shell-header">
-              <div className="panel-header panel-header-row">
-                <div>
-                  <p className="eyebrow">AI Panel</p>
-                  <h2>Research Copilot</h2>
-                </div>
-                <button className="ghost-button" type="button" onClick={() => setIsAiPanelOpen(false)}>
-                  Close
-                </button>
-              </div>
-
-              <div className="collection-create-row">
-                <button className="ghost-button" type="button" onClick={() => void handleCreateAiSession()}>
-                  New Session
-                </button>
+              <div className="ai-copilot-header">
+                <span className="ai-copilot-title">Copilot</span>
                 <select
                   aria-label="History Sessions"
-                  className="mode-select"
+                  className="mode-select ai-session-select"
                   value={activeAiSessionId ?? ""}
                   onChange={(event) => setActiveAiSessionId(event.target.value ? Number(event.target.value) : null)}
                 >
@@ -2679,8 +2802,23 @@ export default function App({ api }: { api: AppApi }) {
                     </option>
                   ))}
                 </select>
+                <button
+                  aria-label="New Session"
+                  className="icon-button icon-button-small"
+                  type="button"
+                  onClick={() => void handleCreateAiSession()}
+                >
+                  +
+                </button>
+                <button
+                  aria-label="Close Copilot"
+                  className="icon-button icon-button-small"
+                  type="button"
+                  onClick={() => setIsAiPanelOpen(false)}
+                >
+                  ×
+                </button>
               </div>
-
             </div>
 
             <div className="ai-chat-history">
@@ -2823,23 +2961,23 @@ export default function App({ api }: { api: AppApi }) {
                 </details>
               </div>
 
-              {areQuickActionsVisible ? (
-                <div className="ai-quick-actions" aria-label="AI quick actions">
-                  {sessionActions.map((action) => (
-                    <button
-                      key={action.kind}
-                      className="ghost-button ai-quick-action"
-                      disabled={action.kind === "session.compare" ? !compareEnabled : !aiPanelCanSend}
-                      type="button"
-                      onClick={() => void handleQuickAction(action.kind)}
-                    >
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-
               <div className="ai-composer">
+                {areQuickActionsVisible ? (
+                  <div className="ai-quick-actions" aria-label="AI quick actions">
+                    {sessionActions.map((action) => (
+                      <button
+                        key={action.kind}
+                        className="ghost-button ai-quick-action"
+                        disabled={action.kind === "session.compare" ? !compareEnabled : !aiPanelCanSend}
+                        type="button"
+                        onClick={() => void handleQuickAction(action.kind)}
+                      >
+                        {action.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
                 <div className="ai-composer-header">
                   <div className="ai-reference-chip-list" aria-label="Active AI references">
                     {aiSessionReferences.map((reference) => (
@@ -2864,7 +3002,7 @@ export default function App({ api }: { api: AppApi }) {
                       aria-label="Add AI reference"
                       className="icon-button icon-button-small"
                       type="button"
-                      onClick={() => setIsReferencePickerOpen((current) => !current)}
+                      onClick={toggleAiReferencePicker}
                     >
                       +
                     </button>
@@ -2875,47 +3013,64 @@ export default function App({ api }: { api: AppApi }) {
                         role="dialog"
                         aria-label="Add AI reference"
                       >
-                        {activePaper ? (
-                          <div className="ai-reference-popover-group">
-                            <p className="eyebrow">Current Paper</p>
-                            <button
-                              className="nav-item"
-                              type="button"
-                              onClick={() => void handleAddAiReference("item", activePaper.id)}
-                            >
-                              {activePaper.title}
-                            </button>
-                          </div>
-                        ) : null}
-                        <div className="ai-reference-popover-group">
-                          <p className="eyebrow">Papers</p>
-                          <div className="nav-list">
-                            {sortedReferenceItems.map((item) => (
+                        <label className="ai-reference-search-label" htmlFor="ai-reference-search">
+                          Search context
+                        </label>
+                        <input
+                          id="ai-reference-search"
+                          ref={aiReferenceSearchInputRef}
+                          aria-label="Search context"
+                          className="search-input ai-reference-search-input"
+                          placeholder="Search papers and collections"
+                          type="search"
+                          value={aiReferenceQuery}
+                          onChange={(event) => setAiReferenceQuery(event.target.value)}
+                        />
+                        <div className="ai-reference-results" aria-live="polite">
+                          {aiReferencePickerResults.map((result) => {
+                            const added =
+                              result.kind === "item"
+                                ? aiReferenceItemIds.has(result.targetId)
+                                : aiReferenceCollectionIds.has(result.targetId);
+                            const badges = added ? [...result.badges, "Added"] : result.badges;
+                            return (
                               <button
-                                key={`ref-item-${item.id}`}
-                                className="nav-item"
+                                key={result.key}
+                                className="ai-reference-result"
+                                disabled={added}
                                 type="button"
-                                onClick={() => void handleAddAiReference("item", item.id)}
+                                onClick={() => void handleAddAiReference(result.kind, result.targetId)}
                               >
-                                {item.title}
+                                <span className="ai-reference-result-main">
+                                  <span className="ai-reference-result-label">{result.label}</span>
+                                  {result.meta ? <span className="ai-reference-result-meta">{result.meta}</span> : null}
+                                </span>
+                                <span className="ai-reference-result-badges">
+                                  {badges.map((badge) => (
+                                    <span
+                                      key={`${result.key}-${badge}`}
+                                      className={`meta-count ai-reference-result-badge ${
+                                        badge === "Added" ? "ai-reference-result-badge-added" : ""
+                                      }`}
+                                    >
+                                      {badge}
+                                    </span>
+                                  ))}
+                                </span>
                               </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="ai-reference-popover-group">
-                          <p className="eyebrow">Collections</p>
-                          <div className="nav-list">
-                            {sortedReferenceCollections.map((collection) => (
-                              <button
-                                key={`ref-collection-${collection.id}`}
-                                className="nav-item"
-                                type="button"
-                                onClick={() => void handleAddAiReference("collection", collection.id)}
-                              >
-                                {collection.name}
-                              </button>
-                            ))}
-                          </div>
+                            );
+                          })}
+                          {aiReferenceSearchLoading ? <p className="ai-reference-results-empty">Searching…</p> : null}
+                          {aiReferenceSearchError ? <p className="ai-error-text">{aiReferenceSearchError}</p> : null}
+                          {!aiReferenceSearchLoading &&
+                          !aiReferenceSearchError &&
+                          aiReferencePickerResults.length === 0 ? (
+                            <p className="ai-reference-results-empty">
+                              {aiReferenceQuery.trim().length === 0
+                                ? "Search for a paper or pick a collection."
+                                : "No matching context found."}
+                            </p>
+                          ) : null}
                         </div>
                       </div>
                     ) : null}

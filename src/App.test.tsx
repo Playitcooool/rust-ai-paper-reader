@@ -392,6 +392,7 @@ describe("App reading workspace", () => {
     expect(screen.getByRole("button", { name: "Compare" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Theme Map" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review Draft" })).not.toBeInTheDocument();
+    expect(screen.getByText("Copilot")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New Session" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "History Sessions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add AI reference" })).toBeInTheDocument();
@@ -540,7 +541,8 @@ describe("App reading workspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Add AI reference" }));
     expect(screen.getByRole("dialog", { name: "Add AI reference" })).toBeInTheDocument();
-    await user.click(within(screen.getByRole("dialog", { name: "Add AI reference" })).getByRole("button", { name: "Machine Learning" }));
+    await user.type(screen.getByRole("searchbox", { name: "Search context" }), "Machine");
+    await user.click(within(screen.getByRole("dialog", { name: "Add AI reference" })).getByRole("button", { name: /Machine Learning/i }));
     await user.clear(screen.getByRole("textbox", { name: "AI prompt" }));
     await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "Compare the papers.");
     await user.click(screen.getByRole("button", { name: "Send AI prompt" }));
@@ -549,7 +551,26 @@ describe("App reading workspace", () => {
     expect((await screen.findAllByText(/Reading Q&A/i)).length).toBeGreaterThan(0);
   });
 
-  it("adds references from the compact popover and gates compare on two unique papers", async () => {
+  it("opens the quick picker, focuses search, and adds a searched paper reference", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    await user.click(screen.getByRole("button", { name: "Add AI reference" }));
+    const popover = screen.getByRole("dialog", { name: "Add AI reference" });
+    const searchInput = within(popover).getByRole("searchbox", { name: "Search context" });
+    expect(searchInput).toHaveFocus();
+
+    await user.type(searchInput, "Graph");
+    await user.click(await within(popover).findByRole("button", { name: /Graph Neural Survey/i }));
+
+    expect(screen.queryByRole("dialog", { name: "Add AI reference" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Remove Graph Neural Survey/i })).toBeInTheDocument();
+  });
+
+  it("searches collections, marks added references, and gates compare on two unique papers", async () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
 
@@ -560,15 +581,26 @@ describe("App reading workspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Add AI reference" }));
     const popover = screen.getByRole("dialog", { name: "Add AI reference" });
-    expect(within(popover).getByText("Current Paper")).toBeInTheDocument();
-    expect(within(popover).getByText("Papers")).toBeInTheDocument();
-    expect(within(popover).getByText("Collections")).toBeInTheDocument();
-    await user.click(within(popover).getByRole("button", { name: "Graph Neural Survey" }));
+    expect(within(popover).getByRole("button", { name: /Transformer Scaling Laws/i })).toBeDisabled();
+    expect(within(popover).getAllByText("Added").length).toBeGreaterThan(0);
+
+    const searchInput = within(popover).getByRole("searchbox", { name: "Search context" });
+    await user.clear(searchInput);
+    await user.type(searchInput, "Machine");
+    await user.click(await within(popover).findByRole("button", { name: /Machine Learning/i }));
+
+    expect(screen.getByRole("button", { name: /Remove Machine Learning/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add AI reference" }));
+    const graphSearch = within(screen.getByRole("dialog", { name: "Add AI reference" })).getByRole("searchbox", {
+      name: "Search context",
+    });
+    await user.type(graphSearch, "Graph");
+    await user.click(await within(screen.getByRole("dialog", { name: "Add AI reference" })).findByRole("button", { name: /Graph Neural Survey/i }));
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Compare" })).toBeEnabled();
     });
-    expect(screen.getByRole("button", { name: /Remove Graph Neural Survey/i })).toBeInTheDocument();
   });
 
   it("deletes a paper from the resource context menu and clears matching ai references", async () => {
