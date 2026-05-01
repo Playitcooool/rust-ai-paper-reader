@@ -1838,63 +1838,202 @@ p {
   color: #ffb4a7;
 }
 
-.settings-sections,
+.settings-dialog-hero,
 .settings-provider-tabs,
-.settings-provider-grid,
 .settings-provider-actions,
-.settings-dialog-actions {
+.settings-dialog-actions,
+.settings-provider-panel-header {
   display: flex;
   gap: 12px;
 }
 
-.settings-sections {
+.settings-dialog-hero {
   align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 4px;
 }
 
-.settings-provider-grid {
-  align-items: stretch;
-}
-
-.settings-provider-card {
-  flex: 1 1 0;
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.03);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-}
-
-.settings-provider-card-nested {
-  padding: 14px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.settings-field {
+.settings-dialog-copy {
   display: grid;
   gap: 6px;
 }
 
+.settings-dialog-summary {
+  max-width: 54ch;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.93rem;
+}
+
+.settings-sections {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-section-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.025);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 16px 34px rgba(0, 0, 0, 0.14);
+}
+
+.settings-section-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-section-heading h3 {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.settings-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
+.settings-field {
+  display: grid;
+  gap: 7px;
+}
+
 .settings-field span {
-  font-size: 0.82rem;
+  font-size: 0.79rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   color: var(--text-soft);
 }
 
-.settings-provider-actions,
-.settings-dialog-actions {
+.settings-field-full {
+  grid-column: 1 / -1;
+}
+
+.settings-field-compact {
+  max-width: 220px;
+}
+
+.settings-input {
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(11, 14, 19, 0.72);
+  color: inherit;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 0 rgba(226, 139, 83, 0);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background 120ms ease,
+    transform 120ms ease;
+  appearance: none;
+}
+
+.settings-input::placeholder {
+  color: rgba(244, 239, 230, 0.38);
+}
+
+.settings-input:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.025)),
+    rgba(13, 16, 22, 0.78);
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: rgba(226, 139, 83, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 0 0 4px rgba(226, 139, 83, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.03)),
+    rgba(14, 17, 23, 0.82);
+}
+
+.settings-provider-tabs {
+  flex-wrap: wrap;
+}
+
+.settings-provider-tab {
+  padding-inline: 16px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.settings-provider-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(226, 139, 83, 0.12), transparent 34%),
+    rgba(7, 10, 15, 0.36);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.settings-provider-panel-header {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.settings-provider-description,
+.settings-inline-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+}
+
+.settings-provider-actions {
   align-items: center;
   justify-content: space-between;
 }
 
+.settings-provider-actions-inline {
+  gap: 16px;
+}
+
 .settings-dialog-actions {
+  align-items: center;
   justify-content: flex-end;
 }
 
 @media (max-width: 900px) {
-  .settings-sections,
-  .settings-provider-grid {
+  .settings-dialog {
+    width: min(760px, calc(100vw - 24px));
+    padding: 18px;
+  }
+
+  .settings-dialog-hero,
+  .settings-provider-panel-header,
+  .settings-provider-actions-inline {
     flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-field-full {
+    grid-column: auto;
+  }
+
+  .settings-field-compact {
+    max-width: none;
   }
 }
 
