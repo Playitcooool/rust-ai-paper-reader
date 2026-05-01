@@ -2,8 +2,11 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::CString,
     fs,
-    path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, OnceLock,
+    },
 };
 
 use app_core::service::{
@@ -16,6 +19,7 @@ use tauri::{
     menu::{MenuBuilder, SubmenuBuilder},
     AppHandle, Emitter, Manager, State,
 };
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Semaphore;
 
 use pdf_oxide::{
@@ -29,10 +33,12 @@ use tesseract_ocr_static::{
 struct AppState {
     library_root: PathBuf,
     pdf_cache: Arc<Mutex<PdfEngineCache>>,
+    export_authorizations: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
 static OCR_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static PDF_RENDER_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static EXPORT_AUTHORIZATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Deserialize)]
 struct CreateCollectionInput {
@@ -226,6 +232,7 @@ fn split_markdown_chunks(markdown: &str) -> Vec<String> {
     chunks
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_ai_task_stream(
     app_handle: &AppHandle,
     stream_id: &str,
@@ -263,7 +270,26 @@ struct UpdateNoteInput {
 #[derive(Deserialize)]
 struct WriteExportFileInput {
     path: String,
+    authorization_token: String,
     contents: String,
+}
+
+#[derive(Deserialize)]
+struct RequestExportPathInput {
+    default_path: String,
+    filters: Option<Vec<DialogFilterInput>>,
+}
+
+#[derive(Deserialize)]
+struct DialogFilterInput {
+    name: String,
+    extensions: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AuthorizedExportPath {
+    path: String,
+    authorization_token: String,
 }
 
 #[derive(Deserialize)]
@@ -374,7 +400,7 @@ fn service(state: &AppState) -> Result<LibraryService, String> {
     LibraryService::new(&state.library_root).map_err(|error| error.to_string())
 }
 
-fn service_for_root(library_root: &PathBuf) -> Result<LibraryService, String> {
+fn service_for_root(library_root: &Path) -> Result<LibraryService, String> {
     LibraryService::new(library_root).map_err(|error| error.to_string())
 }
 
@@ -709,7 +735,7 @@ async fn ocr_pdf_page(
 
 fn width_bucket(width_px: u32) -> u32 {
     let bucket = 64;
-    ((width_px + bucket - 1) / bucket) * bucket
+    width_px.div_ceil(bucket) * bucket
 }
 
 fn spans_from_document(
@@ -847,7 +873,7 @@ async fn pdf_engine_get_page_bundle(
     if input.page_index0 < 0 {
         return Err("invalid page index".to_string());
     }
-    let target_width_px = input.target_width_px.max(1).min(8192);
+    let target_width_px = input.target_width_px.clamp(1, 8192);
     let bucketed_width = width_bucket(target_width_px);
     if let Some(cached) = state
         .pdf_cache
@@ -1023,6 +1049,52 @@ mod tests {
         assert!(chunks.len() >= 3);
         assert!(chunks[0].contains("# Heading"));
         assert!(chunks.iter().all(|chunk| !chunk.trim().is_empty()));
+    }
+
+    #[test]
+    fn export_write_requires_matching_authorization() {
+        let export_authorizations = Mutex::new(HashMap::from([(
+            "token-1".to_string(),
+            PathBuf::from("/tmp/export.md"),
+        )]));
+
+        assert!(consume_export_authorization(
+            &export_authorizations,
+            "token-1",
+            Path::new("/tmp/export.md"),
+        )
+        .is_ok());
+        assert!(consume_export_authorization(
+            &export_authorizations,
+            "token-1",
+            Path::new("/tmp/export.md"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn export_write_rejects_unapproved_path() {
+        let export_authorizations = Mutex::new(HashMap::from([(
+            "token-1".to_string(),
+            PathBuf::from("/tmp/export.md"),
+        )]));
+
+        let error = consume_export_authorization(
+            &export_authorizations,
+            "token-1",
+            Path::new("/tmp/other.md"),
+        )
+        .expect_err("mismatched path should be rejected");
+        assert!(error.contains("did not match"));
+    }
+
+    #[test]
+    fn tauri_config_sets_a_non_empty_csp() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = config["app"]["security"]["csp"]
+            .as_str()
+            .expect("tauri config should define csp");
+        assert!(!csp.trim().is_empty());
     }
 }
 
@@ -1296,7 +1368,7 @@ fn run_item_task(
     match input.kind.as_str() {
         "item.summarize" | "item.translate" | "item.explain_term" | "item.ask" => service(&state)?
             .run_item_task(input.item_id, &input.kind, input.prompt.as_deref())
-            .map(|task| {
+            .inspect(|task| {
                 if let Some(stream_id) = input.stream_id.as_deref() {
                     let mut full_markdown = String::new();
                     for chunk in split_markdown_chunks(&task.output_markdown) {
@@ -1330,7 +1402,6 @@ fn run_item_task(
                         None,
                     );
                 }
-                task
             })
             .map_err(|error| {
                 if let Some(stream_id) = input.stream_id.as_deref() {
@@ -1401,7 +1472,7 @@ fn run_collection_task(
                 &input.scope_item_ids,
                 input.prompt.as_deref(),
             )
-            .map(|task| {
+            .inspect(|task| {
                 if let Some(stream_id) = input.stream_id.as_deref() {
                     let mut full_markdown = String::new();
                     for chunk in split_markdown_chunks(&task.output_markdown) {
@@ -1435,7 +1506,6 @@ fn run_collection_task(
                         None,
                     );
                 }
-                task
             })
             .map_err(|error| {
                 if let Some(stream_id) = input.stream_id.as_deref() {
@@ -1547,7 +1617,7 @@ fn run_ai_session_task(
         | "session.review_draft"
         | "session.ask" => service(&state)?
             .run_ai_session_task(input.session_id, &input.kind, input.prompt.as_deref())
-            .map(|task| {
+            .inspect(|task| {
                 if let Some(stream_id) = input.stream_id.as_deref() {
                     let mut full_markdown = String::new();
                     for chunk in split_markdown_chunks(&task.output_markdown) {
@@ -1581,7 +1651,6 @@ fn run_ai_session_task(
                         None,
                     );
                 }
-                task
             })
             .map_err(|error| {
                 if let Some(stream_id) = input.stream_id.as_deref() {
@@ -1728,8 +1797,73 @@ fn export_citation(
 }
 
 #[tauri::command]
-fn write_export_file(input: WriteExportFileInput) -> Result<(), String> {
-    let path = PathBuf::from(input.path);
+async fn request_export_path(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    input: RequestExportPathInput,
+) -> Result<Option<AuthorizedExportPath>, String> {
+    let mut dialog = app_handle.dialog().file().set_file_name(
+        Path::new(&input.default_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("export.md")
+            .to_string(),
+    );
+    if let Some(parent) = Path::new(&input.default_path).parent() {
+        dialog = dialog.set_directory(parent);
+    }
+    if let Some(filters) = input.filters {
+        for filter in filters {
+            let extensions = filter.extensions.iter().map(String::as_str).collect::<Vec<_>>();
+            dialog = dialog.add_filter(filter.name, &extensions);
+        }
+    }
+    let Some(file_path) = dialog.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = file_path
+        .into_path()
+        .map_err(|error| error.to_string())?;
+    let token = format!(
+        "export-{}",
+        EXPORT_AUTHORIZATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    state
+        .export_authorizations
+        .lock()
+        .map_err(|_| "failed to lock export authorization state".to_string())?
+        .insert(token.clone(), path.clone());
+    Ok(Some(AuthorizedExportPath {
+        path: path.to_string_lossy().to_string(),
+        authorization_token: token,
+    }))
+}
+
+fn consume_export_authorization(
+    export_authorizations: &Mutex<HashMap<String, PathBuf>>,
+    token: &str,
+    requested_path: &Path,
+) -> Result<(), String> {
+    let mut authorized_paths = export_authorizations
+        .lock()
+        .map_err(|_| "failed to lock export authorization state".to_string())?;
+    let Some(authorized_path) = authorized_paths.remove(token) else {
+        return Err("export path is not authorized".into());
+    };
+    if authorized_path != requested_path {
+        return Err("export path did not match the approved save location".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn write_export_file(state: State<'_, AppState>, input: WriteExportFileInput) -> Result<(), String> {
+    let path = PathBuf::from(&input.path);
+    consume_export_authorization(
+        state.export_authorizations.as_ref(),
+        &input.authorization_token,
+        &path,
+    )?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -1746,6 +1880,7 @@ fn main() {
             app.manage(AppState {
                 library_root,
                 pdf_cache: Arc::new(Mutex::new(PdfEngineCache::default())),
+                export_authorizations: Arc::new(Mutex::new(HashMap::new())),
             });
 
             // Native menu: all imports flow through the same Managed Copy import path on the frontend.
@@ -1819,6 +1954,7 @@ fn main() {
             update_note,
             export_note_markdown,
             export_citation,
+            request_export_path,
             write_export_file,
             ocr_pdf_page,
             pdf_engine_get_document_info,

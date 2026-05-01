@@ -1898,13 +1898,13 @@ export default function App({ api }: { api: AppApi }) {
     if (!note) return;
     const runtimeApi = await getApi();
     const markdown = await runtimeApi.exportNoteMarkdown(note.id);
-    const path = await runtimeApi.pickSavePath({
+    const exportTarget = await runtimeApi.requestExportPath({
       defaultPath: `${filenameStem(noteHeading(note), "research-note")}.md`,
       filters: [{ name: "Markdown", extensions: ["md"] }],
     });
-    if (!path) return;
-    await runtimeApi.writeExportFile({ path, contents: markdown });
-    setStatusMessage(`Saved Markdown to ${path}.`);
+    if (!exportTarget) return;
+    await runtimeApi.writeExportFile({ ...exportTarget, contents: markdown });
+    setStatusMessage(`Saved Markdown to ${exportTarget.path}.`);
   };
 
   const handleCreateAiSession = useCallback(async () => {

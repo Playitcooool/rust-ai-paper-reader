@@ -6,7 +6,7 @@ export const isTauriRuntime = () =>
 export async function createTauriApi(): Promise<AppApi> {
   const { invoke } = await import("@tauri-apps/api/core");
   const { listen } = await import("@tauri-apps/api/event");
-  const { open, save } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@tauri-apps/plugin-dialog");
   const toUint8Array = (value: unknown): Uint8Array => {
     if (value instanceof Uint8Array) return value;
     if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -203,14 +203,7 @@ export async function createTauriApi(): Promise<AppApi> {
     updateNote: (input) => invoke("update_note", { input }),
     exportNoteMarkdown: (noteId) => invoke("export_note_markdown", { noteId }),
     exportCitation: (itemId, format) => invoke("export_citation", { itemId, format }),
-    pickSavePath: async (input) => {
-      const selection = await save({
-        defaultPath: input.defaultPath,
-        filters: input.filters,
-      });
-      if (!selection || Array.isArray(selection)) return null;
-      return selection;
-    },
+    requestExportPath: (input) => invoke("request_export_path", { input }),
     writeExportFile: (input) => invoke("write_export_file", { input }),
     ocrPdfPage: (input) => invoke("ocr_pdf_page", { input }),
     pdfEngineGetDocumentInfo: async (input) =>

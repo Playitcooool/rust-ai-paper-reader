@@ -322,11 +322,11 @@ export type AppApi = {
   updateNote: (input: { note_id: number; markdown: string }) => Promise<void>;
   exportNoteMarkdown: (noteId: number) => Promise<string>;
   exportCitation: (itemId: number, format?: CitationFormat) => Promise<string>;
-  pickSavePath: (input: {
+  requestExportPath: (input: {
     defaultPath: string;
     filters?: Array<{ name: string; extensions: string[] }>;
-  }) => Promise<string | null>;
-  writeExportFile: (input: { path: string; contents: string }) => Promise<void>;
+  }) => Promise<{ path: string; authorization_token: string } | null>;
+  writeExportFile: (input: { path: string; authorization_token: string; contents: string }) => Promise<void>;
   ocrPdfPage: (input: OcrPdfPageInput) => Promise<OcrPageResult>;
   pdfEngineGetDocumentInfo: (input: PdfEngineGetDocumentInfoInput) => Promise<PdfDocumentInfo>;
   pdfEngineGetPageBundle: (input: PdfEngineGetPageBundleInput) => Promise<PdfPageBundle>;

@@ -60,7 +60,7 @@ type MockState = {
   nextAiStreamFailure?: string | null;
 };
 
-const exportWrites: Array<{ path: string; contents: string }> = [];
+const exportWrites: Array<{ path: string; authorization_token: string; contents: string }> = [];
 
 const richItemSummary = (title: string, collectionLabel: string, firstLine: string) =>
   `# Summary: ${title}\n\nCollection: ${collectionLabel}\n\n## Key Points\n- ${firstLine}\n- Compute and data should stay balanced.\n\n> The paper argues for predictable scaling trends.\n\n| Axis | Signal |\n| --- | --- |\n| Model | Larger models improve smoothly |\n| Data | More tokens reduce loss |\n\n\`\`\`text\nloss ~= f(model, data, compute)\n\`\`\`\n`;
@@ -681,8 +681,11 @@ export const fakeApi: AppApi = {
     return [...citationSeedPaths];
   },
 
-  async pickSavePath(input) {
-    return `/exports/${input.defaultPath}`;
+  async requestExportPath(input) {
+    return {
+      path: `/exports/${input.defaultPath}`,
+      authorization_token: "fake-export-token",
+    };
   },
 
   async pickRelinkPath() {
