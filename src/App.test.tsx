@@ -393,8 +393,12 @@ describe("App reading workspace", () => {
     expect(screen.queryByRole("button", { name: "Theme Map" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review Draft" })).not.toBeInTheDocument();
     expect(screen.getByText("Copilot")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Chat History" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New Session" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "History Sessions" })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "History Sessions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Artifacts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Task History" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Research Notes" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add AI reference" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add Reference" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Use Current Paper" })).not.toBeInTheDocument();
@@ -436,6 +440,13 @@ describe("App reading workspace", () => {
 
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
     expect(getAiSettingsSpy).toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
+    expect(screen.getByText("AI Providers")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Default paper sort"), "title");
+    await user.selectOptions(screen.getByLabelText("Default attachment filter"), "citation_only");
+    await user.selectOptions(screen.getByLabelText("PDF default fit mode"), "manual");
+    fireEvent.change(screen.getByLabelText("PDF default zoom"), { target: { value: "130" } });
 
     await user.clear(screen.getByLabelText("OpenAI model"));
     await user.type(screen.getByLabelText("OpenAI model"), "gpt-4.1");
@@ -451,6 +462,16 @@ describe("App reading workspace", () => {
         }),
       );
     });
+    await waitFor(() => {
+      expect(window.localStorage.getItem("paper-reader.item-sort")).toBe("title");
+      expect(window.localStorage.getItem("paper-reader.attachment-filter")).toBe("citation_only");
+      expect(window.localStorage.getItem("paper-reader.reader-fit-mode")).toBe("manual");
+      expect(window.localStorage.getItem("paper-reader.reader-zoom")).toBe("130");
+    });
+
+    await user.click(screen.getByRole("button", { name: "Manage library" }));
+    expect(screen.getByLabelText("Sort papers")).toHaveValue("title");
+    expect(screen.getByLabelText("Attachment filter")).toHaveValue("citation_only");
 
     menuListeners.get("menu:open-settings")?.();
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
@@ -463,6 +484,146 @@ describe("App reading workspace", () => {
         }),
       );
     });
+  });
+
+  it("recursively deletes a collection subtree from the resource tree", async () => {
+    replaceFakeApiState({
+      collections: [
+        { id: 1, name: "Machine Learning", parent_id: null },
+        { id: 4, name: "Scaling Papers", parent_id: 1 },
+        { id: 2, name: "Systems", parent_id: null },
+      ],
+      items: [
+        {
+          id: 1,
+          title: "Transformer Scaling Laws",
+          collection_id: 1,
+          primary_attachment_id: 101,
+          attachment_format: "pdf",
+          attachment_status: "ready",
+          authors: "Kaplan et al.",
+          publication_year: 2020,
+          source: "OpenAI",
+          doi: "10.1000/scaling-laws",
+          tags: [],
+          plainText: "Scaling behavior emerges.",
+          normalizedHtml: "<article><h1>Transformer Scaling Laws</h1></article>",
+        },
+        {
+          id: 2,
+          title: "Graph Neural Survey",
+          collection_id: 4,
+          primary_attachment_id: 102,
+          attachment_format: "docx",
+          attachment_status: "ready",
+          authors: "Wu et al.",
+          publication_year: 2021,
+          source: "IEEE TPAMI",
+          doi: "10.1000/gnn-survey",
+          tags: [],
+          plainText: "Graph representation learning.",
+          normalizedHtml: "<article><h1>Graph Neural Survey</h1></article>",
+        },
+        {
+          id: 3,
+          title: "Distributed Consensus Notes",
+          collection_id: 2,
+          primary_attachment_id: 103,
+          attachment_format: "epub",
+          attachment_status: "ready",
+          authors: "Ongaro & Ousterhout",
+          publication_year: 2014,
+          source: "USENIX",
+          doi: "10.1000/raft",
+          tags: [],
+          plainText: "Consensus protocols coordinate replicas.",
+          normalizedHtml: "<article><h1>Distributed Consensus Notes</h1></article>",
+        },
+      ] as never,
+    });
+
+    const user = userEvent.setup();
+    const removeCollectionSpy = vi.spyOn(fakeApi, "removeCollection");
+    render(<App api={fakeApi} />);
+
+    const rootNode = await screen.findByRole("treeitem", { name: "Machine Learning" });
+    fireEvent.contextMenu(rootNode);
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+
+    const confirm = await screen.findByRole("dialog", { name: "Confirm delete" });
+    expect(within(confirm).getByText(/2 papers/i)).toBeInTheDocument();
+    expect(within(confirm).getByText(/1 nested collection/i)).toBeInTheDocument();
+    await user.click(within(confirm).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(removeCollectionSpy).toHaveBeenCalledWith({ collection_id: 1 });
+    });
+    expect(screen.queryByRole("treeitem", { name: "Machine Learning" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: "Scaling Papers" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: /Transformer Scaling Laws/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: /Graph Neural Survey/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("treeitem", { name: "Systems" })).toBeInTheDocument();
+  });
+
+  it("clears open papers, active paper state, and AI references after recursive collection delete", async () => {
+    replaceFakeApiState({
+      collections: [
+        { id: 1, name: "Machine Learning", parent_id: null },
+        { id: 4, name: "Scaling Papers", parent_id: 1 },
+        { id: 2, name: "Systems", parent_id: null },
+      ],
+      items: [
+        {
+          id: 1,
+          title: "Transformer Scaling Laws",
+          collection_id: 1,
+          primary_attachment_id: 101,
+          attachment_format: "pdf",
+          attachment_status: "ready",
+          authors: "Kaplan et al.",
+          publication_year: 2020,
+          source: "OpenAI",
+          doi: "10.1000/scaling-laws",
+          tags: [],
+          plainText: "Scaling behavior emerges.",
+          normalizedHtml: "<article><h1>Transformer Scaling Laws</h1></article>",
+        },
+        {
+          id: 2,
+          title: "Graph Neural Survey",
+          collection_id: 4,
+          primary_attachment_id: 102,
+          attachment_format: "docx",
+          attachment_status: "ready",
+          authors: "Wu et al.",
+          publication_year: 2021,
+          source: "IEEE TPAMI",
+          doi: "10.1000/gnn-survey",
+          tags: [],
+          plainText: "Graph representation learning.",
+          normalizedHtml: "<article><h1>Graph Neural Survey</h1></article>",
+        },
+      ] as never,
+    });
+
+    const user = userEvent.setup();
+    const removeCollectionSpy = vi.spyOn(fakeApi, "removeCollection");
+    const { container } = render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    expect(await screen.findByText("Transformer Scaling Laws", { selector: ".ai-reference-chip-label" })).toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByRole("treeitem", { name: "Machine Learning" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Confirm delete" })).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(removeCollectionSpy).toHaveBeenCalledWith({ collection_id: 1 });
+    });
+    expect(screen.queryByText("Transformer Scaling Laws", { selector: ".ai-reference-chip-label" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Transformer Scaling Laws" })).not.toBeInTheDocument();
+    expect(container.querySelector(".reader-panel-workspace h2")?.textContent).toBe("No paper selected");
   });
 
   it("keeps workspace pdf preview and ai composer inside the fixed-height layout", async () => {
@@ -479,7 +640,7 @@ describe("App reading workspace", () => {
     expect(screen.getByLabelText("AI panel")).toContainElement(screen.getByRole("textbox", { name: "AI prompt" }));
   });
 
-  it("renders quick actions as user chat entries, hides the strip while active, and restores it after completion", async () => {
+  it("renders quick actions in the dock and appends them to the AI chat history", async () => {
     const user = userEvent.setup();
     const runSessionTaskSpy = vi.spyOn(fakeApi, "runAiSessionTask");
     const { container } = render(<App api={fakeApi} />);
@@ -498,33 +659,76 @@ describe("App reading workspace", () => {
         stream_id: expect.any(String),
       });
     });
-    expect(container.querySelector(".ai-quick-actions")).toBeNull();
+    expect(container.querySelector(".ai-bottom-dock .ai-quick-actions")).not.toBeNull();
     expect(Array.from(container.querySelectorAll(".ai-message-user p")).some((node) => node.textContent === "Summarize")).toBe(true);
     expect(screen.queryByText("Streaming")).not.toBeInTheDocument();
     expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
     expect((await screen.findAllByText("Key Points")).length).toBeGreaterThan(0);
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Summarize" })).toBeInTheDocument();
-    });
-    expect(screen.getAllByText("Axis").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Signal").length).toBeGreaterThan(0);
     expect(screen.getAllByText("The paper argues for predictable scaling trends.").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("loss ~= f(model, data, compute)").length).toBeGreaterThan(0);
     expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
   });
 
-  it("restores quick actions after creating a new session", async () => {
+  it("keeps quick actions available after creating a new session", async () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
 
     await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
     await user.click(screen.getByRole("button", { name: "Open AI panel" }));
-    await user.click(screen.getByRole("button", { name: "Summarize" }));
-
-    expect(screen.queryByRole("button", { name: "Summarize" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "New Session" }));
     expect(await screen.findByRole("button", { name: "Summarize" })).toBeInTheDocument();
+  });
+
+  it("shows current papers before collections in the empty context picker", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "Add AI reference" }));
+
+    const popover = screen.getByRole("dialog", { name: "Add AI reference" });
+    const searchInput = within(popover).getByRole("searchbox", { name: "Search context" });
+    expect(searchInput).toHaveFocus();
+    expect(within(popover).getByRole("button", { name: /Transformer Scaling Laws/i })).toBeDisabled();
+    expect(within(popover).getByRole("button", { name: /Graph Neural Survey/i })).toBeInTheDocument();
+    expect(within(popover).getByRole("button", { name: /Distributed Consensus Notes/i })).toBeInTheDocument();
+    expect(within(popover).getByRole("button", { name: /Machine Learning/i })).toBeInTheDocument();
+  });
+
+  it("preserves full long context names through truncation affordances", async () => {
+    const longPaperTitle =
+      "Graph Neural Survey for Production Systems with Very Long Context Labels That Should Ellipsize Cleanly in the Picker";
+    const longCollectionName =
+      "Machine Learning Research Program with a Long Collection Name That Should Stay Readable via Title Text";
+    replaceFakeApiState({
+      collections: (await fakeApi.listCollections()).map((collection) =>
+        collection.id === 1 ? { ...collection, name: longCollectionName } : collection,
+      ),
+      items: (await fakeApi.listItems()).map((item) =>
+        item.id === 2 ? { ...item, title: longPaperTitle } : item,
+      ) as never,
+    });
+
+    const user = userEvent.setup();
+    const { container } = render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "Add AI reference" }));
+
+    const popover = screen.getByRole("dialog", { name: "Add AI reference" });
+    const longPaperButton = await within(popover).findByRole("button", { name: new RegExp(longPaperTitle) });
+    expect(longPaperButton).toHaveAttribute("title", expect.stringContaining(longPaperTitle));
+    expect(within(longPaperButton).getByText(longPaperTitle)).toHaveClass("ai-reference-result-label");
+
+    const longCollectionButton = within(popover).getByRole("button", { name: new RegExp(longCollectionName) });
+    expect(longCollectionButton).toHaveAttribute("title", expect.stringContaining(longCollectionName));
+
+    await user.click(longPaperButton);
+
+    const chip = container.querySelector(`.ai-reference-chip[title="${longPaperTitle}"]`);
+    expect(chip).not.toBeNull();
+    expect(chip?.querySelector(".ai-reference-chip-label")).not.toBeNull();
   });
 
   it("keeps ask prompts and assistant replies in one message flow for AI sessions", async () => {
@@ -570,6 +774,35 @@ describe("App reading workspace", () => {
     expect(screen.getByRole("button", { name: /Remove Graph Neural Survey/i })).toBeInTheDocument();
   });
 
+  it("keeps the AI reference popover outside header overflow clipping", async () => {
+    // @ts-expect-error Vitest runs this test in Node, even though the app TS config omits Node types.
+    const { readFileSync } = await import("fs");
+    const styles = readFileSync("src/styles.css", "utf8");
+
+    expect(styles).toMatch(/\.ai-composer-header\s*\{[^}]*overflow:\s*visible;/s);
+    expect(styles).toMatch(/\.ai-reference-chip-list\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/s);
+    expect(styles).toMatch(/\.ai-reference-picker-shell\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/s);
+    expect(styles).toMatch(/\.ai-reference-popover\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*12;/s);
+  });
+
+  it("keeps selected references in a single chip row inside the composer", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "Add AI reference" }));
+    await user.click(await within(screen.getByRole("dialog", { name: "Add AI reference" })).findByRole("button", { name: /Graph Neural Survey/i }));
+    await user.click(screen.getByRole("button", { name: "Add AI reference" }));
+    await user.type(within(screen.getByRole("dialog", { name: "Add AI reference" })).getByRole("searchbox", { name: "Search context" }), "Machine");
+    await user.click(await within(screen.getByRole("dialog", { name: "Add AI reference" })).findByRole("button", { name: /Machine Learning/i }));
+
+    const chipRow = container.querySelector(".ai-reference-chip-list");
+    expect(chipRow).not.toBeNull();
+    expect(chipRow?.querySelectorAll(".ai-reference-chip").length).toBeGreaterThanOrEqual(3);
+    expect(chipRow?.querySelector(".ai-reference-chip .ai-reference-chip-label")).not.toBeNull();
+  });
+
   it("searches collections, marks added references, and gates compare on two unique papers", async () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
@@ -582,10 +815,10 @@ describe("App reading workspace", () => {
     await user.click(screen.getByRole("button", { name: "Add AI reference" }));
     const popover = screen.getByRole("dialog", { name: "Add AI reference" });
     expect(within(popover).getByRole("button", { name: /Transformer Scaling Laws/i })).toBeDisabled();
+    expect(within(popover).getByRole("button", { name: /Graph Neural Survey/i })).toBeInTheDocument();
     expect(within(popover).getAllByText("Added").length).toBeGreaterThan(0);
 
     const searchInput = within(popover).getByRole("searchbox", { name: "Search context" });
-    await user.clear(searchInput);
     await user.type(searchInput, "Machine");
     await user.click(await within(popover).findByRole("button", { name: /Machine Learning/i }));
 
@@ -601,6 +834,44 @@ describe("App reading workspace", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Compare" })).toBeEnabled();
     });
+  });
+
+  it("opens icon-only AI dock controls from the header", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    for (const label of ["Chat History", "New Session", "Artifacts", "Task History", "Research Notes", "Close Copilot"]) {
+      expect(screen.getByRole("button", { name: label }).textContent?.trim()).toBe("");
+    }
+
+    await user.click(screen.getByRole("button", { name: "Artifacts" }));
+    expect(screen.getByLabelText("Artifacts panel")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Task History" }));
+    expect(screen.getByLabelText("Task History panel")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Research Notes" }));
+    expect(screen.getByLabelText("Research Notes panel")).toBeInTheDocument();
+  });
+
+  it("opens chat history from the header and switches sessions from the slide-out", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "New Session" }));
+
+    await user.click(screen.getByRole("button", { name: "Chat History" }));
+    const historyPanel = screen.getByLabelText("Chat History panel");
+    expect(historyPanel).toBeInTheDocument();
+    await user.click(within(historyPanel).getByRole("button", { name: /Transformer Scaling Laws/i }));
+
+    expect(screen.getByText("Transformer Scaling Laws", { selector: ".meta-count" })).toBeInTheDocument();
+    expect(container.querySelector(".ai-session-history-panel")?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("deletes a paper from the resource context menu and clears matching ai references", async () => {
@@ -634,11 +905,28 @@ describe("App reading workspace", () => {
     expect(await screen.findByText("Network stream dropped.")).toBeInTheDocument();
     expect(screen.getAllByText("Summarize").length).toBeGreaterThan(0);
 
-    await user.click(screen.getByText("Task History"));
-    const taskHistory = screen.getByText("Task History").closest("details");
-    expect(taskHistory).not.toBeNull();
-    expect(within(taskHistory as HTMLDetailsElement).getByText("No tasks yet.")).toBeInTheDocument();
-    expect(within(taskHistory as HTMLDetailsElement).queryByText("Summarize")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Task History" }));
+    const taskHistory = screen.getByLabelText("Task History panel");
+    expect(within(taskHistory).getByText("No tasks yet.")).toBeInTheDocument();
+    expect(within(taskHistory).queryByText("Summarize")).not.toBeInTheDocument();
+  });
+
+  it("renders rejected AI session tasks inside the chat thread", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(fakeApi, "runAiSessionTask").mockRejectedValueOnce(new Error("Provider missing API key."));
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "Summarize" }));
+
+    expect(await screen.findByText("Provider missing API key.")).toBeInTheDocument();
+    expect(screen.getAllByText("Summarize").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Summarize" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Task History" }));
+    const taskHistory = screen.getByLabelText("Task History panel");
+    expect(within(taskHistory).getByText("No tasks yet.")).toBeInTheDocument();
   });
 
   it("responds to native menu import events and native drag-and-drop", async () => {

@@ -3,6 +3,7 @@ import type {
   ComponentProps,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
+  ReactNode,
 } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -190,6 +191,10 @@ type DeleteTargetState =
       targetId: number;
       label: string;
       parentCollectionId: number | null;
+      paperCount?: number;
+      nestedCollectionCount?: number;
+      deletedCollectionIds?: number[];
+      deletedItemIds?: number[];
     }
   | null;
 type AiReferencePickerResult =
@@ -209,6 +214,14 @@ type AiReferencePickerResult =
       meta: string | null;
       badges: string[];
     };
+
+type GeneralSettingsDraft = {
+  resourcesSidebarOpen: boolean;
+  defaultItemSort: ItemSort;
+  defaultAttachmentFilter: AttachmentFilter;
+  defaultReaderFitMode: ReaderFitMode;
+  defaultReaderZoom: number;
+};
 
 const initialAiDockState = (): AiDockState => ({
   artifacts: false,
@@ -255,6 +268,127 @@ const markdownComponents = {
 const assistantStatusLabel = (status: AiPendingMessage["status"] | AITask["status"]) =>
   status === "streaming" ? "Streaming" : status === "failed" ? "Failed" : status;
 
+function AiIcon({
+  children,
+  viewBox = "0 0 20 20",
+}: {
+  children: ReactNode;
+  viewBox?: string;
+}) {
+  return (
+    <svg aria-hidden="true" className="ai-icon" viewBox={viewBox}>
+      {children}
+    </svg>
+  );
+}
+
+const ChatHistoryIcon = () => (
+  <AiIcon>
+    <path
+      d="M4 5.5h7.5A2.5 2.5 0 0 1 14 8v2A2.5 2.5 0 0 1 11.5 12.5H8l-3 2v-2H4A2.5 2.5 0 0 1 1.5 10V8A2.5 2.5 0 0 1 4 5.5Z"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.6"
+    />
+    <circle cx="15.25" cy="6.25" r="3.25" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    <path
+      d="M15.25 4.75v1.7l1.15.7"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.6"
+    />
+  </AiIcon>
+);
+
+const NewSessionIcon = () => (
+  <AiIcon>
+    <path
+      d="M10 4v12M4 10h12"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="1.8"
+    />
+  </AiIcon>
+);
+
+const ArtifactIcon = () => (
+  <AiIcon>
+    <path
+      d="M6 2.5h5l3 3V16A1.5 1.5 0 0 1 12.5 17.5h-6A1.5 1.5 0 0 1 5 16V4A1.5 1.5 0 0 1 6.5 2.5Z"
+      fill="none"
+      stroke="currentColor"
+      strokeLinejoin="round"
+      strokeWidth="1.6"
+    />
+    <path
+      d="M11 2.5V6h3"
+      fill="none"
+      stroke="currentColor"
+      strokeLinejoin="round"
+      strokeWidth="1.6"
+    />
+    <path
+      d="M7.5 9.25h4.5M7.5 12h4.5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="1.6"
+    />
+  </AiIcon>
+);
+
+const TaskHistoryIcon = () => (
+  <AiIcon>
+    <rect x="3" y="3.5" width="14" height="13" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    <path
+      d="M6.5 7.5h7M6.5 10.5h7M6.5 13.5h4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="1.6"
+    />
+  </AiIcon>
+);
+
+const ResearchNotesIcon = () => (
+  <AiIcon>
+    <path
+      d="M5 3.5h8A2 2 0 0 1 15 5.5v11l-4-2-4 2v-11A2 2 0 0 1 9 3.5Z"
+      fill="none"
+      stroke="currentColor"
+      strokeLinejoin="round"
+      strokeWidth="1.6"
+    />
+    <path
+      d="M8 7.5h5M8 10.25h4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="1.6"
+    />
+  </AiIcon>
+);
+
+const CloseCopilotIcon = () => (
+  <AiIcon>
+    <path
+      d="m5 5 10 10M15 5 5 15"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="1.8"
+    />
+  </AiIcon>
+);
+
+const pickerResultLabel = (result: AiReferencePickerResult, badges: string[]) =>
+  [result.label, result.meta, badges.length > 0 ? badges.join(", ") : null].filter(Boolean).join(" — ");
+
 function MarkdownMessage({ markdown }: { markdown: string }) {
   return (
     <div className="ai-markdown">
@@ -299,9 +433,19 @@ const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 460;
 const AI_PANEL_MIN_WIDTH = 320;
 const AI_PANEL_MAX_WIDTH = 620;
+const DEFAULT_SIDEBAR_WIDTH = 300;
+const DEFAULT_AI_PANEL_WIDTH = 360;
+const DEFAULT_ITEM_SORT: ItemSort = "recent";
+const DEFAULT_ATTACHMENT_FILTER: AttachmentFilter = "all";
+const DEFAULT_READER_FIT_MODE: ReaderFitMode = "fit_width";
+const DEFAULT_READER_ZOOM = 100;
 const SIDEBAR_WIDTH_KEY = "paper-reader.sidebar-width";
 const AI_PANEL_WIDTH_KEY = "paper-reader.ai-panel-width";
 const SIDEBAR_OPEN_KEY = "paper-reader.sidebar-open";
+const ITEM_SORT_KEY = "paper-reader.item-sort";
+const ATTACHMENT_FILTER_KEY = "paper-reader.attachment-filter";
+const READER_FIT_MODE_KEY = "paper-reader.reader-fit-mode";
+const READER_ZOOM_KEY = "paper-reader.reader-zoom";
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
 
@@ -316,6 +460,12 @@ const readStoredBoolean = (key: string, fallback: boolean) => {
   if (typeof window === "undefined") return fallback;
   const raw = window.localStorage.getItem(key);
   return raw === null ? fallback : raw === "true";
+};
+
+const readStoredString = <Value extends string>(key: string, fallback: Value, allowed: readonly Value[]) => {
+  if (typeof window === "undefined") return fallback;
+  const raw = window.localStorage.getItem(key);
+  return raw && allowed.includes(raw as Value) ? (raw as Value) : fallback;
 };
 
 const expandSessionReferenceItemIds = (
@@ -355,6 +505,22 @@ const expandSessionReferenceItemIds = (
 
 const itemCountForCollection = (libraryItems: LibraryItem[], collectionId: number) =>
   libraryItems.filter((item) => item.collection_id === collectionId).length;
+
+const collectionDeleteSummary = (collections: Collection[], libraryItems: LibraryItem[], collectionId: number) => {
+  const descendantIds = Array.from(descendantIdsForCollection(collections, collectionId));
+  const deletedCollectionIds = [collectionId, ...descendantIds];
+  const deletedCollectionIdSet = new Set(deletedCollectionIds);
+  const deletedItemIds = libraryItems
+    .filter((item) => deletedCollectionIdSet.has(item.collection_id))
+    .map((item) => item.id);
+
+  return {
+    deletedCollectionIds,
+    deletedItemIds,
+    nestedCollectionCount: descendantIds.length,
+    paperCount: deletedItemIds.length,
+  };
+};
 
 const sessionReferenceLabel = (
   reference: AISessionReference,
@@ -402,18 +568,23 @@ export default function App({ api }: { api: AppApi }) {
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [aiPending, setAiPending] = useState<AiPendingMessage | null>(null);
   const [aiDockOpen, setAiDockOpen] = useState(initialAiDockState);
+  const [isAiSessionHistoryOpen, setIsAiSessionHistoryOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("workspace");
   const [isSidebarVisible, setIsSidebarVisible] = useState(() => readStoredBoolean(SIDEBAR_OPEN_KEY, true));
-  const [sidebarWidth, setSidebarWidth] = useState(() => readStoredNumber(SIDEBAR_WIDTH_KEY, 300));
-  const [aiPanelWidth, setAiPanelWidth] = useState(() => readStoredNumber(AI_PANEL_WIDTH_KEY, 360));
+  const [sidebarWidth, setSidebarWidth] = useState(() => readStoredNumber(SIDEBAR_WIDTH_KEY, DEFAULT_SIDEBAR_WIDTH));
+  const [aiPanelWidth, setAiPanelWidth] = useState(() => readStoredNumber(AI_PANEL_WIDTH_KEY, DEFAULT_AI_PANEL_WIDTH));
   const [isReferencePickerOpen, setIsReferencePickerOpen] = useState(false);
   const [aiReferenceQuery, setAiReferenceQuery] = useState("");
   const [aiReferenceSearchResults, setAiReferenceSearchResults] = useState<LibraryItem[]>([]);
   const [aiReferenceSearchLoading, setAiReferenceSearchLoading] = useState(false);
   const [aiReferenceSearchError, setAiReferenceSearchError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [itemSort, setItemSort] = useState<ItemSort>("recent");
-  const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>("all");
+  const [itemSort, setItemSort] = useState<ItemSort>(() =>
+    readStoredString(ITEM_SORT_KEY, DEFAULT_ITEM_SORT, ["recent", "title", "year_desc"] as const),
+  );
+  const [attachmentFilter, setAttachmentFilter] = useState<AttachmentFilter>(() =>
+    readStoredString(ATTACHMENT_FILTER_KEY, DEFAULT_ATTACHMENT_FILTER, ["all", "ready", "missing", "citation_only"] as const),
+  );
   const [lastImportResult, setLastImportResult] = useState<ImportBatchResult | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [draggedFileCount, setDraggedFileCount] = useState(0);
@@ -423,8 +594,10 @@ export default function App({ api }: { api: AppApi }) {
   const [batchMoveTargetId, setBatchMoveTargetId] = useState("current");
   const [readerPage, setReaderPage] = useState(0);
   const [readerPageInput, setReaderPageInput] = useState("1");
-  const [readerZoom, setReaderZoom] = useState(100);
-  const [readerFitMode, setReaderFitMode] = useState<ReaderFitMode>("fit_width");
+  const [readerZoom, setReaderZoom] = useState(() => readStoredNumber(READER_ZOOM_KEY, DEFAULT_READER_ZOOM));
+  const [readerFitMode, setReaderFitMode] = useState<ReaderFitMode>(() =>
+    readStoredString(READER_FIT_MODE_KEY, DEFAULT_READER_FIT_MODE, ["fit_width", "manual"] as const),
+  );
   const [readerSearchQuery, setReaderSearchQuery] = useState("");
   const [isFindHudOpen, setIsFindHudOpen] = useState(false);
   const [readerSearchMatchIndex, setReaderSearchMatchIndex] = useState(0);
@@ -440,10 +613,16 @@ export default function App({ api }: { api: AppApi }) {
   const [resourceContextMenu, setResourceContextMenu] = useState<ResourceContextMenuState>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTargetState>(null);
   const [aiComposerValue, setAiComposerValue] = useState("");
-  const [areQuickActionsVisible, setAreQuickActionsVisible] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [aiSettings, setAiSettings] = useState<AISettings | null>(null);
   const [aiSettingsDraft, setAiSettingsDraft] = useState<UpdateAISettingsInput>(emptyAiSettingsDraft);
+  const [generalSettingsDraft, setGeneralSettingsDraft] = useState<GeneralSettingsDraft>({
+    resourcesSidebarOpen: true,
+    defaultItemSort: DEFAULT_ITEM_SORT,
+    defaultAttachmentFilter: DEFAULT_ATTACHMENT_FILTER,
+    defaultReaderFitMode: DEFAULT_READER_FIT_MODE,
+    defaultReaderZoom: DEFAULT_READER_ZOOM,
+  });
   const [openAiApiKeyDraft, setOpenAiApiKeyDraft] = useState("");
   const [anthropicApiKeyDraft, setAnthropicApiKeyDraft] = useState("");
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -598,6 +777,7 @@ export default function App({ api }: { api: AppApi }) {
     () => aiSessions.find((session) => session.id === activeAiSessionId) ?? null,
     [activeAiSessionId, aiSessions],
   );
+  const sortedReferenceItems = useMemo(() => sortItems(libraryItems, "title"), [libraryItems]);
   const expandedAiReferenceItemIds = useMemo(
     () => expandSessionReferenceItemIds(aiSessionReferences, collections, libraryItems),
     [aiSessionReferences, collections, libraryItems],
@@ -724,8 +904,8 @@ export default function App({ api }: { api: AppApi }) {
         setReaderView(view);
         setReaderPage(0);
         setReaderPageInput("1");
-        setReaderFitMode("fit_width");
-        setReaderZoom(100);
+        setReaderFitMode(readStoredString(READER_FIT_MODE_KEY, DEFAULT_READER_FIT_MODE, ["fit_width", "manual"] as const));
+        setReaderZoom(readStoredNumber(READER_ZOOM_KEY, DEFAULT_READER_ZOOM));
         setReaderSearchQuery("");
         setIsFindHudOpen(false);
         setReaderSearchMatchIndex(0);
@@ -786,10 +966,6 @@ export default function App({ api }: { api: AppApi }) {
   }, [isFindHudOpen]);
 
   useEffect(() => {
-    setAreQuickActionsVisible(true);
-  }, [activeAiSessionId]);
-
-  useEffect(() => {
     if (!isReferencePickerOpen) {
       aiReferenceSearchRequestIdRef.current += 1;
       setAiReferenceQuery("");
@@ -848,6 +1024,26 @@ export default function App({ api }: { api: AppApi }) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(SIDEBAR_OPEN_KEY, String(isSidebarVisible));
   }, [isSidebarVisible]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(ITEM_SORT_KEY, itemSort);
+  }, [itemSort]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(ATTACHMENT_FILTER_KEY, attachmentFilter);
+  }, [attachmentFilter]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(READER_FIT_MODE_KEY, readerFitMode);
+  }, [readerFitMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(READER_ZOOM_KEY, String(readerZoom));
+  }, [readerZoom]);
 
   const openFindHud = useCallback(() => {
     if (!textToolsEnabled) return;
@@ -1132,6 +1328,21 @@ export default function App({ api }: { api: AppApi }) {
     const settings = await runtimeApi.getAiSettings();
     setAiSettings(settings);
     setAiSettingsDraft(draftFromAiSettings(settings));
+    setGeneralSettingsDraft({
+      resourcesSidebarOpen: readStoredBoolean(SIDEBAR_OPEN_KEY, true),
+      defaultItemSort: readStoredString(ITEM_SORT_KEY, DEFAULT_ITEM_SORT, ["recent", "title", "year_desc"] as const),
+      defaultAttachmentFilter: readStoredString(
+        ATTACHMENT_FILTER_KEY,
+        DEFAULT_ATTACHMENT_FILTER,
+        ["all", "ready", "missing", "citation_only"] as const,
+      ),
+      defaultReaderFitMode: readStoredString(
+        READER_FIT_MODE_KEY,
+        DEFAULT_READER_FIT_MODE,
+        ["fit_width", "manual"] as const,
+      ),
+      defaultReaderZoom: readStoredNumber(READER_ZOOM_KEY, DEFAULT_READER_ZOOM),
+    });
     setOpenAiApiKeyDraft("");
     setAnthropicApiKeyDraft("");
     setIsSettingsOpen(true);
@@ -1150,13 +1361,18 @@ export default function App({ api }: { api: AppApi }) {
       openai_api_key: openAiApiKeyDraft.trim() ? openAiApiKeyDraft : undefined,
       anthropic_api_key: anthropicApiKeyDraft.trim() ? anthropicApiKeyDraft : undefined,
     });
+    setIsSidebarVisible(generalSettingsDraft.resourcesSidebarOpen);
+    setItemSort(generalSettingsDraft.defaultItemSort);
+    setAttachmentFilter(generalSettingsDraft.defaultAttachmentFilter);
+    setReaderFitMode(generalSettingsDraft.defaultReaderFitMode);
+    setReaderZoom(clampReaderZoom(generalSettingsDraft.defaultReaderZoom));
     setAiSettings(next);
     setAiSettingsDraft(draftFromAiSettings(next));
     setOpenAiApiKeyDraft("");
     setAnthropicApiKeyDraft("");
     setIsSettingsOpen(false);
-    setStatusMessage("Saved AI settings.");
-  }, [aiSettingsDraft, anthropicApiKeyDraft, getApi, openAiApiKeyDraft]);
+    setStatusMessage("Saved settings.");
+  }, [aiSettingsDraft, anthropicApiKeyDraft, clampReaderZoom, generalSettingsDraft, getApi, openAiApiKeyDraft]);
 
   const handleClearSavedKey = useCallback(async (provider: AIProvider) => {
     const runtimeApi = await getApi();
@@ -1378,15 +1594,17 @@ export default function App({ api }: { api: AppApi }) {
 
   const handleRequestDeleteCollection = useCallback(
     (collection: Collection) => {
+      const summary = collectionDeleteSummary(collections, libraryItems, collection.id);
       setDeleteTarget({
         kind: "collection",
         targetId: collection.id,
         label: collection.name,
         parentCollectionId: collection.parent_id,
+        ...summary,
       });
       setResourceContextMenu(null);
     },
-    [],
+    [collections, libraryItems],
   );
 
   const handleRequestDeleteItem = useCallback((item: LibraryItem) => {
@@ -1428,12 +1646,44 @@ export default function App({ api }: { api: AppApi }) {
 
         setStatusMessage(`Deleted ${deleteTarget.label}.`);
       } else {
+        const deletedCollectionIds = new Set(deleteTarget.deletedCollectionIds ?? [deleteTarget.targetId]);
+        const deletedItemIds = new Set(deleteTarget.deletedItemIds ?? []);
+        const remainingOpenPaperIds = openPaperIds.filter((itemId) => !deletedItemIds.has(itemId));
+        const deletedActivePaper =
+          activePaperId !== null && deletedItemIds.has(activePaperId);
+        const deletedSelectedCollection =
+          selectedCollectionId !== null && deletedCollectionIds.has(selectedCollectionId);
+
         await runtimeApi.removeCollection({ collection_id: deleteTarget.targetId });
+        await loadLibrary();
         await refreshCollections(deleteTarget.parentCollectionId);
-        if (deleteTarget.parentCollectionId === null && selectedCollectionId === deleteTarget.targetId) {
-          setSelectedCollectionId(null);
+        if (deletedSelectedCollection) {
+          setSelectedCollectionId(deleteTarget.parentCollectionId);
         }
         if (activeAiSessionId) await refreshActiveAiSession(activeAiSessionId);
+        setOpenPaperIds(remainingOpenPaperIds);
+        setSelectedItemIds((current) => current.filter((itemId) => !deletedItemIds.has(itemId)));
+        setExpandedCollectionIds((current) => current.filter((collectionId) => !deletedCollectionIds.has(collectionId)));
+        setActivePaperId((current) =>
+          current !== null && deletedItemIds.has(current)
+            ? remainingOpenPaperIds[remainingOpenPaperIds.length - 1] ?? null
+            : current,
+        );
+        setAiSessionReferences((current) =>
+          current.filter((reference) =>
+            reference.kind === "item"
+              ? !deletedItemIds.has(reference.target_id)
+              : !deletedCollectionIds.has(reference.target_id),
+          ),
+        );
+        if (deletedActivePaper) {
+          setWorkspaceMode("workspace");
+          setIsSidebarVisible(true);
+          setReaderView(null);
+          setAnnotations([]);
+          setPdfSelection(null);
+          setActivePdfHighlight(null);
+        }
         setStatusMessage(`Deleted ${deleteTarget.label}.`);
       }
       setDeleteTarget(null);
@@ -1581,6 +1831,14 @@ export default function App({ api }: { api: AppApi }) {
     if (!activeAiSessionId) return;
     const runtimeApi = await getApi();
     const streamId = createStreamId();
+    setAiPending({
+      streamId,
+      kind,
+      inputPrompt: prompt?.trim() || null,
+      markdown: "",
+      error: null,
+      status: "streaming",
+    });
     try {
       const task = await runtimeApi.runAiSessionTask({ session_id: activeAiSessionId, kind, prompt, stream_id: streamId });
       const nextTaskRuns = await runtimeApi.listAiSessionTaskRuns(activeAiSessionId);
@@ -1589,10 +1847,20 @@ export default function App({ api }: { api: AppApi }) {
       setAiSessionTaskRuns(nextTaskRuns);
       setAiSessionArtifact(nextArtifact);
       setAiSessions(nextSessions);
-      setAiPending((current) => (current && current.taskId === task.id ? null : current));
+      setAiPending((current) => (current && current.streamId === streamId ? null : current));
       setStatusMessage(`Completed ${taskLabel(kind)}.`);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : `Failed ${taskLabel(kind)}.`);
+      const message = error instanceof Error ? error.message : `Failed ${taskLabel(kind)}.`;
+      setAiPending((current) =>
+        current && current.streamId === streamId
+          ? {
+              ...current,
+              error: message,
+              status: "failed",
+            }
+          : current,
+      );
+      setStatusMessage(message);
     }
   };
 
@@ -1603,17 +1871,9 @@ export default function App({ api }: { api: AppApi }) {
     setAiComposerValue("");
   }, [aiComposerValue]);
 
-  const handleQuickAction = useCallback(
-    async (kind: string) => {
-      setAreQuickActionsVisible(false);
-      try {
-        await handleSessionTask(kind);
-      } finally {
-        setAreQuickActionsVisible(true);
-      }
-    },
-    [activeAiSessionId, aiSessionReferences],
-  );
+  const handleQuickAction = async (kind: string) => {
+    await handleSessionTask(kind);
+  };
 
   const handleCreateResearchNote = async () => {
     if (!aiSessionArtifact) return;
@@ -1652,6 +1912,7 @@ export default function App({ api }: { api: AppApi }) {
     const session = await runtimeApi.createAiSession();
     setAiSessions((current) => [session, ...current]);
     setActiveAiSessionId(session.id);
+    setIsAiSessionHistoryOpen(false);
     if (activePaper) {
       await runtimeApi.addAiSessionReference({
         session_id: session.id,
@@ -1788,6 +2049,7 @@ export default function App({ api }: { api: AppApi }) {
 
   const aiPanelCanSend = expandedAiReferenceItemIds.length > 0 && aiPending?.status !== "streaming";
   const compareEnabled = expandedAiReferenceItemIds.length >= 2 && aiPending?.status !== "streaming";
+  const areQuickActionsDisabled = aiPending?.status === "streaming";
   const filteredReferenceCollections = useMemo(() => {
     const query = aiReferenceQuery.trim().toLowerCase();
     return sortedReferenceCollections.filter((collection) =>
@@ -1795,6 +2057,7 @@ export default function App({ api }: { api: AppApi }) {
     );
   }, [aiReferenceQuery, sortedReferenceCollections]);
   const aiReferencePickerResults = useMemo<AiReferencePickerResult[]>(() => {
+    const query = aiReferenceQuery.trim();
     const output: AiReferencePickerResult[] = [];
     const seen = new Set<string>();
     const pushResult = (entry: AiReferencePickerResult) => {
@@ -1805,7 +2068,7 @@ export default function App({ api }: { api: AppApi }) {
 
     if (activePaper) {
       pushResult({
-        key: `current-${activePaper.id}`,
+        key: `item-${activePaper.id}`,
         kind: "item",
         targetId: activePaper.id,
         label: activePaper.title,
@@ -1814,7 +2077,7 @@ export default function App({ api }: { api: AppApi }) {
       });
     }
 
-    for (const item of aiReferenceSearchResults) {
+    for (const item of query.length > 0 ? aiReferenceSearchResults : sortedReferenceItems) {
       pushResult({
         key: `item-${item.id}`,
         kind: "item",
@@ -1837,7 +2100,7 @@ export default function App({ api }: { api: AppApi }) {
     }
 
     return output;
-  }, [activePaper, aiReferenceSearchResults, filteredReferenceCollections, libraryItems]);
+  }, [activePaper, aiReferenceQuery, aiReferenceSearchResults, filteredReferenceCollections, libraryItems, sortedReferenceItems]);
 
 
   const pdfFocusHighlightBarRef = useRef<HTMLDivElement | null>(null);
@@ -2789,37 +3052,163 @@ export default function App({ api }: { api: AppApi }) {
           <aside className="ai-shell" aria-label="AI panel">
             <div className="ai-shell-header">
               <div className="ai-copilot-header">
-                <span className="ai-copilot-title">Copilot</span>
-                <select
-                  aria-label="History Sessions"
-                  className="mode-select ai-session-select"
-                  value={activeAiSessionId ?? ""}
-                  onChange={(event) => setActiveAiSessionId(event.target.value ? Number(event.target.value) : null)}
-                >
-                  {aiSessions.map((session) => (
-                    <option key={session.id} value={session.id}>
-                      {session.title}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  aria-label="New Session"
-                  className="icon-button icon-button-small"
-                  type="button"
-                  onClick={() => void handleCreateAiSession()}
-                >
-                  +
-                </button>
-                <button
-                  aria-label="Close Copilot"
-                  className="icon-button icon-button-small"
-                  type="button"
-                  onClick={() => setIsAiPanelOpen(false)}
-                >
-                  ×
-                </button>
+                <div className="ai-copilot-heading">
+                  <span className="ai-copilot-title">Copilot</span>
+                  {activeAiSession ? (
+                    <span className="meta-count ai-session-title" title={activeAiSession.title}>
+                      {activeAiSession.title}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="ai-copilot-controls">
+                  <button
+                    aria-label="Chat History"
+                    aria-pressed={isAiSessionHistoryOpen}
+                    className="icon-button icon-button-small"
+                    type="button"
+                    onClick={() => setIsAiSessionHistoryOpen((current) => !current)}
+                  >
+                    <ChatHistoryIcon />
+                  </button>
+                  <button
+                    aria-label="New Session"
+                    className="icon-button icon-button-small"
+                    type="button"
+                    onClick={() => void handleCreateAiSession()}
+                  >
+                    <NewSessionIcon />
+                  </button>
+                  <button
+                    aria-label="Artifacts"
+                    aria-pressed={aiDockOpen.artifacts}
+                    className="icon-button icon-button-small"
+                    type="button"
+                    onClick={() => toggleAiDockSection("artifacts")}
+                  >
+                    <ArtifactIcon />
+                  </button>
+                  <button
+                    aria-label="Task History"
+                    aria-pressed={aiDockOpen.history}
+                    className="icon-button icon-button-small"
+                    type="button"
+                    onClick={() => toggleAiDockSection("history")}
+                  >
+                    <TaskHistoryIcon />
+                  </button>
+                  <button
+                    aria-label="Research Notes"
+                    aria-pressed={aiDockOpen.notes}
+                    className="icon-button icon-button-small"
+                    type="button"
+                    onClick={() => toggleAiDockSection("notes")}
+                  >
+                    <ResearchNotesIcon />
+                  </button>
+                  <button
+                    aria-label="Close Copilot"
+                    className="icon-button icon-button-small"
+                    type="button"
+                    onClick={() => setIsAiPanelOpen(false)}
+                  >
+                    <CloseCopilotIcon />
+                  </button>
+                </div>
+              </div>
+              <div className="ai-floating-panels">
+                {aiDockOpen.artifacts ? (
+                  <div className="management-panel-body ai-dock-panel-body ai-floating-panel" aria-label="Artifacts panel">
+                    {aiSessionArtifact ? <MarkdownMessage markdown={aiSessionArtifact.markdown} /> : <p>No artifact yet.</p>}
+                    {aiSessionArtifact ? (
+                      <button className="ghost-button" type="button" onClick={() => void handleCreateResearchNote()}>
+                        Save as Research Note
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {aiDockOpen.history ? (
+                  <div className="management-panel-body ai-dock-panel-body ai-floating-panel" aria-label="Task History panel">
+                    {aiSessionTaskRuns.length > 0 ? (
+                      aiSessionTaskRuns.map((task) => (
+                        <div key={`history-${task.id}`} className="export-row">
+                          <span>{taskLabel(task.kind)}</span>
+                          <span className="meta-count">{task.status}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p>No tasks yet.</p>
+                    )}
+                  </div>
+                ) : null}
+
+                {aiDockOpen.notes ? (
+                  <div className="management-panel-body ai-dock-panel-body ai-floating-panel" aria-label="Research Notes panel">
+                    {activeNoteId ? (
+                      <>
+                        <textarea
+                          aria-label="Research note editor"
+                          className="note-editor"
+                          value={noteDraft}
+                          onChange={(event) => setNoteDraft(event.target.value)}
+                        />
+                        <div className="export-row">
+                          <button className="ghost-button" type="button" onClick={() => void handleSaveNoteEdits()}>
+                            Save Note Edits
+                          </button>
+                          <button className="ghost-button" type="button" onClick={() => void handleExportMarkdown()}>
+                            Export Markdown
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
+                    {notes.length > 0 ? (
+                      notes.map((note) => (
+                        <button
+                          key={note.id}
+                          className={`nav-item ${note.id === activeNoteId ? "nav-item-active" : ""}`}
+                          type="button"
+                          onClick={() => {
+                            setActiveNoteId(note.id);
+                            setNoteDraft(note.markdown);
+                          }}
+                        >
+                          {noteHeading(note)}
+                        </button>
+                      ))
+                    ) : (
+                      <p>No notes yet.</p>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </div>
+
+            <aside
+              className={`ai-session-history-panel ${isAiSessionHistoryOpen ? "ai-session-history-panel-open" : ""}`}
+              aria-hidden={!isAiSessionHistoryOpen}
+            >
+              <div className="ai-session-history-panel-header">
+                <strong>Chat History</strong>
+              </div>
+              <div className="ai-session-history-list" role="list" aria-label="Chat History panel">
+                {aiSessions.map((session) => (
+                  <button
+                    key={session.id}
+                    className={`nav-item ai-session-history-item ${session.id === activeAiSessionId ? "nav-item-active" : ""}`}
+                    title={session.title}
+                    type="button"
+                    onClick={() => {
+                      setActiveAiSessionId(session.id);
+                      setIsAiSessionHistoryOpen(false);
+                    }}
+                  >
+                    <span className="ai-session-history-item-title">{session.title}</span>
+                    <span className="meta-count">{session.id === activeAiSessionId ? "Active" : "Open"}</span>
+                  </button>
+                ))}
+              </div>
+            </aside>
 
             <div className="ai-chat-history">
               {aiSessionTaskRuns.map((task) => (
@@ -2863,130 +3252,32 @@ export default function App({ api }: { api: AppApi }) {
             </div>
 
             <div className="ai-bottom-dock">
-              <div className="ai-dock-sections">
-                <details className="ai-dock-panel" open={aiDockOpen.artifacts}>
-                  <summary
-                    onClick={(event) => {
-                      event.preventDefault();
-                      toggleAiDockSection("artifacts");
-                    }}
+              <div className="ai-quick-actions" aria-label="AI quick actions">
+                {sessionActions.map((action) => (
+                  <button
+                    key={action.kind}
+                    className="ghost-button ai-quick-action"
+                    disabled={areQuickActionsDisabled || (action.kind === "session.compare" ? !compareEnabled : !aiPanelCanSend)}
+                    type="button"
+                    onClick={() => void handleQuickAction(action.kind)}
                   >
-                    Artifacts
-                  </summary>
-                  {aiDockOpen.artifacts ? (
-                    <div className="management-panel-body ai-dock-panel-body">
-                      {aiSessionArtifact ? <MarkdownMessage markdown={aiSessionArtifact.markdown} /> : <p>No artifact yet.</p>}
-                      {aiSessionArtifact ? (
-                        <button className="ghost-button" type="button" onClick={() => void handleCreateResearchNote()}>
-                          Save as Research Note
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </details>
-
-                <details className="ai-dock-panel" open={aiDockOpen.history}>
-                  <summary
-                    onClick={(event) => {
-                      event.preventDefault();
-                      toggleAiDockSection("history");
-                    }}
-                  >
-                    Task History
-                  </summary>
-                  {aiDockOpen.history ? (
-                    <div className="management-panel-body ai-dock-panel-body">
-                      {aiSessionTaskRuns.length > 0 ? (
-                        aiSessionTaskRuns.map((task) => (
-                          <div key={`history-${task.id}`} className="export-row">
-                            <span>{taskLabel(task.kind)}</span>
-                            <span className="meta-count">{task.status}</span>
-                          </div>
-                        ))
-                      ) : (
-                        <p>No tasks yet.</p>
-                      )}
-                    </div>
-                  ) : null}
-                </details>
-
-                <details className="ai-dock-panel" open={aiDockOpen.notes}>
-                  <summary
-                    onClick={(event) => {
-                      event.preventDefault();
-                      toggleAiDockSection("notes");
-                    }}
-                  >
-                    Research Notes
-                  </summary>
-                  {aiDockOpen.notes ? (
-                    <div className="management-panel-body ai-dock-panel-body">
-                      {activeNoteId ? (
-                        <>
-                          <textarea
-                            aria-label="Research note editor"
-                            className="note-editor"
-                            value={noteDraft}
-                            onChange={(event) => setNoteDraft(event.target.value)}
-                          />
-                          <div className="export-row">
-                            <button className="ghost-button" type="button" onClick={() => void handleSaveNoteEdits()}>
-                              Save Note Edits
-                            </button>
-                            <button className="ghost-button" type="button" onClick={() => void handleExportMarkdown()}>
-                              Export Markdown
-                            </button>
-                          </div>
-                        </>
-                      ) : null}
-                      {notes.length > 0 ? (
-                        notes.map((note) => (
-                          <button
-                            key={note.id}
-                            className={`nav-item ${note.id === activeNoteId ? "nav-item-active" : ""}`}
-                            type="button"
-                            onClick={() => {
-                              setActiveNoteId(note.id);
-                              setNoteDraft(note.markdown);
-                            }}
-                          >
-                            {noteHeading(note)}
-                          </button>
-                        ))
-                      ) : (
-                        <p>No notes yet.</p>
-                      )}
-                    </div>
-                  ) : null}
-                </details>
+                    {action.label}
+                  </button>
+                ))}
               </div>
 
               <div className="ai-composer">
-                {areQuickActionsVisible ? (
-                  <div className="ai-quick-actions" aria-label="AI quick actions">
-                    {sessionActions.map((action) => (
-                      <button
-                        key={action.kind}
-                        className="ghost-button ai-quick-action"
-                        disabled={action.kind === "session.compare" ? !compareEnabled : !aiPanelCanSend}
-                        type="button"
-                        onClick={() => void handleQuickAction(action.kind)}
-                      >
-                        {action.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-
                 <div className="ai-composer-header">
                   <div className="ai-reference-chip-list" aria-label="Active AI references">
-                    {aiSessionReferences.map((reference) => (
-                      <span key={reference.id} className="annotation-chip ai-reference-chip">
+                    {aiSessionReferences.map((reference) => {
+                      const referenceLabel = sessionReferenceLabel(reference, libraryItems, collections);
+                      return (
+                      <span key={reference.id} className="annotation-chip ai-reference-chip" title={referenceLabel}>
                         <span className="ai-reference-chip-label">
-                          {sessionReferenceLabel(reference, libraryItems, collections)}
+                          {referenceLabel}
                         </span>
                         <button
-                          aria-label={`Remove ${sessionReferenceLabel(reference, libraryItems, collections)}`}
+                          aria-label={`Remove ${referenceLabel}`}
                           className="ai-reference-chip-remove"
                           type="button"
                           onClick={() => void handleRemoveAiReference(reference.id)}
@@ -2994,7 +3285,8 @@ export default function App({ api }: { api: AppApi }) {
                           ×
                         </button>
                       </span>
-                    ))}
+                    );
+                    })}
                   </div>
                   <div className="ai-reference-picker-shell">
                     <button
@@ -3004,7 +3296,7 @@ export default function App({ api }: { api: AppApi }) {
                       type="button"
                       onClick={toggleAiReferencePicker}
                     >
-                      +
+                      <NewSessionIcon />
                     </button>
                     {isReferencePickerOpen ? (
                       <div
@@ -3033,11 +3325,14 @@ export default function App({ api }: { api: AppApi }) {
                                 ? aiReferenceItemIds.has(result.targetId)
                                 : aiReferenceCollectionIds.has(result.targetId);
                             const badges = added ? [...result.badges, "Added"] : result.badges;
+                            const accessibleLabel = pickerResultLabel(result, badges);
                             return (
                               <button
                                 key={result.key}
+                                aria-label={accessibleLabel}
                                 className="ai-reference-result"
                                 disabled={added}
+                                title={accessibleLabel}
                                 type="button"
                                 onClick={() => void handleAddAiReference(result.kind, result.targetId)}
                               >
@@ -3067,7 +3362,7 @@ export default function App({ api }: { api: AppApi }) {
                           aiReferencePickerResults.length === 0 ? (
                             <p className="ai-reference-results-empty">
                               {aiReferenceQuery.trim().length === 0
-                                ? "Search for a paper or pick a collection."
+                                ? "No papers or collections available."
                                 : "No matching context found."}
                             </p>
                           ) : null}
@@ -3116,9 +3411,9 @@ export default function App({ api }: { api: AppApi }) {
             <p>
               {deleteTarget.kind === "item"
                 ? "This removes the paper from the library and clears any matching AI references."
-                : "This removes the collection and clears any matching AI references. Nested collections and papers must already be empty."}
+                : `This removes ${deleteTarget.paperCount ?? 0} paper${deleteTarget.paperCount === 1 ? "" : "s"} and ${deleteTarget.nestedCollectionCount ?? 0} nested collection${deleteTarget.nestedCollectionCount === 1 ? "" : "s"}, then clears matching AI references and related notes.`}
             </p>
-            <div className="settings-dialog-actions">
+          <div className="settings-dialog-actions">
               <button className="ghost-button" type="button" onClick={() => setDeleteTarget(null)}>
                 Cancel
               </button>
@@ -3136,120 +3431,222 @@ export default function App({ api }: { api: AppApi }) {
             <div className="panel-header panel-header-row">
               <div>
                 <p className="eyebrow">Settings</p>
-                <h2>AI Providers</h2>
+                <h2>General</h2>
               </div>
               <button className="ghost-button" type="button" onClick={closeSettingsDialog}>
                 Cancel
               </button>
             </div>
 
-            <div className="settings-provider-tabs" role="tablist" aria-label="Active AI provider">
-              {(["openai", "anthropic"] as const).map((provider) => (
-                <button
-                  key={provider}
-                  aria-selected={aiSettingsDraft.active_provider === provider}
-                  className={`reader-tab ${aiSettingsDraft.active_provider === provider ? "reader-tab-active" : ""}`}
-                  role="tab"
-                  type="button"
-                  onClick={() => setAiSettingsDraft((current) => ({ ...current, active_provider: provider }))}
-                >
-                  {provider === "openai" ? "OpenAI" : "Anthropic"}
-                </button>
-              ))}
-            </div>
-
-            <div className="settings-provider-grid">
+            <div className="settings-sections">
               <div className="settings-provider-card">
-                <p className="eyebrow">OpenAI</p>
+                <p className="eyebrow">General</p>
                 <label className="settings-field">
-                  <span>Model</span>
-                  <input
-                    aria-label="OpenAI model"
-                    value={aiSettingsDraft.openai_model}
+                  <span>Resources sidebar</span>
+                  <select
+                    aria-label="Resources sidebar default"
+                    className="mode-select"
+                    value={generalSettingsDraft.resourcesSidebarOpen ? "open" : "closed"}
                     onChange={(event) =>
-                      setAiSettingsDraft((current) => ({ ...current, openai_model: event.target.value }))
+                      setGeneralSettingsDraft((current) => ({
+                        ...current,
+                        resourcesSidebarOpen: event.target.value === "open",
+                      }))
                     }
-                  />
+                  >
+                    <option value="open">Open by default</option>
+                    <option value="closed">Closed by default</option>
+                  </select>
                 </label>
                 <label className="settings-field">
-                  <span>Base URL</span>
-                  <input
-                    aria-label="OpenAI base URL"
-                    placeholder="https://api.openai.com/v1"
-                    value={aiSettingsDraft.openai_base_url}
+                  <span>Default paper sort</span>
+                  <select
+                    aria-label="Default paper sort"
+                    className="mode-select"
+                    value={generalSettingsDraft.defaultItemSort}
                     onChange={(event) =>
-                      setAiSettingsDraft((current) => ({ ...current, openai_base_url: event.target.value }))
+                      setGeneralSettingsDraft((current) => ({
+                        ...current,
+                        defaultItemSort: event.target.value as ItemSort,
+                      }))
                     }
-                  />
+                  >
+                    <option value="recent">Recently added</option>
+                    <option value="title">Title</option>
+                    <option value="year_desc">Year</option>
+                  </select>
                 </label>
                 <label className="settings-field">
-                  <span>API key</span>
+                  <span>Default attachment filter</span>
+                  <select
+                    aria-label="Default attachment filter"
+                    className="mode-select"
+                    value={generalSettingsDraft.defaultAttachmentFilter}
+                    onChange={(event) =>
+                      setGeneralSettingsDraft((current) => ({
+                        ...current,
+                        defaultAttachmentFilter: event.target.value as AttachmentFilter,
+                      }))
+                    }
+                  >
+                    <option value="all">All attachments</option>
+                    <option value="ready">Ready</option>
+                    <option value="missing">Missing</option>
+                    <option value="citation_only">Citation only</option>
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span>PDF default fit mode</span>
+                  <select
+                    aria-label="PDF default fit mode"
+                    className="mode-select"
+                    value={generalSettingsDraft.defaultReaderFitMode}
+                    onChange={(event) =>
+                      setGeneralSettingsDraft((current) => ({
+                        ...current,
+                        defaultReaderFitMode: event.target.value as ReaderFitMode,
+                      }))
+                    }
+                  >
+                    <option value="fit_width">Fit width</option>
+                    <option value="manual">Manual zoom</option>
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span>PDF default zoom</span>
                   <input
-                    aria-label="OpenAI API key"
-                    type="password"
-                    value={openAiApiKeyDraft}
-                    placeholder={aiSettings?.has_openai_api_key ? "Saved key present" : ""}
-                    onChange={(event) => setOpenAiApiKeyDraft(event.target.value)}
+                    aria-label="PDF default zoom"
+                    type="number"
+                    min={READER_MIN_ZOOM}
+                    max={READER_MAX_ZOOM}
+                    value={generalSettingsDraft.defaultReaderZoom}
+                    onChange={(event) =>
+                      setGeneralSettingsDraft((current) => ({
+                        ...current,
+                        defaultReaderZoom: clampReaderZoom(Number(event.target.value) || DEFAULT_READER_ZOOM),
+                      }))
+                    }
                   />
                 </label>
                 <div className="settings-provider-actions">
-                  <span className="meta-count">
-                    {aiSettings?.has_openai_api_key ? "Saved key" : "No saved key"}
-                  </span>
                   <button
                     className="ghost-button"
                     type="button"
-                    onClick={() => void handleClearSavedKey("openai")}
+                    onClick={() => {
+                      setSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+                      setAiPanelWidth(DEFAULT_AI_PANEL_WIDTH);
+                    }}
                   >
-                    Clear saved key
+                    Reset layout widths
                   </button>
                 </div>
               </div>
 
               <div className="settings-provider-card">
-                <p className="eyebrow">Anthropic</p>
-                <label className="settings-field">
-                  <span>Model</span>
-                  <input
-                    aria-label="Anthropic model"
-                    value={aiSettingsDraft.anthropic_model}
-                    onChange={(event) =>
-                      setAiSettingsDraft((current) => ({ ...current, anthropic_model: event.target.value }))
-                    }
-                  />
-                </label>
-                <label className="settings-field">
-                  <span>Base URL</span>
-                  <input
-                    aria-label="Anthropic base URL"
-                    placeholder="https://api.anthropic.com/v1"
-                    value={aiSettingsDraft.anthropic_base_url}
-                    onChange={(event) =>
-                      setAiSettingsDraft((current) => ({ ...current, anthropic_base_url: event.target.value }))
-                    }
-                  />
-                </label>
-                <label className="settings-field">
-                  <span>API key</span>
-                  <input
-                    aria-label="Anthropic API key"
-                    type="password"
-                    value={anthropicApiKeyDraft}
-                    placeholder={aiSettings?.has_anthropic_api_key ? "Saved key present" : ""}
-                    onChange={(event) => setAnthropicApiKeyDraft(event.target.value)}
-                  />
-                </label>
-                <div className="settings-provider-actions">
-                  <span className="meta-count">
-                    {aiSettings?.has_anthropic_api_key ? "Saved key" : "No saved key"}
-                  </span>
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() => void handleClearSavedKey("anthropic")}
-                  >
-                    Clear saved key
-                  </button>
+                <p className="eyebrow">AI Providers</p>
+                <div className="settings-provider-tabs" role="tablist" aria-label="Active AI provider">
+                  {(["openai", "anthropic"] as const).map((provider) => (
+                    <button
+                      key={provider}
+                      aria-selected={aiSettingsDraft.active_provider === provider}
+                      className={`reader-tab ${aiSettingsDraft.active_provider === provider ? "reader-tab-active" : ""}`}
+                      role="tab"
+                      type="button"
+                      onClick={() => setAiSettingsDraft((current) => ({ ...current, active_provider: provider }))}
+                    >
+                      {provider === "openai" ? "OpenAI" : "Anthropic"}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="settings-provider-grid">
+                  <div className="settings-provider-card settings-provider-card-nested">
+                    <p className="eyebrow">OpenAI</p>
+                    <label className="settings-field">
+                      <span>Model</span>
+                      <input
+                        aria-label="OpenAI model"
+                        value={aiSettingsDraft.openai_model}
+                        onChange={(event) =>
+                          setAiSettingsDraft((current) => ({ ...current, openai_model: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Base URL</span>
+                      <input
+                        aria-label="OpenAI base URL"
+                        placeholder="https://api.openai.com/v1"
+                        value={aiSettingsDraft.openai_base_url}
+                        onChange={(event) =>
+                          setAiSettingsDraft((current) => ({ ...current, openai_base_url: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>API key</span>
+                      <input
+                        aria-label="OpenAI API key"
+                        type="password"
+                        value={openAiApiKeyDraft}
+                        placeholder={aiSettings?.has_openai_api_key ? "Replace saved key" : "Paste API key"}
+                        onChange={(event) => setOpenAiApiKeyDraft(event.target.value)}
+                      />
+                    </label>
+                    <div className="settings-provider-actions">
+                      <span className="meta-count">{aiSettings?.has_openai_api_key ? "Saved key" : "No saved key"}</span>
+                      <button className="ghost-button" type="button" onClick={() => void handleClearSavedKey("openai")}>
+                        Clear saved key
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settings-provider-card settings-provider-card-nested">
+                    <p className="eyebrow">Anthropic</p>
+                    <label className="settings-field">
+                      <span>Model</span>
+                      <input
+                        aria-label="Anthropic model"
+                        value={aiSettingsDraft.anthropic_model}
+                        onChange={(event) =>
+                          setAiSettingsDraft((current) => ({ ...current, anthropic_model: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Base URL</span>
+                      <input
+                        aria-label="Anthropic base URL"
+                        placeholder="https://api.anthropic.com/v1"
+                        value={aiSettingsDraft.anthropic_base_url}
+                        onChange={(event) =>
+                          setAiSettingsDraft((current) => ({ ...current, anthropic_base_url: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>API key</span>
+                      <input
+                        aria-label="Anthropic API key"
+                        type="password"
+                        value={anthropicApiKeyDraft}
+                        placeholder={aiSettings?.has_anthropic_api_key ? "Replace saved key" : "Paste API key"}
+                        onChange={(event) => setAnthropicApiKeyDraft(event.target.value)}
+                      />
+                    </label>
+                    <div className="settings-provider-actions">
+                      <span className="meta-count">
+                        {aiSettings?.has_anthropic_api_key ? "Saved key" : "No saved key"}
+                      </span>
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => void handleClearSavedKey("anthropic")}
+                      >
+                        Clear saved key
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
