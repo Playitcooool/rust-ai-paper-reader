@@ -1,10 +1,10 @@
 use std::{
     collections::HashSet,
     fs,
-    io::{Cursor, Read, Seek},
+    io::{BufRead, BufReader, Cursor, Read, Seek},
     path::{Path, PathBuf},
     panic,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
@@ -237,11 +237,18 @@ pub struct LibraryService {
     db_path: PathBuf,
     files_dir: PathBuf,
     ai_transport: Arc<dyn AiTransport>,
-    secret_store: Arc<dyn SecretStore>,
 }
 
 pub trait AiTransport: Send + Sync {
-    fn complete(&self, request: AiCompletionRequest) -> Result<String>;
+    fn stream_completion(
+        &self,
+        request: AiCompletionRequest,
+        on_delta: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<String>;
+
+    fn complete(&self, request: AiCompletionRequest) -> Result<String> {
+        self.stream_completion(request, &mut |_| Ok(()))
+    }
 }
 
 #[derive(Clone)]
@@ -268,39 +275,6 @@ struct StoredAISettings {
     anthropic_base_url: String,
     anthropic_api_key: String,
 }
-
-pub trait SecretStore: Send + Sync {
-    fn get(&self, key: &str) -> Result<Option<String>>;
-    fn set(&self, key: &str, value: &str) -> Result<()>;
-    fn delete(&self, key: &str) -> Result<()>;
-}
-
-#[derive(Default)]
-pub struct MemorySecretStore {
-    values: Mutex<std::collections::HashMap<String, String>>,
-}
-
-impl SecretStore for MemorySecretStore {
-    fn get(&self, key: &str) -> Result<Option<String>> {
-        Ok(self.values.lock().unwrap().get(key).cloned())
-    }
-
-    fn set(&self, key: &str, value: &str) -> Result<()> {
-        self.values
-            .lock()
-            .unwrap()
-            .insert(key.to_string(), value.to_string());
-        Ok(())
-    }
-
-    fn delete(&self, key: &str) -> Result<()> {
-        self.values.lock().unwrap().remove(key);
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct SystemSecretStore;
 
 struct InferredMetadata {
     title: Option<String>,
@@ -331,23 +305,6 @@ const ITEM_TASK_TEXT_LIMIT: usize = 18_000;
 const COLLECTION_ITEM_TEXT_LIMIT: usize = 4_000;
 const COLLECTION_TOTAL_TEXT_LIMIT: usize = 40_000;
 const DEFAULT_AI_SESSION_TITLE: &str = "New Chat";
-const AI_SECRET_SERVICE: &str = "com.codex.paper-reader.ai";
-const OPENAI_API_KEY_SECRET: &str = "openai";
-const ANTHROPIC_API_KEY_SECRET: &str = "anthropic";
-
-impl SecretStore for SystemSecretStore {
-    fn get(&self, key: &str) -> Result<Option<String>> {
-        get_system_secret(key)
-    }
-
-    fn set(&self, key: &str, value: &str) -> Result<()> {
-        set_system_secret(key, value)
-    }
-
-    fn delete(&self, key: &str) -> Result<()> {
-        delete_system_secret(key)
-    }
-}
 
 impl Default for HttpAiTransport {
     fn default() -> Self {
@@ -361,18 +318,26 @@ impl Default for HttpAiTransport {
 }
 
 impl AiTransport for HttpAiTransport {
-    fn complete(&self, request: AiCompletionRequest) -> Result<String> {
+    fn stream_completion(
+        &self,
+        request: AiCompletionRequest,
+        on_delta: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<String> {
         match request.provider {
-            AIProvider::OpenAI => self.complete_openai(request),
-            AIProvider::Anthropic => self.complete_anthropic(request),
+            AIProvider::OpenAI => self.complete_openai(request, on_delta),
+            AIProvider::Anthropic => self.complete_anthropic(request, on_delta),
         }
     }
 }
 
 impl HttpAiTransport {
-    fn complete_openai(&self, request: AiCompletionRequest) -> Result<String> {
+    fn complete_openai(
+        &self,
+        request: AiCompletionRequest,
+        on_delta: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<String> {
         let url = format!("{}/chat/completions", normalize_base_url(&request.base_url));
-        let response: serde_json::Value = self
+        let response = self
             .client
             .post(url)
             .bearer_auth(request.api_key)
@@ -380,24 +345,53 @@ impl HttpAiTransport {
                 "model": request.model,
                 "messages": [{ "role": "user", "content": request.prompt }],
                 "temperature": 0.2,
+                "stream": true,
             }))
             .send()?
-            .error_for_status()?
-            .json()?;
-        let content = response
-            .get("choices")
-            .and_then(|choices| choices.as_array())
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
-            .and_then(extract_openai_content)
-            .ok_or_else(|| anyhow!("OpenAI response did not include assistant content"))?;
-        Ok(content.trim().to_string())
+            .error_for_status()?;
+        let mut full_text = String::new();
+        self.stream_sse(response, |_, data| {
+            if data == "[DONE]" {
+                return Ok(false);
+            }
+            let payload: serde_json::Value = serde_json::from_str(data)?;
+            if let Some(error) = payload.get("error") {
+                return Err(anyhow!(
+                    "{}",
+                    error
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("OpenAI streaming request failed")
+                ));
+            }
+            let delta = payload
+                .get("choices")
+                .and_then(|choices| choices.as_array())
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("delta"))
+                .and_then(|delta| delta.get("content"))
+                .and_then(extract_openai_content)
+                .unwrap_or_default();
+            if !delta.is_empty() {
+                on_delta(&delta)?;
+                full_text.push_str(&delta);
+            }
+            Ok(true)
+        })?;
+        let trimmed = full_text.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(anyhow!("OpenAI response did not include assistant content"));
+        }
+        Ok(trimmed)
     }
 
-    fn complete_anthropic(&self, request: AiCompletionRequest) -> Result<String> {
+    fn complete_anthropic(
+        &self,
+        request: AiCompletionRequest,
+        on_delta: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<String> {
         let url = format!("{}/messages", normalize_base_url(&request.base_url));
-        let response: serde_json::Value = self
+        let response = self
             .client
             .post(url)
             .header("x-api-key", request.api_key)
@@ -406,104 +400,104 @@ impl HttpAiTransport {
                 "model": request.model,
                 "max_tokens": 2048,
                 "messages": [{ "role": "user", "content": request.prompt }],
+                "stream": true,
             }))
             .send()?
-            .error_for_status()?
-            .json()?;
-        let blocks = response
-            .get("content")
-            .and_then(|content| content.as_array())
-            .ok_or_else(|| anyhow!("Anthropic response did not include content blocks"))?;
-        let text = blocks
-            .iter()
-            .filter(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
-            .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if text.trim().is_empty() {
+            .error_for_status()?;
+        let mut full_text = String::new();
+        self.stream_sse(response, |event_name, data| {
+            let payload: serde_json::Value = serde_json::from_str(data)?;
+            if payload.get("type").and_then(|value| value.as_str()) == Some("error")
+                || event_name == Some("error")
+            {
+                return Err(anyhow!(
+                    "{}",
+                    payload
+                        .get("error")
+                        .and_then(|error| error.get("message"))
+                        .and_then(|value| value.as_str())
+                        .or_else(|| payload.get("message").and_then(|value| value.as_str()))
+                        .unwrap_or("Anthropic streaming request failed")
+                ));
+            }
+            if payload.get("type").and_then(|value| value.as_str()) == Some("content_block_delta") {
+                if let Some(delta) = payload
+                    .get("delta")
+                    .and_then(|delta| delta.get("text"))
+                    .and_then(|value| value.as_str())
+                {
+                    on_delta(delta)?;
+                    full_text.push_str(delta);
+                }
+            }
+            Ok(payload.get("type").and_then(|value| value.as_str()) != Some("message_stop"))
+        })?;
+        let trimmed = full_text.trim().to_string();
+        if trimmed.is_empty() {
             return Err(anyhow!("Anthropic response did not include text content"));
         }
-        Ok(text.trim().to_string())
+        Ok(trimmed)
     }
-}
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn keyring_entry(secret_name: &str) -> Result<keyring::Entry> {
-    keyring::Entry::new(AI_SECRET_SERVICE, secret_name)
-        .map_err(|error| anyhow!("failed to initialize secure storage for {secret_name}: {error}"))
-}
+    fn stream_sse(
+        &self,
+        response: reqwest::blocking::Response,
+        mut on_event: impl FnMut(Option<&str>, &str) -> Result<bool>,
+    ) -> Result<()> {
+        let mut reader = BufReader::new(response);
+        let mut line = String::new();
+        let mut event_name: Option<String> = None;
+        let mut data_lines: Vec<String> = Vec::new();
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn get_system_secret(secret_name: &str) -> Result<Option<String>> {
-    let entry = keyring_entry(secret_name)?;
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(anyhow!(
-            "failed to read secure storage for {secret_name}: {error}"
-        )),
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                if !data_lines.is_empty() {
+                    let data = data_lines.join("\n");
+                    if !on_event(event_name.as_deref(), &data)? {
+                        return Ok(());
+                    }
+                }
+                return Ok(());
+            }
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                if data_lines.is_empty() {
+                    event_name = None;
+                    continue;
+                }
+                let data = data_lines.join("\n");
+                data_lines.clear();
+                let should_continue = on_event(event_name.as_deref(), &data)?;
+                event_name = None;
+                if !should_continue {
+                    return Ok(());
+                }
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("event:") {
+                event_name = Some(rest.trim_start().to_string());
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("data:") {
+                data_lines.push(rest.trim_start().to_string());
+            }
+        }
     }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn get_system_secret(_secret_name: &str) -> Result<Option<String>> {
-    Ok(None)
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn set_system_secret(secret_name: &str, value: &str) -> Result<()> {
-    let entry = keyring_entry(secret_name)?;
-    entry
-        .set_password(value)
-        .map_err(|error| anyhow!("failed to write secure storage for {secret_name}: {error}"))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn set_system_secret(_secret_name: &str, _value: &str) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn delete_system_secret(secret_name: &str) -> Result<()> {
-    let entry = keyring_entry(secret_name)?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(anyhow!(
-            "failed to delete secure storage for {secret_name}: {error}"
-        )),
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn delete_system_secret(_secret_name: &str) -> Result<()> {
-    Ok(())
 }
 
 impl LibraryService {
     pub fn new(root: &Path) -> Result<Self> {
-        Self::new_with_dependencies(
-            root,
-            Arc::new(HttpAiTransport::default()),
-            Arc::new(SystemSecretStore),
-        )
+        Self::new_with_transport(root, Arc::new(HttpAiTransport::default()))
     }
 
     pub fn new_with_transport(root: &Path, ai_transport: Arc<dyn AiTransport>) -> Result<Self> {
-        Self::new_with_dependencies(root, ai_transport, Arc::new(SystemSecretStore))
-    }
-
-    pub fn new_with_secret_store(
-        root: &Path,
-        ai_transport: Arc<dyn AiTransport>,
-        secret_store: Arc<dyn SecretStore>,
-    ) -> Result<Self> {
-        Self::new_with_dependencies(root, ai_transport, secret_store)
+        Self::new_with_dependencies(root, ai_transport)
     }
 
     fn new_with_dependencies(
         root: &Path,
         ai_transport: Arc<dyn AiTransport>,
-        secret_store: Arc<dyn SecretStore>,
     ) -> Result<Self> {
         fs::create_dir_all(root)?;
         let files_dir = root.join("library-files");
@@ -513,7 +507,6 @@ impl LibraryService {
             db_path,
             files_dir,
             ai_transport,
-            secret_store,
         };
         service.migrate()?;
         Ok(service)
@@ -1505,7 +1498,13 @@ impl LibraryService {
         }
     }
 
-    pub fn run_item_task(&self, item_id: i64, kind: &str, prompt: Option<&str>) -> Result<AITask> {
+    pub fn run_item_task_with_stream(
+        &self,
+        item_id: i64,
+        kind: &str,
+        prompt: Option<&str>,
+        mut on_delta: impl FnMut(&str) -> Result<()>,
+    ) -> Result<AITask> {
         let mut conn = self.connect()?;
         let settings = self.load_ai_settings(&conn)?;
         let (collection_id, title, excerpt) = conn.query_row(
@@ -1539,7 +1538,7 @@ impl LibraryService {
             prompt_text,
         )?;
         let request = self.build_provider_request(&settings, prompt_body)?;
-        let output = self.ai_transport.complete(request)?;
+        let output = self.ai_transport.stream_completion(request, &mut on_delta)?;
 
         let tx = conn.transaction()?;
         tx.execute(
@@ -1566,6 +1565,10 @@ impl LibraryService {
             status: "succeeded".into(),
             output_markdown: output,
         })
+    }
+
+    pub fn run_item_task(&self, item_id: i64, kind: &str, prompt: Option<&str>) -> Result<AITask> {
+        self.run_item_task_with_stream(item_id, kind, prompt, |_| Ok(()))
     }
 
     pub fn run_item_summary(&self, item_id: i64) -> Result<AITask> {
@@ -1600,12 +1603,13 @@ impl LibraryService {
         })
     }
 
-    pub fn run_collection_task(
+    pub fn run_collection_task_with_stream(
         &self,
         collection_id: i64,
         kind: &str,
         scope_item_ids: &[i64],
         prompt: Option<&str>,
+        mut on_delta: impl FnMut(&str) -> Result<()>,
     ) -> Result<AITask> {
         if scope_item_ids.is_empty() {
             return Err(anyhow!("collection has no readable items"));
@@ -1627,7 +1631,7 @@ impl LibraryService {
             prompt_text,
         )?;
         let request = self.build_provider_request(&settings, prompt_body)?;
-        let markdown = self.ai_transport.complete(request)?;
+        let markdown = self.ai_transport.stream_completion(request, &mut on_delta)?;
 
         let tx = conn.transaction()?;
         let scope_json = serde_json::to_string(scope_item_ids)?;
@@ -1655,6 +1659,16 @@ impl LibraryService {
             status: "succeeded".into(),
             output_markdown: markdown,
         })
+    }
+
+    pub fn run_collection_task(
+        &self,
+        collection_id: i64,
+        kind: &str,
+        scope_item_ids: &[i64],
+        prompt: Option<&str>,
+    ) -> Result<AITask> {
+        self.run_collection_task_with_stream(collection_id, kind, scope_item_ids, prompt, |_| Ok(()))
     }
 
     pub fn run_collection_review_draft(&self, collection_id: i64) -> Result<AITask> {
@@ -1791,11 +1805,12 @@ impl LibraryService {
         Ok(())
     }
 
-    pub fn run_ai_session_task(
+    pub fn run_ai_session_task_with_stream(
         &self,
         session_id: i64,
         kind: &str,
         prompt: Option<&str>,
+        mut on_delta: impl FnMut(&str) -> Result<()>,
     ) -> Result<AITask> {
         let mut conn = self.connect()?;
         let settings = self.load_ai_settings(&conn)?;
@@ -1810,7 +1825,7 @@ impl LibraryService {
         let prompt_text = prompt.map(str::trim).filter(|value| !value.is_empty());
         let prompt_body = build_session_prompt(&conn, kind, &expanded, prompt_text)?;
         let request = self.build_provider_request(&settings, prompt_body)?;
-        let markdown = self.ai_transport.complete(request)?;
+        let markdown = self.ai_transport.stream_completion(request, &mut on_delta)?;
         let display_title = derive_session_title(kind, prompt_text);
         let session_title = conn.query_row("SELECT title FROM ai_sessions WHERE id = ?1", [session_id], |row| {
             row.get::<_, String>(0)
@@ -1849,6 +1864,15 @@ impl LibraryService {
             status: "succeeded".into(),
             output_markdown: markdown,
         })
+    }
+
+    pub fn run_ai_session_task(
+        &self,
+        session_id: i64,
+        kind: &str,
+        prompt: Option<&str>,
+    ) -> Result<AITask> {
+        self.run_ai_session_task_with_stream(session_id, kind, prompt, |_| Ok(()))
     }
 
     pub fn list_ai_session_task_runs(&self, session_id: i64) -> Result<Vec<AITask>> {
@@ -2094,51 +2118,10 @@ impl LibraryService {
     }
 
     fn load_ai_settings(&self, conn: &Connection) -> Result<StoredAISettings> {
-        let mut settings = load_ai_settings_row(conn)?;
-        let mut migrated_legacy_keys = false;
-
-        settings.openai_api_key = match self.secret_store.get(OPENAI_API_KEY_SECRET)? {
-            Some(value) => value,
-            None if !settings.openai_api_key.trim().is_empty() => {
-                self.secret_store
-                    .set(OPENAI_API_KEY_SECRET, &settings.openai_api_key)?;
-                migrated_legacy_keys = true;
-                settings.openai_api_key.clone()
-            }
-            None => String::new(),
-        };
-
-        settings.anthropic_api_key = match self.secret_store.get(ANTHROPIC_API_KEY_SECRET)? {
-            Some(value) => value,
-            None if !settings.anthropic_api_key.trim().is_empty() => {
-                self.secret_store
-                    .set(ANTHROPIC_API_KEY_SECRET, &settings.anthropic_api_key)?;
-                migrated_legacy_keys = true;
-                settings.anthropic_api_key.clone()
-            }
-            None => String::new(),
-        };
-
-        if migrated_legacy_keys {
-            clear_legacy_ai_keys(conn)?;
-        }
-
-        Ok(settings)
+        load_ai_settings_row(conn)
     }
 
     fn save_ai_settings(&self, conn: &Connection, settings: &StoredAISettings) -> Result<()> {
-        if settings.openai_api_key.trim().is_empty() {
-            self.secret_store.delete(OPENAI_API_KEY_SECRET)?;
-        } else {
-            self.secret_store
-                .set(OPENAI_API_KEY_SECRET, settings.openai_api_key.trim())?;
-        }
-        if settings.anthropic_api_key.trim().is_empty() {
-            self.secret_store.delete(ANTHROPIC_API_KEY_SECRET)?;
-        } else {
-            self.secret_store
-                .set(ANTHROPIC_API_KEY_SECRET, settings.anthropic_api_key.trim())?;
-        }
         save_ai_settings_row(conn, settings)?;
         Ok(())
     }
@@ -2358,22 +2341,11 @@ fn save_ai_settings_row(conn: &Connection, settings: &StoredAISettings) -> Resul
             settings.active_provider.as_str(),
             settings.openai_model,
             settings.openai_base_url,
-            "",
+            settings.openai_api_key,
             settings.anthropic_model,
             settings.anthropic_base_url,
-            ""
+            settings.anthropic_api_key
         ],
-    )?;
-    Ok(())
-}
-
-fn clear_legacy_ai_keys(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "UPDATE ai_settings
-         SET openai_api_key = '',
-             anthropic_api_key = ''
-         WHERE id = 1",
-        [],
     )?;
     Ok(())
 }

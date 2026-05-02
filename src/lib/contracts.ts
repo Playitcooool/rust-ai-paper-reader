@@ -87,6 +87,10 @@ export type AITask = {
 export type AITaskStreamEvent = {
   stream_id: string;
   scope: "paper" | "collection" | "session";
+  session_id?: number;
+  item_id?: number;
+  collection_id?: number;
+  scope_item_ids?: number[];
   kind: string;
   phase: "started" | "delta" | "completed" | "failed";
   task_id?: number;
@@ -293,7 +297,7 @@ export type AppApi = {
     target_id: number;
   }) => Promise<AISessionReference>;
   removeAiSessionReference: (referenceId: number) => Promise<void>;
-  runAiSessionTask: (input: AIRunSessionTaskInput) => Promise<AITask>;
+  runAiSessionTask: (input: AIRunSessionTaskInput) => Promise<void>;
   listAiSessionTaskRuns: (sessionId: number) => Promise<AITask[]>;
   getAiSessionArtifact: (sessionId: number) => Promise<AIArtifact | null>;
   listAiSessionNotes: (sessionId: number) => Promise<ResearchNote[]>;
@@ -303,14 +307,14 @@ export type AppApi = {
     kind: string;
     prompt?: string;
     stream_id?: string;
-  }) => Promise<AITask>;
+  }) => Promise<void>;
   runCollectionTask: (input: {
     collection_id: number;
     kind: string;
     scope_item_ids: number[];
     prompt?: string;
     stream_id?: string;
-  }) => Promise<AITask>;
+  }) => Promise<void>;
   listTaskRuns: (input: { item_id?: number; collection_id?: number }) => Promise<AITask[]>;
   listenAiTaskStream: (handler: (event: AITaskStreamEvent) => void) => Promise<() => void>;
   getArtifact: (input: {

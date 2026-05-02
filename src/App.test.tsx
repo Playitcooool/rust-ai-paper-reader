@@ -379,6 +379,39 @@ describe("App reading workspace", () => {
     });
   });
 
+  it("keeps the composer editable while a session task is pending and disables send controls", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    const prompt = screen.getByRole("textbox", { name: "AI prompt" });
+    const sendButton = screen.getByRole("button", { name: "Send AI prompt" });
+    const summarizeButton = screen.getByRole("button", { name: "Summarize" });
+    const readerTab = screen.getByRole("tab", { name: "Transformer Scaling Laws" });
+
+    await user.type(prompt, "What is the key result?");
+    await user.click(sendButton);
+
+    expect(await screen.findByLabelText("AI response loading")).toBeInTheDocument();
+    expect(prompt).toHaveValue("");
+    expect(prompt).toBeEnabled();
+    expect(sendButton).toBeDisabled();
+    expect(summarizeButton).toBeDisabled();
+
+    await user.type(prompt, "Follow-up draft");
+    expect(prompt).toHaveValue("Follow-up draft");
+
+    await user.click(readerTab);
+    expect(readerTab).toHaveAttribute("aria-selected", "true");
+
+    expect((await screen.findAllByText(/Reading Q&A: Transformer Scaling Laws/i)).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(summarizeButton).toBeEnabled();
+    });
+  });
+
   it("renders compact session controls and reference chips in the AI panel", async () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
@@ -755,6 +788,63 @@ describe("App reading workspace", () => {
     expect((await screen.findAllByText(/Reading Q&A/i)).length).toBeGreaterThan(0);
   });
 
+  it("submits on Enter, inserts a newline on Shift+Enter, and ignores Enter during IME composition", async () => {
+    const user = userEvent.setup();
+    const runSessionTaskSpy = vi.spyOn(fakeApi, "runAiSessionTask");
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    const prompt = screen.getByRole("textbox", { name: "AI prompt" });
+
+    await user.type(prompt, "Line 1");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    await user.type(prompt, "Line 2");
+    expect(prompt).toHaveValue("Line 1\nLine 2");
+
+    fireEvent.keyDown(prompt, { key: "Enter", isComposing: true });
+    await waitFor(() => {
+      expect(runSessionTaskSpy).not.toHaveBeenCalled();
+    });
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(runSessionTaskSpy).toHaveBeenCalledWith({
+        session_id: 910,
+        kind: "session.ask",
+        prompt: "Line 1\nLine 2",
+        stream_id: expect.any(String),
+      });
+    });
+  });
+
+  it("keeps pending work scoped to the originating session when switching chats", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    await user.click(screen.getByRole("button", { name: "New Session" }));
+    await user.click(screen.getByRole("button", { name: "Chat History" }));
+    const historyPanel = screen.getByLabelText("Chat History panel");
+    const firstSessionButton = within(historyPanel).getByRole("button", { name: /Transformer Scaling Laws Open/i });
+    const secondSessionButton = within(historyPanel).getByRole("button", { name: /New Chat Active/i });
+
+    await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "What is the key result?");
+    await user.click(screen.getByRole("button", { name: "Send AI prompt" }));
+    expect(await screen.findByLabelText("AI response loading")).toBeInTheDocument();
+
+    await user.click(firstSessionButton);
+    expect(screen.queryByLabelText("AI response loading")).not.toBeInTheDocument();
+    expect(screen.queryByText("What is the key result?")).not.toBeInTheDocument();
+
+    await user.click(secondSessionButton);
+    expect(await screen.findByText("What is the key result?")).toBeInTheDocument();
+    expect(await screen.findByText(/Reading Q&A: Transformer Scaling Laws/i)).toBeInTheDocument();
+  });
+
   it("opens the quick picker, focuses search, and adds a searched paper reference", async () => {
     const user = userEvent.setup();
     render(<App api={fakeApi} />);
@@ -909,6 +999,7 @@ describe("App reading workspace", () => {
     const taskHistory = screen.getByLabelText("Task History panel");
     expect(within(taskHistory).getByText("No tasks yet.")).toBeInTheDocument();
     expect(within(taskHistory).queryByText("Summarize")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Summarize" })).toBeEnabled();
   });
 
   it("renders rejected AI session tasks inside the chat thread", async () => {
@@ -927,6 +1018,43 @@ describe("App reading workspace", () => {
     await user.click(screen.getByRole("button", { name: "Task History" }));
     const taskHistory = screen.getByLabelText("Task History panel");
     expect(within(taskHistory).getByText("No tasks yet.")).toBeInTheDocument();
+  });
+
+  it("keeps completed AI session replies at the bottom of the chat thread while task history stays newest-first", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+
+    const thread = container.querySelector(".ai-chat-history");
+    expect(thread).not.toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Summarize" }));
+    expect(await screen.findByLabelText("AI response streaming")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText("AI response streaming")).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Explain Terms" }));
+    expect(await screen.findByLabelText("AI response streaming")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText("AI response streaming")).not.toBeInTheDocument();
+    });
+
+    const threadEntries = Array.from(thread?.querySelectorAll(".ai-thread-entry") ?? []);
+    expect(threadEntries).toHaveLength(2);
+    expect(threadEntries[0]).toHaveTextContent("Summarize");
+    expect(threadEntries[1]).toHaveTextContent("Explain Terms");
+
+    await user.click(screen.getByRole("button", { name: "Task History" }));
+    const historyPanel = screen.getByLabelText("Task History panel");
+    const historyRows = Array.from(historyPanel.querySelectorAll(".export-row"));
+    expect(historyRows).toHaveLength(2);
+    expect(historyRows[0]).toHaveTextContent("Explain Terms");
+    expect(historyRows[1]).toHaveTextContent("Summarize");
   });
 
   it("responds to native menu import events and native drag-and-drop", async () => {

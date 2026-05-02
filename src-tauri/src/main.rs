@@ -16,7 +16,7 @@ use app_core::service::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{MenuBuilder, SubmenuBuilder},
+    menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder},
     AppHandle, Emitter, Manager, State,
 };
 use tauri_plugin_dialog::DialogExt;
@@ -180,6 +180,10 @@ struct RunAiSessionTaskInput {
 struct AITaskStreamEvent {
     stream_id: String,
     scope: String,
+    session_id: Option<i64>,
+    item_id: Option<i64>,
+    collection_id: Option<i64>,
+    scope_item_ids: Option<Vec<i64>>,
     kind: String,
     phase: String,
     task_id: Option<i64>,
@@ -237,6 +241,10 @@ fn emit_ai_task_stream(
     app_handle: &AppHandle,
     stream_id: &str,
     scope: &str,
+    session_id: Option<i64>,
+    item_id: Option<i64>,
+    collection_id: Option<i64>,
+    scope_item_ids: Option<Vec<i64>>,
     kind: &str,
     phase: &str,
     task_id: Option<i64>,
@@ -250,6 +258,10 @@ fn emit_ai_task_stream(
         AITaskStreamEvent {
             stream_id: stream_id.to_string(),
             scope: scope.to_string(),
+            session_id,
+            item_id,
+            collection_id,
+            scope_item_ids,
             kind: kind.to_string(),
             phase: phase.to_string(),
             task_id,
@@ -1350,90 +1362,69 @@ fn run_item_task(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     input: RunItemTaskInput,
-) -> Result<app_core::service::AITask, String> {
-    if let Some(stream_id) = input.stream_id.as_deref() {
-        emit_ai_task_stream(
-            &app_handle,
-            stream_id,
-            "paper",
-            &input.kind,
-            "started",
-            None,
-            input.prompt.clone(),
-            None,
-            None,
-            None,
-        );
-    }
+) -> Result<(), String> {
+    let library_root = state.library_root.clone();
     match input.kind.as_str() {
-        "item.summarize" | "item.translate" | "item.explain_term" | "item.ask" => service(&state)?
-            .run_item_task(input.item_id, &input.kind, input.prompt.as_deref())
-            .inspect(|task| {
-                if let Some(stream_id) = input.stream_id.as_deref() {
-                    let mut full_markdown = String::new();
-                    for chunk in split_markdown_chunks(&task.output_markdown) {
-                        if !full_markdown.is_empty() {
-                            full_markdown.push_str("\n\n");
-                        }
-                        full_markdown.push_str(&chunk);
-                        emit_ai_task_stream(
-                            &app_handle,
-                            stream_id,
-                            "paper",
-                            &input.kind,
-                            "delta",
-                            None,
-                            task.input_prompt.clone(),
-                            Some(chunk),
-                            Some(full_markdown.clone()),
-                            None,
-                        );
-                    }
-                    emit_ai_task_stream(
-                        &app_handle,
-                        stream_id,
-                        "paper",
-                        &input.kind,
-                        "completed",
-                        Some(task.id),
-                        task.input_prompt.clone(),
-                        None,
-                        Some(task.output_markdown.clone()),
-                        None,
-                    );
-                }
-            })
-            .map_err(|error| {
-                if let Some(stream_id) = input.stream_id.as_deref() {
-                    emit_ai_task_stream(
-                        &app_handle,
-                        stream_id,
-                        "paper",
-                        &input.kind,
-                        "failed",
-                        None,
-                        input.prompt.clone(),
-                        None,
-                        None,
-                        Some(error.to_string()),
-                    );
-                }
-                error.to_string()
-            }),
-        _ => {
+        "item.summarize" | "item.translate" | "item.explain_term" | "item.ask" => {
             if let Some(stream_id) = input.stream_id.as_deref() {
                 emit_ai_task_stream(
                     &app_handle,
                     stream_id,
                     "paper",
+                    None,
+                    Some(input.item_id),
+                    None,
+                    None,
                     &input.kind,
-                    "failed",
+                    "started",
                     None,
                     input.prompt.clone(),
                     None,
                     None,
-                    Some("unsupported item task".into()),
+                    None,
                 );
+            }
+            tauri::async_runtime::spawn_blocking(move || {
+                let service = match service_for_root(&library_root) {
+                    Ok(service) => service,
+                    Err(error) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "paper", None, Some(input.item_id), None, None, &input.kind, "failed", None, input.prompt.clone(), None, None, Some(error));
+                        }
+                        return;
+                    }
+                };
+                let mut streamed = String::new();
+                let result = service.run_item_task_with_stream(
+                    input.item_id,
+                    &input.kind,
+                    input.prompt.as_deref(),
+                    |delta| {
+                        streamed.push_str(delta);
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "paper", None, Some(input.item_id), None, None, &input.kind, "delta", None, input.prompt.clone(), Some(delta.to_string()), None, None);
+                        }
+                        Ok(())
+                    },
+                );
+                match result {
+                    Ok(task) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "paper", None, Some(input.item_id), task.collection_id, None, &input.kind, "completed", Some(task.id), task.input_prompt.clone(), None, Some(task.output_markdown.clone()), None);
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "paper", None, Some(input.item_id), None, None, &input.kind, "failed", None, input.prompt.clone(), None, None, Some(error.to_string()));
+                        }
+                    }
+                }
+            });
+            Ok(())
+        }
+        _ => {
+            if let Some(stream_id) = input.stream_id.as_deref() {
+                emit_ai_task_stream(&app_handle, stream_id, "paper", None, Some(input.item_id), None, None, &input.kind, "failed", None, input.prompt.clone(), None, None, Some("unsupported item task".into()));
             }
             Err("unsupported item task".into())
         }
@@ -1445,99 +1436,57 @@ fn run_collection_task(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     input: RunCollectionTaskInput,
-) -> Result<app_core::service::AITask, String> {
-    if let Some(stream_id) = input.stream_id.as_deref() {
-        emit_ai_task_stream(
-            &app_handle,
-            stream_id,
-            "collection",
-            &input.kind,
-            "started",
-            None,
-            input.prompt.clone(),
-            None,
-            None,
-            None,
-        );
-    }
+) -> Result<(), String> {
+    let library_root = state.library_root.clone();
     match input.kind.as_str() {
         "collection.review_draft"
         | "collection.bulk_summarize"
         | "collection.theme_map"
         | "collection.compare_methods"
-        | "collection.ask" => service(&state)?
-            .run_collection_task(
-                input.collection_id,
-                &input.kind,
-                &input.scope_item_ids,
-                input.prompt.as_deref(),
-            )
-            .inspect(|task| {
-                if let Some(stream_id) = input.stream_id.as_deref() {
-                    let mut full_markdown = String::new();
-                    for chunk in split_markdown_chunks(&task.output_markdown) {
-                        if !full_markdown.is_empty() {
-                            full_markdown.push_str("\n\n");
+        | "collection.ask" => {
+            if let Some(stream_id) = input.stream_id.as_deref() {
+                emit_ai_task_stream(&app_handle, stream_id, "collection", None, None, Some(input.collection_id), Some(input.scope_item_ids.clone()), &input.kind, "started", None, input.prompt.clone(), None, None, None);
+            }
+            tauri::async_runtime::spawn_blocking(move || {
+                let service = match service_for_root(&library_root) {
+                    Ok(service) => service,
+                    Err(error) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "collection", None, None, Some(input.collection_id), Some(input.scope_item_ids.clone()), &input.kind, "failed", None, input.prompt.clone(), None, None, Some(error));
                         }
-                        full_markdown.push_str(&chunk);
-                        emit_ai_task_stream(
-                            &app_handle,
-                            stream_id,
-                            "collection",
-                            &input.kind,
-                            "delta",
-                            None,
-                            task.input_prompt.clone(),
-                            Some(chunk),
-                            Some(full_markdown.clone()),
-                            None,
-                        );
+                        return;
                     }
-                    emit_ai_task_stream(
-                        &app_handle,
-                        stream_id,
-                        "collection",
-                        &input.kind,
-                        "completed",
-                        Some(task.id),
-                        task.input_prompt.clone(),
-                        None,
-                        Some(task.output_markdown.clone()),
-                        None,
-                    );
+                };
+                let result = service.run_collection_task_with_stream(
+                    input.collection_id,
+                    &input.kind,
+                    &input.scope_item_ids,
+                    input.prompt.as_deref(),
+                    |delta| {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "collection", None, None, Some(input.collection_id), Some(input.scope_item_ids.clone()), &input.kind, "delta", None, input.prompt.clone(), Some(delta.to_string()), None, None);
+                        }
+                        Ok(())
+                    },
+                );
+                match result {
+                    Ok(task) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "collection", None, None, Some(input.collection_id), task.scope_item_ids.clone(), &input.kind, "completed", Some(task.id), task.input_prompt.clone(), None, Some(task.output_markdown.clone()), None);
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "collection", None, None, Some(input.collection_id), Some(input.scope_item_ids.clone()), &input.kind, "failed", None, input.prompt.clone(), None, None, Some(error.to_string()));
+                        }
+                    }
                 }
-            })
-            .map_err(|error| {
-                if let Some(stream_id) = input.stream_id.as_deref() {
-                    emit_ai_task_stream(
-                        &app_handle,
-                        stream_id,
-                        "collection",
-                        &input.kind,
-                        "failed",
-                        None,
-                        input.prompt.clone(),
-                        None,
-                        None,
-                        Some(error.to_string()),
-                    );
-                }
-                error.to_string()
-            }),
+            });
+            Ok(())
+        }
         _ => {
             if let Some(stream_id) = input.stream_id.as_deref() {
-                emit_ai_task_stream(
-                    &app_handle,
-                    stream_id,
-                    "collection",
-                    &input.kind,
-                    "failed",
-                    None,
-                    input.prompt.clone(),
-                    None,
-                    None,
-                    Some("unsupported collection task".into()),
-                );
+                emit_ai_task_stream(&app_handle, stream_id, "collection", None, None, Some(input.collection_id), Some(input.scope_item_ids.clone()), &input.kind, "failed", None, input.prompt.clone(), None, None, Some("unsupported collection task".into()));
             }
             Err("unsupported collection task".into())
         }
@@ -1594,12 +1543,17 @@ fn run_ai_session_task(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     input: RunAiSessionTaskInput,
-) -> Result<app_core::service::AITask, String> {
+) -> Result<(), String> {
+    let library_root = state.library_root.clone();
     if let Some(stream_id) = input.stream_id.as_deref() {
         emit_ai_task_stream(
             &app_handle,
             stream_id,
             "session",
+            Some(input.session_id),
+            None,
+            None,
+            None,
             &input.kind,
             "started",
             None,
@@ -1615,66 +1569,98 @@ fn run_ai_session_task(
         | "session.theme_map"
         | "session.compare"
         | "session.review_draft"
-        | "session.ask" => service(&state)?
-            .run_ai_session_task(input.session_id, &input.kind, input.prompt.as_deref())
-            .inspect(|task| {
-                if let Some(stream_id) = input.stream_id.as_deref() {
-                    let mut full_markdown = String::new();
-                    for chunk in split_markdown_chunks(&task.output_markdown) {
-                        if !full_markdown.is_empty() {
-                            full_markdown.push_str("\n\n");
+        | "session.ask" => {
+            tauri::async_runtime::spawn_blocking(move || {
+                let service = match service_for_root(&library_root) {
+                    Ok(service) => service,
+                    Err(error) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(
+                                &app_handle,
+                                stream_id,
+                                "session",
+                                Some(input.session_id),
+                                None,
+                                None,
+                                None,
+                                &input.kind,
+                                "failed",
+                                None,
+                                input.prompt.clone(),
+                                None,
+                                None,
+                                Some(error),
+                            );
                         }
-                        full_markdown.push_str(&chunk);
-                        emit_ai_task_stream(
-                            &app_handle,
-                            stream_id,
-                            "session",
-                            &input.kind,
-                            "delta",
-                            None,
-                            task.input_prompt.clone(),
-                            Some(chunk),
-                            Some(full_markdown.clone()),
-                            None,
-                        );
+                        return;
                     }
-                    emit_ai_task_stream(
-                        &app_handle,
-                        stream_id,
-                        "session",
-                        &input.kind,
-                        "completed",
-                        Some(task.id),
-                        task.input_prompt.clone(),
-                        None,
-                        Some(task.output_markdown.clone()),
-                        None,
-                    );
+                };
+                let result = service.run_ai_session_task_with_stream(
+                    input.session_id,
+                    &input.kind,
+                    input.prompt.as_deref(),
+                    |delta| {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(&app_handle, stream_id, "session", Some(input.session_id), None, None, None, &input.kind, "delta", None, input.prompt.clone(), Some(delta.to_string()), None, None);
+                        }
+                        Ok(())
+                    },
+                );
+                match result {
+                    Ok(task) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(
+                                &app_handle,
+                                stream_id,
+                                "session",
+                                Some(input.session_id),
+                                None,
+                                task.collection_id,
+                                task.scope_item_ids.clone(),
+                                &input.kind,
+                                "completed",
+                                Some(task.id),
+                                task.input_prompt.clone(),
+                                None,
+                                Some(task.output_markdown.clone()),
+                                None,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(stream_id) = input.stream_id.as_deref() {
+                            emit_ai_task_stream(
+                                &app_handle,
+                                stream_id,
+                                "session",
+                                Some(input.session_id),
+                                None,
+                                None,
+                                None,
+                                &input.kind,
+                                "failed",
+                                None,
+                                input.prompt.clone(),
+                                None,
+                                None,
+                                Some(error.to_string()),
+                            );
+                        }
+                    }
                 }
-            })
-            .map_err(|error| {
-                if let Some(stream_id) = input.stream_id.as_deref() {
-                    emit_ai_task_stream(
-                        &app_handle,
-                        stream_id,
-                        "session",
-                        &input.kind,
-                        "failed",
-                        None,
-                        input.prompt.clone(),
-                        None,
-                        None,
-                        Some(error.to_string()),
-                    );
-                }
-                error.to_string()
-            }),
+            });
+            Ok(())
+        }
         _ => {
             if let Some(stream_id) = input.stream_id.as_deref() {
                 emit_ai_task_stream(
                     &app_handle,
                     stream_id,
                     "session",
+                    Some(input.session_id),
+                    None,
+                    None,
+                    None,
                     &input.kind,
                     "failed",
                     None,
@@ -1893,7 +1879,20 @@ fn main() {
             let app_menu = SubmenuBuilder::new(app, "Paper Reader")
                 .text("open_settings", "Settings…")
                 .build()?;
-            let menu = MenuBuilder::new(app).item(&app_menu).item(&file_menu).build()?;
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .item(&PredefinedMenuItem::undo(app, None)?)
+                .item(&PredefinedMenuItem::redo(app, None)?)
+                .separator()
+                .item(&PredefinedMenuItem::cut(app, None)?)
+                .item(&PredefinedMenuItem::copy(app, None)?)
+                .item(&PredefinedMenuItem::paste(app, None)?)
+                .item(&PredefinedMenuItem::select_all(app, None)?)
+                .build()?;
+            let menu = MenuBuilder::new(app)
+                .item(&app_menu)
+                .item(&file_menu)
+                .item(&edit_menu)
+                .build()?;
             app.set_menu(menu)?;
             app.on_menu_event(|app_handle, event| match event.id().0.as_str() {
                 "import_documents" => {

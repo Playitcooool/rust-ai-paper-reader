@@ -58,6 +58,7 @@ type MockState = {
   importFileResults?: ImportBatchResult | null;
   importCitationResults?: ImportBatchResult | null;
   nextAiStreamFailure?: string | null;
+  sessionTaskDelayMs?: number;
 };
 
 const exportWrites: Array<{ path: string; authorization_token: string; contents: string }> = [];
@@ -220,6 +221,7 @@ const initialState = (): MockState => ({
   importFileResults: null,
   importCitationResults: null,
   nextAiStreamFailure: null,
+  sessionTaskDelayMs: 120,
 });
 
 const aiStreamListeners = new Set<(event: AITaskStreamEvent) => void>();
@@ -244,6 +246,16 @@ const chunkMarkdown = (markdown: string) => {
     return pieces;
   });
   return paragraphs.map((part, index) => (index < paragraphs.length - 1 ? `${part}\n\n` : part));
+};
+
+const runStream = async (
+  chunks: string[],
+  emit: (chunk: string) => void,
+) => {
+  for (const chunk of chunks) {
+    emit(chunk);
+    await delay(0);
+  }
 };
 
 let state = initialState();
@@ -1110,45 +1122,93 @@ export const fakeApi: AppApi = {
       emitAiTaskStream({
         stream_id: input.stream_id,
         scope: "session",
+        session_id: input.session_id,
+        scope_item_ids: [...scope_item_ids],
         kind: input.kind,
         phase: "started",
         input_prompt: input.prompt?.trim() || null,
       });
-      await delay(0);
-      if (state.nextAiStreamFailure) {
-        const error = state.nextAiStreamFailure;
-        state.nextAiStreamFailure = null;
-        emitAiTaskStream({
-          stream_id: input.stream_id,
-          scope: "session",
-          kind: input.kind,
-          phase: "failed",
-          input_prompt: input.prompt?.trim() || null,
-          error,
+    }
+    if (input.stream_id) {
+      const error = state.nextAiStreamFailure;
+      state.nextAiStreamFailure = null;
+      void (async () => {
+        await delay(state.sessionTaskDelayMs ?? 20);
+        if (error) {
+          emitAiTaskStream({
+            stream_id: input.stream_id!,
+            scope: "session",
+            session_id: input.session_id,
+            scope_item_ids: [...scope_item_ids],
+            kind: input.kind,
+            phase: "failed",
+            input_prompt: input.prompt?.trim() || null,
+            error,
+          });
+          return;
+        }
+        await runStream(chunkMarkdown(output), (chunk) => {
+          emitAiTaskStream({
+            stream_id: input.stream_id!,
+            scope: "session",
+            session_id: input.session_id,
+            scope_item_ids: [...scope_item_ids],
+            kind: input.kind,
+            phase: "delta",
+            input_prompt: input.prompt?.trim() || null,
+            delta_markdown: chunk,
+          });
         });
-        throw new Error(error);
-      }
-      let streamed = "";
-      for (const chunk of chunkMarkdown(output)) {
-        streamed += chunk;
-        emitAiTaskStream({
-          stream_id: input.stream_id,
-          scope: "session",
-          kind: input.kind,
-          phase: "delta",
+        const primaryItem = state.items.find((item) => item.id === scope_item_ids[0]);
+        const session = state.sessions.find((entry) => entry.id === input.session_id);
+        const nextTitle =
+          session?.title === "New Chat"
+            ? (input.prompt?.trim() || (input.kind === "session.summarize" ? "Summarize" : input.kind.replace("session.", "")))
+            : undefined;
+        touchSession(input.session_id, nextTitle);
+        const task = {
+          id: state.nextId++,
+          item_id: null,
+          collection_id: primaryItem?.collection_id ?? null,
+          session_id: input.session_id,
+          scope_item_ids: [...scope_item_ids],
           input_prompt: input.prompt?.trim() || null,
-          delta_markdown: chunk,
-          full_markdown: streamed,
+          kind: input.kind,
+          status: "succeeded",
+          output_markdown: output,
+        };
+        state.tasks.unshift(task);
+        state.artifacts.unshift({
+          id: state.nextId++,
+          task_id: task.id,
+          item_id: null,
+          collection_id: primaryItem?.collection_id ?? null,
+          session_id: input.session_id,
+          scope_item_ids: [...scope_item_ids],
+          kind: input.kind,
+          markdown: output,
         });
-        await delay(0);
-      }
+        emitAiTaskStream({
+          stream_id: input.stream_id!,
+          scope: "session",
+          session_id: input.session_id,
+          collection_id: primaryItem?.collection_id,
+          scope_item_ids: [...scope_item_ids],
+          kind: input.kind,
+          phase: "completed",
+          task_id: task.id,
+          input_prompt: input.prompt?.trim() || null,
+          full_markdown: output,
+        });
+      })();
+      return;
     }
     const primaryItem = state.items.find((item) => item.id === scope_item_ids[0]);
     const session = state.sessions.find((entry) => entry.id === input.session_id);
     const nextTitle =
       session?.title === "New Chat" ? (input.prompt?.trim() || (input.kind === "session.summarize" ? "Summarize" : input.kind.replace("session.", ""))) : undefined;
     touchSession(input.session_id, nextTitle);
-    const task = {
+    state.tasks.unshift({
       id: state.nextId++,
       item_id: null,
       collection_id: primaryItem?.collection_id ?? null,
@@ -1158,30 +1218,8 @@ export const fakeApi: AppApi = {
       kind: input.kind,
       status: "succeeded",
       output_markdown: output,
-    };
-    state.tasks.unshift(task);
-    state.artifacts.unshift({
-      id: state.nextId++,
-      task_id: task.id,
-      item_id: null,
-      collection_id: primaryItem?.collection_id ?? null,
-      session_id: input.session_id,
-      scope_item_ids: [...scope_item_ids],
-      kind: input.kind,
-      markdown: output,
     });
-    if (input.stream_id) {
-      emitAiTaskStream({
-        stream_id: input.stream_id,
-        scope: "session",
-        kind: input.kind,
-        phase: "completed",
-        task_id: task.id,
-        input_prompt: input.prompt?.trim() || null,
-        full_markdown: output,
-      });
-    }
-    return task;
+    return;
   },
 
   async runItemTask(input) {
@@ -1194,38 +1232,76 @@ export const fakeApi: AppApi = {
       emitAiTaskStream({
         stream_id: input.stream_id,
         scope: "paper",
+        item_id: input.item_id,
+        collection_id: item.collection_id,
         kind: input.kind,
         phase: "started",
         input_prompt: input.prompt?.trim() || null,
       });
-      await delay(0);
-      if (state.nextAiStreamFailure) {
-        const error = state.nextAiStreamFailure;
-        state.nextAiStreamFailure = null;
-        emitAiTaskStream({
-          stream_id: input.stream_id,
-          scope: "paper",
-          kind: input.kind,
-          phase: "failed",
-          input_prompt: input.prompt?.trim() || null,
-          error,
-        });
-        throw new Error(error);
-      }
-      let streamed = "";
-      for (const chunk of chunkMarkdown(output)) {
-        streamed += chunk;
-        emitAiTaskStream({
-          stream_id: input.stream_id,
-          scope: "paper",
-          kind: input.kind,
-          phase: "delta",
-          input_prompt: input.prompt?.trim() || null,
-          delta_markdown: chunk,
-          full_markdown: streamed,
-        });
+      void (async () => {
         await delay(0);
-      }
+        if (state.nextAiStreamFailure) {
+          const error = state.nextAiStreamFailure;
+          state.nextAiStreamFailure = null;
+          emitAiTaskStream({
+            stream_id: input.stream_id!,
+            scope: "paper",
+            item_id: input.item_id,
+            collection_id: item.collection_id,
+            kind: input.kind,
+            phase: "failed",
+            input_prompt: input.prompt?.trim() || null,
+            error,
+          });
+          return;
+        }
+        await runStream(chunkMarkdown(output), (chunk) => {
+          emitAiTaskStream({
+            stream_id: input.stream_id!,
+            scope: "paper",
+            item_id: input.item_id,
+            collection_id: item.collection_id,
+            kind: input.kind,
+            phase: "delta",
+            input_prompt: input.prompt?.trim() || null,
+            delta_markdown: chunk,
+          });
+        });
+        const task = {
+          id: state.nextId++,
+          item_id: item.id,
+          collection_id: item.collection_id,
+          session_id: null,
+          scope_item_ids: null,
+          input_prompt: input.prompt?.trim() || null,
+          kind: input.kind,
+          status: "succeeded",
+          output_markdown: output,
+        };
+        state.tasks.unshift(task);
+        state.artifacts.unshift({
+          id: state.nextId++,
+          task_id: task.id,
+          item_id: item.id,
+          collection_id: item.collection_id,
+          session_id: null,
+          scope_item_ids: null,
+          kind: input.kind,
+          markdown: output,
+        });
+        emitAiTaskStream({
+          stream_id: input.stream_id!,
+          scope: "paper",
+          item_id: input.item_id,
+          collection_id: item.collection_id,
+          kind: input.kind,
+          phase: "completed",
+          task_id: task.id,
+          input_prompt: input.prompt?.trim() || null,
+          full_markdown: output,
+        });
+      })();
+      return;
     }
     const task = {
       id: state.nextId++,
@@ -1249,18 +1325,7 @@ export const fakeApi: AppApi = {
       kind: input.kind,
       markdown: output,
     });
-    if (input.stream_id) {
-      emitAiTaskStream({
-        stream_id: input.stream_id,
-        scope: "paper",
-        kind: input.kind,
-        phase: "completed",
-        task_id: task.id,
-        input_prompt: input.prompt?.trim() || null,
-        full_markdown: output,
-      });
-    }
-    return task;
+    return;
   },
 
   async runCollectionTask(input) {
@@ -1278,38 +1343,76 @@ export const fakeApi: AppApi = {
       emitAiTaskStream({
         stream_id: input.stream_id,
         scope: "collection",
+        collection_id: input.collection_id,
+        scope_item_ids: [...input.scope_item_ids],
         kind: input.kind,
         phase: "started",
         input_prompt: input.prompt?.trim() || null,
       });
-      await delay(0);
-      if (state.nextAiStreamFailure) {
-        const error = state.nextAiStreamFailure;
-        state.nextAiStreamFailure = null;
-        emitAiTaskStream({
-          stream_id: input.stream_id,
-          scope: "collection",
-          kind: input.kind,
-          phase: "failed",
-          input_prompt: input.prompt?.trim() || null,
-          error,
-        });
-        throw new Error(error);
-      }
-      let streamed = "";
-      for (const chunk of chunkMarkdown(output)) {
-        streamed += chunk;
-        emitAiTaskStream({
-          stream_id: input.stream_id,
-          scope: "collection",
-          kind: input.kind,
-          phase: "delta",
-          input_prompt: input.prompt?.trim() || null,
-          delta_markdown: chunk,
-          full_markdown: streamed,
-        });
+      void (async () => {
         await delay(0);
-      }
+        if (state.nextAiStreamFailure) {
+          const error = state.nextAiStreamFailure;
+          state.nextAiStreamFailure = null;
+          emitAiTaskStream({
+            stream_id: input.stream_id!,
+            scope: "collection",
+            collection_id: input.collection_id,
+            scope_item_ids: [...input.scope_item_ids],
+            kind: input.kind,
+            phase: "failed",
+            input_prompt: input.prompt?.trim() || null,
+            error,
+          });
+          return;
+        }
+        await runStream(chunkMarkdown(output), (chunk) => {
+          emitAiTaskStream({
+            stream_id: input.stream_id!,
+            scope: "collection",
+            collection_id: input.collection_id,
+            scope_item_ids: [...input.scope_item_ids],
+            kind: input.kind,
+            phase: "delta",
+            input_prompt: input.prompt?.trim() || null,
+            delta_markdown: chunk,
+          });
+        });
+        const task = {
+          id: state.nextId++,
+          item_id: null,
+          collection_id: input.collection_id,
+          session_id: null,
+          scope_item_ids: [...input.scope_item_ids],
+          input_prompt: input.prompt?.trim() || null,
+          kind: input.kind,
+          status: "succeeded",
+          output_markdown: output,
+        };
+        state.tasks.unshift(task);
+        state.artifacts.unshift({
+          id: state.nextId++,
+          task_id: task.id,
+          item_id: null,
+          collection_id: input.collection_id,
+          session_id: null,
+          scope_item_ids: [...input.scope_item_ids],
+          kind: input.kind,
+          markdown: output,
+        });
+        emitAiTaskStream({
+          stream_id: input.stream_id!,
+          scope: "collection",
+          collection_id: input.collection_id,
+          scope_item_ids: [...input.scope_item_ids],
+          kind: input.kind,
+          phase: "completed",
+          task_id: task.id,
+          input_prompt: input.prompt?.trim() || null,
+          full_markdown: output,
+        });
+      })();
+      return;
     }
     const task = {
       id: state.nextId++,
@@ -1333,18 +1436,7 @@ export const fakeApi: AppApi = {
       kind: input.kind,
       markdown: output,
     });
-    if (input.stream_id) {
-      emitAiTaskStream({
-        stream_id: input.stream_id,
-        scope: "collection",
-        kind: input.kind,
-        phase: "completed",
-        task_id: task.id,
-        input_prompt: input.prompt?.trim() || null,
-        full_markdown: output,
-      });
-    }
-    return task;
+    return;
   },
 
   async listTaskRuns(input) {

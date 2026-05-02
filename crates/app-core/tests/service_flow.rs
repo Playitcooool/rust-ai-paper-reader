@@ -7,7 +7,7 @@ use std::{
 
 use app_core::service::{
     AiCompletionRequest, AiTransport, AIProvider, AISessionReferenceKind, ImportMode, LibraryService,
-    MemorySecretStore, UpdateAISettingsInput,
+    UpdateAISettingsInput,
 };
 use flate2::{write::ZlibEncoder, Compression};
 use rusqlite::Connection;
@@ -19,8 +19,7 @@ fn fixture_path(root: &Path, name: &str) -> PathBuf {
 }
 
 fn service_with_transport(root: &Path, transport: Arc<dyn AiTransport>) -> LibraryService {
-    LibraryService::new_with_secret_store(root, transport, Arc::new(MemorySecretStore::default()))
-        .unwrap()
+    LibraryService::new_with_transport(root, transport).unwrap()
 }
 
 fn write_pdf_fixture(path: &Path) {
@@ -204,11 +203,15 @@ struct StubTransport {
 }
 
 impl AiTransport for StubTransport {
-    fn complete(&self, request: AiCompletionRequest) -> anyhow::Result<String> {
+    fn stream_completion(
+        &self,
+        request: AiCompletionRequest,
+        on_delta: &mut dyn FnMut(&str) -> anyhow::Result<()>,
+    ) -> anyhow::Result<String> {
         let provider = request.provider;
         let prompt = request.prompt.clone();
         self.requests.lock().unwrap().push(request);
-        Ok(match provider {
+        let output = match provider {
             AIProvider::OpenAI => format!(
                 "# Summary: OpenAI Path\n\n## Key Points\n- Routed through OpenAI\n\n## Echo\n{}",
                 prompt
@@ -219,7 +222,11 @@ impl AiTransport for StubTransport {
                     prompt
                 )
             }
-        })
+        };
+        for chunk in output.split_inclusive('\n') {
+            on_delta(chunk)?;
+        }
+        Ok(output)
     }
 }
 
@@ -1002,8 +1009,8 @@ fn ai_settings_persist_without_returning_raw_keys() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(stored_keys.0, "");
-    assert_eq!(stored_keys.1, "");
+    assert_eq!(stored_keys.0, "openai-secret");
+    assert_eq!(stored_keys.1, "anthropic-secret");
 }
 
 #[test]

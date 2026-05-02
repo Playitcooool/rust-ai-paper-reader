@@ -163,6 +163,10 @@ const scopeMatches = (left: number[] | null, right: number[]) =>
   left.every((itemId, index) => itemId === right[index]);
 
 type AiPendingMessage = {
+  sessionId?: number;
+  itemId?: number;
+  collectionId?: number;
+  scopeItemIds?: number[] | null;
   streamId: string;
   kind: string;
   inputPrompt: string | null;
@@ -566,7 +570,9 @@ export default function App({ api }: { api: AppApi }) {
   const [activeNoteId, setActiveNoteId] = useState<number | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
-  const [aiPending, setAiPending] = useState<AiPendingMessage | null>(null);
+  const [aiPendingBySession, setAiPendingBySession] = useState<Record<number, AiPendingMessage | undefined>>({});
+  const [aiPendingByPaper, setAiPendingByPaper] = useState<Record<number, AiPendingMessage | undefined>>({});
+  const [aiPendingByCollection, setAiPendingByCollection] = useState<Record<number, AiPendingMessage | undefined>>({});
   const [aiDockOpen, setAiDockOpen] = useState(initialAiDockState);
   const [isAiSessionHistoryOpen, setIsAiSessionHistoryOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("workspace");
@@ -632,6 +638,7 @@ export default function App({ api }: { api: AppApi }) {
   const highlightActionBarRef = useRef<HTMLDivElement | null>(null);
   const aiReferenceButtonRef = useRef<HTMLButtonElement | null>(null);
   const aiReferencePopoverRef = useRef<HTMLDivElement | null>(null);
+  const aiChatHistoryRef = useRef<HTMLDivElement | null>(null);
   const aiReferenceSearchInputRef = useRef<HTMLInputElement | null>(null);
   const aiReferenceSearchRequestIdRef = useRef(0);
   const closeAiReferencePicker = useCallback(() => {
@@ -1769,43 +1776,197 @@ export default function App({ api }: { api: AppApi }) {
   }, []);
 
   const handleAiTaskStreamEvent = useCallback((event: AITaskStreamEvent) => {
-    if (event.scope !== "session") return;
-    setAiPending((current) => {
-      const existing = current;
+    if (event.scope === "paper" && typeof event.item_id === "number") {
+      const itemId = event.item_id;
       if (event.phase === "started") {
-        return {
+        setAiPendingByPaper((current) => ({
+          ...current,
+          [itemId]: {
+            itemId,
+            collectionId: event.collection_id,
+            streamId: event.stream_id,
+            kind: event.kind,
+            inputPrompt: event.input_prompt ?? null,
+            markdown: "",
+            error: null,
+            status: "streaming",
+          },
+        }));
+        return;
+      }
+      if (event.phase === "delta") {
+        setAiPendingByPaper((current) => {
+          const existing = current[itemId];
+          if (!existing || existing.streamId !== event.stream_id) return current;
+          return {
+            ...current,
+            [itemId]: { ...existing, markdown: `${existing.markdown}${event.delta_markdown ?? ""}` },
+          };
+        });
+        return;
+      }
+      if (event.phase === "completed") {
+        void (async () => {
+          const runtimeApi = await getApi();
+          const [taskRuns, artifact] = await Promise.all([
+            runtimeApi.listTaskRuns({ item_id: itemId }),
+            runtimeApi.getArtifact({ item_id: itemId }),
+          ]);
+          setPaperTaskRuns(taskRuns);
+          setPaperArtifact(artifact);
+          setAiPendingByPaper((current) => {
+            const existing = current[itemId];
+            if (!existing || existing.streamId !== event.stream_id) return current;
+            const next = { ...current };
+            delete next[itemId];
+            return next;
+          });
+        })();
+        return;
+      }
+      if (event.phase === "failed") {
+        setAiPendingByPaper((current) => {
+          const existing = current[itemId];
+          if (!existing || existing.streamId !== event.stream_id) return current;
+          return { ...current, [itemId]: { ...existing, error: event.error ?? "AI task failed.", status: "failed" } };
+        });
+        return;
+      }
+      return;
+    }
+    if (event.scope === "collection" && typeof event.collection_id === "number") {
+      const collectionId = event.collection_id;
+      if (event.phase === "started") {
+        setAiPendingByCollection((current) => ({
+          ...current,
+          [collectionId]: {
+            collectionId,
+            scopeItemIds: event.scope_item_ids ?? null,
+            streamId: event.stream_id,
+            kind: event.kind,
+            inputPrompt: event.input_prompt ?? null,
+            markdown: "",
+            error: null,
+            status: "streaming",
+          },
+        }));
+        return;
+      }
+      if (event.phase === "delta") {
+        setAiPendingByCollection((current) => {
+          const existing = current[collectionId];
+          if (!existing || existing.streamId !== event.stream_id) return current;
+          return {
+            ...current,
+            [collectionId]: { ...existing, markdown: `${existing.markdown}${event.delta_markdown ?? ""}` },
+          };
+        });
+        return;
+      }
+      if (event.phase === "completed") {
+        void (async () => {
+          const runtimeApi = await getApi();
+          const [taskRuns, artifact] = await Promise.all([
+            runtimeApi.listTaskRuns({ collection_id: collectionId }),
+            runtimeApi.getArtifact({ collection_id: collectionId }),
+          ]);
+          setCollectionTaskRuns(taskRuns);
+          setCollectionArtifact(artifact);
+          setAiPendingByCollection((current) => {
+            const existing = current[collectionId];
+            if (!existing || existing.streamId !== event.stream_id) return current;
+            const next = { ...current };
+            delete next[collectionId];
+            return next;
+          });
+        })();
+        return;
+      }
+      if (event.phase === "failed") {
+        setAiPendingByCollection((current) => {
+          const existing = current[collectionId];
+          if (!existing || existing.streamId !== event.stream_id) return current;
+          return { ...current, [collectionId]: { ...existing, error: event.error ?? "AI task failed.", status: "failed" } };
+        });
+        return;
+      }
+      return;
+    }
+    if (event.scope !== "session" || typeof event.session_id !== "number") return;
+    const sessionId = event.session_id;
+    if (event.phase === "started") {
+      setAiPendingBySession((current) => ({
+        ...current,
+        [sessionId]: {
+          sessionId,
+          collectionId: event.collection_id,
+          scopeItemIds: event.scope_item_ids ?? null,
           streamId: event.stream_id,
           kind: event.kind,
           inputPrompt: event.input_prompt ?? null,
           markdown: "",
           error: null,
           status: "streaming",
-        };
-      }
-      if (!existing || existing.streamId !== event.stream_id) return current;
-      if (event.phase === "delta") {
+        },
+      }));
+      return;
+    }
+    if (event.phase === "delta") {
+      setAiPendingBySession((current) => {
+        const existing = current[sessionId];
+        if (!existing || existing.streamId !== event.stream_id) return current;
         return {
-          ...existing,
-          markdown: event.full_markdown ?? `${existing.markdown}${event.delta_markdown ?? ""}`,
+          ...current,
+          [sessionId]: {
+            ...existing,
+            markdown: `${existing.markdown}${event.delta_markdown ?? ""}`,
+          },
         };
-      }
-      if (event.phase === "completed") {
+      });
+      return;
+    }
+
+    if (event.phase === "completed") {
+      void (async () => {
+        const runtimeApi = await getApi();
+        const [taskRuns, artifact, sessions] = await Promise.all([
+          runtimeApi.listAiSessionTaskRuns(sessionId),
+          runtimeApi.getAiSessionArtifact(sessionId),
+          runtimeApi.listAiSessions(),
+        ]);
+        setAiSessions(sessions);
+        setAiPendingBySession((current) => {
+          const pending = current[sessionId];
+          if (!pending || pending.streamId !== event.stream_id) return current;
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        });
+        setStatusMessage(`Completed ${taskLabel(event.kind)}.`);
+        if (activeAiSessionId === sessionId) {
+          setAiSessionTaskRuns(taskRuns);
+          setAiSessionArtifact(artifact);
+        }
+      })();
+      return;
+    }
+
+    if (event.phase === "failed") {
+      setAiPendingBySession((current) => {
+        const existing = current[sessionId];
+        if (!existing || existing.streamId !== event.stream_id) return current;
         return {
-          ...existing,
-          markdown: event.full_markdown ?? existing.markdown,
-          taskId: event.task_id,
+          ...current,
+          [sessionId]: {
+            ...existing,
+            error: event.error ?? "AI task failed.",
+            status: "failed",
+          },
         };
-      }
-      if (event.phase === "failed") {
-        return {
-          ...existing,
-          error: event.error ?? "AI task failed.",
-          status: "failed",
-        };
-      }
-      return current;
-    });
-  }, []);
+      });
+      setStatusMessage(event.error ?? `Failed ${taskLabel(event.kind)}.`);
+    }
+  }, [activeAiSessionId, getApi]);
 
   useEffect(() => {
     let dispose: (() => void) | undefined;
@@ -1830,49 +1991,59 @@ export default function App({ api }: { api: AppApi }) {
   const handleSessionTask = async (kind: string, prompt?: string) => {
     if (!activeAiSessionId) return;
     const runtimeApi = await getApi();
+    const sessionId = activeAiSessionId;
     const streamId = createStreamId();
-    setAiPending({
-      streamId,
-      kind,
-      inputPrompt: prompt?.trim() || null,
-      markdown: "",
-      error: null,
-      status: "streaming",
-    });
+    const inputPrompt = prompt?.trim() || null;
+    setAiPendingBySession((current) => ({
+      ...current,
+      [sessionId]: {
+        sessionId,
+        streamId,
+        kind,
+        inputPrompt,
+        markdown: "",
+        error: null,
+        status: "streaming",
+      },
+    }));
     try {
-      const task = await runtimeApi.runAiSessionTask({ session_id: activeAiSessionId, kind, prompt, stream_id: streamId });
-      const nextTaskRuns = await runtimeApi.listAiSessionTaskRuns(activeAiSessionId);
-      const nextArtifact = await runtimeApi.getAiSessionArtifact(activeAiSessionId);
-      const nextSessions = await runtimeApi.listAiSessions();
-      setAiSessionTaskRuns(nextTaskRuns);
-      setAiSessionArtifact(nextArtifact);
-      setAiSessions(nextSessions);
-      setAiPending((current) => (current && current.streamId === streamId ? null : current));
-      setStatusMessage(`Completed ${taskLabel(kind)}.`);
+      await runtimeApi.runAiSessionTask({ session_id: sessionId, kind, prompt, stream_id: streamId });
     } catch (error) {
       const message = error instanceof Error ? error.message : `Failed ${taskLabel(kind)}.`;
-      setAiPending((current) =>
-        current && current.streamId === streamId
-          ? {
-              ...current,
-              error: message,
-              status: "failed",
-            }
-          : current,
-      );
+      setAiPendingBySession((current) => {
+        const existing = current[sessionId];
+        if (!existing || existing.streamId !== streamId) return current;
+        return {
+          ...current,
+          [sessionId]: {
+            ...existing,
+            error: message,
+            status: "failed",
+          },
+        };
+      });
       setStatusMessage(message);
+      throw error;
     }
   };
 
   const handleAiSubmit = useCallback(async () => {
     const prompt = aiComposerValue.trim();
     if (!prompt) return;
-    await handleSessionTask("session.ask", prompt);
     setAiComposerValue("");
+    try {
+      await handleSessionTask("session.ask", prompt);
+    } catch {
+      setAiComposerValue(prompt);
+    }
   }, [aiComposerValue]);
 
   const handleQuickAction = async (kind: string) => {
-    await handleSessionTask(kind);
+    try {
+      await handleSessionTask(kind);
+    } catch {
+      // The failed state is rendered in-thread.
+    }
   };
 
   const handleCreateResearchNote = async () => {
@@ -2047,9 +2218,12 @@ export default function App({ api }: { api: AppApi }) {
     [readerView],
   );
 
-  const aiPanelCanSend = expandedAiReferenceItemIds.length > 0 && aiPending?.status !== "streaming";
-  const compareEnabled = expandedAiReferenceItemIds.length >= 2 && aiPending?.status !== "streaming";
-  const areQuickActionsDisabled = aiPending?.status === "streaming";
+  const activeAiPending = activeAiSessionId ? aiPendingBySession[activeAiSessionId] ?? null : null;
+  const isActiveAiSessionStreaming = activeAiPending?.status === "streaming";
+  const aiSessionThreadRuns = useMemo(() => [...aiSessionTaskRuns].reverse(), [aiSessionTaskRuns]);
+  const aiPanelCanSend = expandedAiReferenceItemIds.length > 0 && !isActiveAiSessionStreaming;
+  const compareEnabled = expandedAiReferenceItemIds.length >= 2 && !isActiveAiSessionStreaming;
+  const areQuickActionsDisabled = isActiveAiSessionStreaming;
   const filteredReferenceCollections = useMemo(() => {
     const query = aiReferenceQuery.trim().toLowerCase();
     return sortedReferenceCollections.filter((collection) =>
@@ -2209,6 +2383,12 @@ export default function App({ api }: { api: AppApi }) {
     setActivePdfHighlight(null);
     setPdfSelection(null);
   }, [activePaper?.id]);
+
+  useEffect(() => {
+    const container = aiChatHistoryRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, [aiSessionThreadRuns, activeAiPending]);
 
   const treeSearchFilter = useMemo(() => {
     const normalized = search.trim().toLowerCase();
@@ -3210,8 +3390,8 @@ export default function App({ api }: { api: AppApi }) {
               </div>
             </aside>
 
-            <div className="ai-chat-history">
-              {aiSessionTaskRuns.map((task) => (
+            <div ref={aiChatHistoryRef} className="ai-chat-history">
+              {aiSessionThreadRuns.map((task) => (
                 <article key={task.id} className="ai-thread-entry">
                   <div className="ai-message ai-message-user">
                     <div className="ai-message-meta">
@@ -3230,22 +3410,34 @@ export default function App({ api }: { api: AppApi }) {
                 </article>
               ))}
 
-              {aiPending ? (
+              {activeAiPending ? (
                 <article className="ai-thread-entry">
                   <div className="ai-message ai-message-user">
                     <div className="ai-message-meta">
                       <strong>You</strong>
-                      {aiPending.inputPrompt ? <span className="meta-count">Question</span> : null}
+                      {activeAiPending.inputPrompt ? <span className="meta-count">Question</span> : null}
                     </div>
-                    <p>{aiPending.inputPrompt ?? taskLabel(aiPending.kind)}</p>
+                    <p>{activeAiPending.inputPrompt ?? taskLabel(activeAiPending.kind)}</p>
                   </div>
                   <div className="ai-message ai-message-assistant">
                     <div className="ai-message-meta">
-                      <strong>{taskLabel(aiPending.kind)}</strong>
-                      {!isQuickActionKind(aiPending.kind) ? <span className="meta-count">{assistantStatusLabel(aiPending.status)}</span> : null}
+                      <strong>{taskLabel(activeAiPending.kind)}</strong>
+                      {!isQuickActionKind(activeAiPending.kind) ? <span className="meta-count">{assistantStatusLabel(activeAiPending.status)}</span> : null}
                     </div>
-                    {aiPending.error ? <p className="ai-error-text">{aiPending.error}</p> : null}
-                    {aiPending.markdown ? <MarkdownMessage markdown={aiPending.markdown} /> : <p>Thinking…</p>}
+                    {activeAiPending.error ? <p className="ai-error-text">{activeAiPending.error}</p> : null}
+                    {activeAiPending.markdown ? <MarkdownMessage markdown={activeAiPending.markdown} /> : null}
+                    {activeAiPending.status === "streaming" && activeAiPending.markdown ? (
+                      <span className="meta-count" aria-label="AI response streaming">
+                        Streaming
+                      </span>
+                    ) : null}
+                    {activeAiPending.status === "streaming" && !activeAiPending.markdown ? (
+                      <div className="ai-loading-indicator" aria-label="AI response loading">
+                        <span className="ai-loading-dot" />
+                        <span className="ai-loading-dot" />
+                        <span className="ai-loading-dot" />
+                      </div>
+                    ) : null}
                   </div>
                 </article>
               ) : null}
@@ -3374,13 +3566,13 @@ export default function App({ api }: { api: AppApi }) {
                 <textarea
                   aria-label="AI prompt"
                   className="note-editor ai-composer-input"
-                  disabled={!aiPanelCanSend}
                   placeholder="Ask about the current references..."
                   rows={4}
                   value={aiComposerValue}
                   onChange={(event) => setAiComposerValue(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    const isComposing = event.nativeEvent.isComposing;
+                    if (event.key === "Enter" && !event.shiftKey && !isComposing) {
                       event.preventDefault();
                       void handleAiSubmit();
                     }
