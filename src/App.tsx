@@ -269,9 +269,6 @@ const markdownComponents = {
   },
 };
 
-const assistantStatusLabel = (status: AiPendingMessage["status"] | AITask["status"]) =>
-  status === "streaming" ? "Streaming" : status === "failed" ? "Failed" : status;
-
 function AiIcon({
   children,
   viewBox = "0 0 20 20",
@@ -3396,15 +3393,10 @@ export default function App({ api }: { api: AppApi }) {
                   <div className="ai-message ai-message-user">
                     <div className="ai-message-meta">
                       <strong>You</strong>
-                      {task.input_prompt ? <span className="meta-count">Question</span> : null}
                     </div>
                     <p>{task.input_prompt ?? taskLabel(task.kind)}</p>
                   </div>
                   <div className="ai-message ai-message-assistant">
-                    <div className="ai-message-meta">
-                      <strong>{taskLabel(task.kind)}</strong>
-                      {!isQuickActionKind(task.kind) ? <span className="meta-count">{assistantStatusLabel(task.status)}</span> : null}
-                    </div>
                     <MarkdownMessage markdown={task.output_markdown} />
                   </div>
                 </article>
@@ -3415,15 +3407,10 @@ export default function App({ api }: { api: AppApi }) {
                   <div className="ai-message ai-message-user">
                     <div className="ai-message-meta">
                       <strong>You</strong>
-                      {activeAiPending.inputPrompt ? <span className="meta-count">Question</span> : null}
                     </div>
                     <p>{activeAiPending.inputPrompt ?? taskLabel(activeAiPending.kind)}</p>
                   </div>
                   <div className="ai-message ai-message-assistant">
-                    <div className="ai-message-meta">
-                      <strong>{taskLabel(activeAiPending.kind)}</strong>
-                      {!isQuickActionKind(activeAiPending.kind) ? <span className="meta-count">{assistantStatusLabel(activeAiPending.status)}</span> : null}
-                    </div>
                     {activeAiPending.error ? <p className="ai-error-text">{activeAiPending.error}</p> : null}
                     {activeAiPending.markdown ? <MarkdownMessage markdown={activeAiPending.markdown} /> : null}
                     {activeAiPending.status === "streaming" && activeAiPending.markdown ? (
