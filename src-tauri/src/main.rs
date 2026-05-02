@@ -1508,6 +1508,13 @@ fn create_ai_session(state: State<'_, AppState>) -> Result<AISession, String> {
 }
 
 #[tauri::command]
+fn delete_ai_session(state: State<'_, AppState>, session_id: i64) -> Result<(), String> {
+    service(&state)?
+        .delete_ai_session(session_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn list_ai_session_references(
     state: State<'_, AppState>,
     session_id: i64,
@@ -1936,6 +1943,7 @@ fn main() {
             update_ai_settings,
             list_ai_sessions,
             create_ai_session,
+            delete_ai_session,
             list_ai_session_references,
             add_ai_session_reference,
             remove_ai_session_reference,

@@ -1705,6 +1705,27 @@ impl LibraryService {
         .map_err(Into::into)
     }
 
+    pub fn delete_ai_session(&self, session_id: i64) -> Result<()> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM ai_artifacts WHERE session_id = ?1",
+            [session_id],
+        )?;
+        tx.execute("DELETE FROM ai_tasks WHERE session_id = ?1", [session_id])?;
+        tx.execute(
+            "DELETE FROM research_notes WHERE session_id = ?1",
+            [session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM ai_session_references WHERE session_id = ?1",
+            [session_id],
+        )?;
+        tx.execute("DELETE FROM ai_sessions WHERE id = ?1", [session_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn list_ai_session_references(&self, session_id: i64) -> Result<Vec<AISessionReference>> {
         let conn = self.connect()?;
         let mut statement = conn.prepare(

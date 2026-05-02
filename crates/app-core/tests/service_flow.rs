@@ -858,6 +858,81 @@ fn removing_collection_prunes_session_scope_item_ids_for_descendant_items() {
 }
 
 #[test]
+fn deleting_ai_session_removes_related_records() {
+    let root = tempdir().unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
+    let collection = service.create_collection("Inbox", None).unwrap();
+    let pdf = fixture_path(root.path(), "session-delete.pdf");
+    write_pdf_fixture(&pdf);
+    let item_id = service
+        .import_files(collection.id, &[pdf], ImportMode::ManagedCopy)
+        .unwrap()
+        .imported[0]
+        .id;
+    let session = service.create_ai_session().unwrap();
+    service
+        .add_ai_session_reference(session.id, AISessionReferenceKind::Item, item_id)
+        .unwrap();
+    service
+        .update_ai_settings(UpdateAISettingsInput {
+            active_provider: AIProvider::OpenAI,
+            openai_model: "gpt-4.1-mini".into(),
+            openai_base_url: "".into(),
+            openai_api_key: Some("openai-secret".into()),
+            clear_openai_api_key: None,
+            anthropic_model: "".into(),
+            anthropic_base_url: "".into(),
+            anthropic_api_key: None,
+            clear_anthropic_api_key: None,
+        })
+        .unwrap();
+
+    let task = service
+        .run_ai_session_task(session.id, "session.summarize", None)
+        .unwrap();
+    let artifact = service
+        .get_ai_session_artifact(session.id)
+        .unwrap()
+        .expect("session artifact");
+    service.create_note_from_artifact(artifact.id).unwrap();
+
+    service.delete_ai_session(session.id).unwrap();
+
+    assert!(service
+        .list_ai_sessions()
+        .unwrap()
+        .iter()
+        .all(|entry| entry.id != session.id));
+    assert!(service.list_ai_session_references(session.id).unwrap().is_empty());
+    assert!(service.list_ai_session_task_runs(session.id).unwrap().is_empty());
+    assert!(service.get_ai_session_artifact(session.id).unwrap().is_none());
+    assert!(service.list_ai_session_notes(session.id).unwrap().is_empty());
+
+    let conn = Connection::open(root.path().join("library.db")).unwrap();
+    let task_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM ai_tasks WHERE id = ?1", [task.id], |row| row.get(0))
+        .unwrap();
+    let artifact_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM ai_artifacts WHERE id = ?1", [artifact.id], |row| row.get(0))
+        .unwrap();
+    assert_eq!(task_count, 0);
+    assert_eq!(artifact_count, 0);
+}
+
+#[test]
+fn deleting_missing_ai_session_is_idempotent() {
+    let root = tempdir().unwrap();
+    let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));
+    let session = service.create_ai_session().unwrap();
+
+    service.delete_ai_session(session.id + 1_000).unwrap();
+
+    let sessions = service.list_ai_sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, session.id);
+}
+
+#[test]
 fn item_ask_persists_input_prompt() {
     let root = tempdir().unwrap();
     let service = service_with_transport(root.path(), Arc::new(StubTransport::default()));

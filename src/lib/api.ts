@@ -151,6 +151,10 @@ export async function createTauriApi(): Promise<AppApi> {
     updateAiSettings: (input) => invoke("update_ai_settings", { input }),
     listAiSessions: () => invoke("list_ai_sessions"),
     createAiSession: () => invoke("create_ai_session"),
+    deleteAiSession: (sessionId) =>
+      invoke("delete_ai_session", {
+        sessionId,
+      }),
     listAiSessionReferences: (sessionId) =>
       invoke("list_ai_session_references", {
         sessionId,

@@ -1123,17 +1123,18 @@ p {
 .ai-session-history-panel {
   position: absolute;
   top: 0;
-  right: -18px;
+  right: 0;
   bottom: 0;
-  width: min(260px, calc(100% - 24px));
+  left: 0;
+  width: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
   padding: 18px 14px;
-  border-left: 1px solid var(--panel-border);
+  border-left: 0;
   background: rgba(18, 21, 29, 0.98);
-  box-shadow: -16px 0 28px rgba(0, 0, 0, 0.2);
-  transform: translateX(calc(100% + 18px));
+  box-shadow: inset 1px 0 0 var(--panel-border);
+  transform: translateX(100%);
   transition: transform 160ms ease;
   z-index: 9;
 }
@@ -1156,8 +1157,30 @@ p {
 }
 
 .ai-session-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   justify-content: space-between;
+  gap: 6px;
+  padding: 4px;
+}
+
+.ai-session-history-open-button {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 10px;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-session-history-delete {
+  flex: 0 0 auto;
 }
 
 .ai-session-history-item-title {
@@ -2284,9 +2307,9 @@ p {
   }
 
   .ai-session-history-panel {
-    right: -12px;
-    width: min(240px, calc(100% - 16px));
-    transform: translateX(calc(100% + 12px));
+    right: 0;
+    width: 100%;
+    transform: translateX(100%);
   }
 
   .ai-reference-result {

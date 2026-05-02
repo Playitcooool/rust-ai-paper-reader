@@ -290,6 +290,7 @@ export type AppApi = {
   updateAiSettings: (input: UpdateAISettingsInput) => Promise<AISettings>;
   listAiSessions: () => Promise<AISession[]>;
   createAiSession: () => Promise<AISession>;
+  deleteAiSession: (sessionId: number) => Promise<void>;
   listAiSessionReferences: (sessionId: number) => Promise<AISessionReference[]>;
   addAiSessionReference: (input: {
     session_id: number;

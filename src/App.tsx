@@ -191,7 +191,7 @@ type ResourceContextMenuState =
   | null;
 type DeleteTargetState =
   | {
-      kind: "collection" | "item";
+      kind: "collection";
       targetId: number;
       label: string;
       parentCollectionId: number | null;
@@ -199,6 +199,17 @@ type DeleteTargetState =
       nestedCollectionCount?: number;
       deletedCollectionIds?: number[];
       deletedItemIds?: number[];
+    }
+  | {
+      kind: "item";
+      targetId: number;
+      label: string;
+      parentCollectionId: number | null;
+    }
+  | {
+      kind: "ai_session";
+      targetId: number;
+      label: string;
     }
   | null;
 type AiReferencePickerResult =
@@ -384,6 +395,16 @@ const CloseCopilotIcon = () => (
       strokeLinecap="round"
       strokeWidth="1.8"
     />
+  </AiIcon>
+);
+
+const DeleteSessionIcon = () => (
+  <AiIcon>
+    <path d="M8 5.5h4" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+    <path d="M9 5.5l.75-1.5h.5L11 5.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+    <path d="M5.5 7.5h9" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+    <path d="m7 7.5.75 8h4.5l.75-8" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.6" />
+    <path d="M9.25 10.25v3M10.75 10.25v3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
   </AiIcon>
 );
 
@@ -1621,12 +1642,38 @@ export default function App({ api }: { api: AppApi }) {
     setResourceContextMenu(null);
   }, []);
 
+  const handleRequestDeleteAiSession = useCallback((session: AISession) => {
+    setDeleteTarget({
+      kind: "ai_session",
+      targetId: session.id,
+      label: session.title,
+    });
+  }, []);
+
   const handleConfirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
     const runtimeApi = await getApi();
 
     try {
-      if (deleteTarget.kind === "item") {
+      if (deleteTarget.kind === "ai_session") {
+        const deletedSessionId = deleteTarget.targetId;
+        const wasActiveSession = activeAiSessionId === deletedSessionId;
+
+        await runtimeApi.deleteAiSession(deletedSessionId);
+        const remainingSessions = await runtimeApi.listAiSessions();
+        setAiSessions(remainingSessions);
+
+        if (wasActiveSession) {
+          const nextSession = remainingSessions[0] ?? (await runtimeApi.createAiSession());
+          if (remainingSessions.length === 0) {
+            setAiSessions([nextSession]);
+          }
+          setActiveAiSessionId(nextSession.id);
+          await refreshActiveAiSession(nextSession.id);
+        }
+
+        setStatusMessage(`Deleted ${deleteTarget.label}.`);
+      } else if (deleteTarget.kind === "item") {
         const deletedItemId = deleteTarget.targetId;
         const isActiveDeletedPaper = activePaperId === deletedItemId;
         const remainingOpenPaperIds = openPaperIds.filter((itemId) => itemId !== deletedItemId);
@@ -3370,19 +3417,33 @@ export default function App({ api }: { api: AppApi }) {
               </div>
               <div className="ai-session-history-list" role="list" aria-label="Chat History panel">
                 {aiSessions.map((session) => (
-                  <button
+                  <div
                     key={session.id}
                     className={`nav-item ai-session-history-item ${session.id === activeAiSessionId ? "nav-item-active" : ""}`}
-                    title={session.title}
-                    type="button"
-                    onClick={() => {
-                      setActiveAiSessionId(session.id);
-                      setIsAiSessionHistoryOpen(false);
-                    }}
+                    role="listitem"
                   >
-                    <span className="ai-session-history-item-title">{session.title}</span>
-                    <span className="meta-count">{session.id === activeAiSessionId ? "Active" : "Open"}</span>
-                  </button>
+                    <button
+                      className="ai-session-history-open-button"
+                      title={session.title}
+                      type="button"
+                      onClick={() => {
+                        setActiveAiSessionId(session.id);
+                        setIsAiSessionHistoryOpen(false);
+                      }}
+                    >
+                      <span className="ai-session-history-item-title">{session.title}</span>
+                      <span className="meta-count">{session.id === activeAiSessionId ? "Active" : "Open"}</span>
+                    </button>
+                    <button
+                      aria-label={`Delete ${session.title}`}
+                      className="icon-button icon-button-small ai-session-history-delete"
+                      title={`Delete ${session.title}`}
+                      type="button"
+                      onClick={() => handleRequestDeleteAiSession(session)}
+                    >
+                      <DeleteSessionIcon />
+                    </button>
+                  </div>
                 ))}
               </div>
             </aside>
@@ -3590,7 +3651,9 @@ export default function App({ api }: { api: AppApi }) {
             <p>
               {deleteTarget.kind === "item"
                 ? "This removes the paper from the library and clears any matching AI references."
-                : `This removes ${deleteTarget.paperCount ?? 0} paper${deleteTarget.paperCount === 1 ? "" : "s"} and ${deleteTarget.nestedCollectionCount ?? 0} nested collection${deleteTarget.nestedCollectionCount === 1 ? "" : "s"}, then clears matching AI references and related notes.`}
+                : deleteTarget.kind === "ai_session"
+                  ? "This deletes the chat history, tasks, artifacts, references, and research notes for this session."
+                  : `This removes ${deleteTarget.paperCount ?? 0} paper${deleteTarget.paperCount === 1 ? "" : "s"} and ${deleteTarget.nestedCollectionCount ?? 0} nested collection${deleteTarget.nestedCollectionCount === 1 ? "" : "s"}, then clears matching AI references and related notes.`}
             </p>
           <div className="settings-dialog-actions">
               <button className="ghost-button" type="button" onClick={() => setDeleteTarget(null)}>

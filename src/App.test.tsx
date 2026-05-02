@@ -873,6 +873,8 @@ describe("App reading workspace", () => {
     expect(styles).toMatch(/\.ai-reference-chip-list\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/s);
     expect(styles).toMatch(/\.ai-reference-picker-shell\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/s);
     expect(styles).toMatch(/\.ai-reference-popover\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*12;/s);
+    expect(styles).toMatch(/\.ai-session-history-panel\s*\{[^}]*right:\s*0;[^}]*left:\s*0;[^}]*width:\s*100%;/s);
+    expect(styles).not.toMatch(/\.ai-session-history-panel\s*\{[^}]*right:\s*-[0-9]/s);
   });
 
   it("keeps selected references in a single chip row inside the composer", async () => {
@@ -958,10 +960,75 @@ describe("App reading workspace", () => {
     await user.click(screen.getByRole("button", { name: "Chat History" }));
     const historyPanel = screen.getByLabelText("Chat History panel");
     expect(historyPanel).toBeInTheDocument();
-    await user.click(within(historyPanel).getByRole("button", { name: /Transformer Scaling Laws/i }));
+    await user.click(within(historyPanel).getByRole("button", { name: /Transformer Scaling Laws Open/i }));
 
     expect(screen.getByText("Transformer Scaling Laws", { selector: ".meta-count" })).toBeInTheDocument();
     expect(container.querySelector(".ai-session-history-panel")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("deletes a non-current chat session without switching the active chat", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "New Session" }));
+    expect(screen.getByText("New Chat", { selector: ".meta-count" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Chat History" }));
+    const historyPanel = screen.getByLabelText("Chat History panel");
+    await user.click(within(historyPanel).getByRole("button", { name: "Delete Transformer Scaling Laws" }));
+
+    expect(screen.getByText("New Chat", { selector: ".meta-count" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Confirm delete" })).toHaveTextContent(
+      "This deletes the chat history, tasks, artifacts, references, and research notes for this session.",
+    );
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(within(historyPanel).queryByRole("button", { name: /Transformer Scaling Laws Open/i })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("New Chat", { selector: ".meta-count" })).toBeInTheDocument();
+    expect(container.querySelector(".ai-session-history-panel")?.getAttribute("aria-hidden")).toBe("false");
+  });
+
+  it("deletes the active chat and switches to the newest remaining session", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "New Session" }));
+    expect(screen.getByText("New Chat", { selector: ".meta-count" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Chat History" }));
+    const historyPanel = screen.getByLabelText("Chat History panel");
+    await user.click(within(historyPanel).getByRole("button", { name: "Delete New Chat" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Transformer Scaling Laws", { selector: ".meta-count" })).toBeInTheDocument();
+    });
+    expect(within(historyPanel).queryByRole("button", { name: /New Chat/i })).not.toBeInTheDocument();
+  });
+
+  it("creates a new empty chat after deleting the last session", async () => {
+    const user = userEvent.setup();
+    const createAiSessionSpy = vi.spyOn(fakeApi, "createAiSession");
+    render(<App api={fakeApi} />);
+
+    await user.click(await screen.findByRole("treeitem", { name: /Transformer Scaling Laws/i }));
+    await user.click(screen.getByRole("button", { name: "Open AI panel" }));
+    await user.click(screen.getByRole("button", { name: "Chat History" }));
+    const historyPanel = screen.getByLabelText("Chat History panel");
+    await user.click(within(historyPanel).getByRole("button", { name: "Delete Transformer Scaling Laws" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(createAiSessionSpy).toHaveBeenCalled();
+      expect(screen.getByText("New Chat", { selector: ".meta-count" })).toBeInTheDocument();
+    });
+    expect(within(historyPanel).getByRole("button", { name: /New Chat Active/i })).toBeInTheDocument();
   });
 
   it("deletes a paper from the resource context menu and clears matching ai references", async () => {

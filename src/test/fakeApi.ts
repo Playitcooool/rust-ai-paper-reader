@@ -1064,6 +1064,14 @@ export const fakeApi: AppApi = {
     return session;
   },
 
+  async deleteAiSession(sessionId) {
+    state.artifacts = state.artifacts.filter((artifact) => artifact.session_id !== sessionId);
+    state.tasks = state.tasks.filter((task) => task.session_id !== sessionId);
+    state.notes = state.notes.filter((note) => note.session_id !== sessionId);
+    state.sessionReferences = state.sessionReferences.filter((reference) => reference.session_id !== sessionId);
+    state.sessions = state.sessions.filter((session) => session.id !== sessionId);
+  },
+
   async listAiSessionReferences(sessionId) {
     return state.sessionReferences
       .filter((reference) => reference.session_id === sessionId)
