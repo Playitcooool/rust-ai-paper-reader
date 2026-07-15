@@ -28,15 +28,7 @@ export function AppIcon({ children, className = "", size = 18, viewBox = "0 0 24
 export const CloseIcon = () => <AppIcon><path d="M18 6 6 18M6 6l12 12" /></AppIcon>;
 export const ChevronLeftIcon = () => <AppIcon><path d="m15 18-6-6 6-6" /></AppIcon>;
 export const ChevronRightIcon = () => <AppIcon><path d="m9 18 6-6-6-6" /></AppIcon>;
-export const ChevronUpIcon = () => <AppIcon><path d="m18 15-6-6-6 6" /></AppIcon>;
-export const ChevronDownIcon = () => <AppIcon><path d="m6 9 6 6 6-6" /></AppIcon>;
 export const PlusIcon = () => <AppIcon><path d="M12 5v14M5 12h14" /></AppIcon>;
-export const SettingsIcon = () => (
-  <AppIcon>
-    <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z" />
-    <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.05.05a2 2 0 1 1-2.83 2.83l-.05-.05A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.08A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.87.34l-.05.05a2 2 0 1 1-2.83-2.83l.05-.05A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.08A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.87l-.05-.05a2 2 0 1 1 2.83-2.83l.05.05A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.08A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.87-.34l.05-.05a2 2 0 1 1 2.83 2.83l-.05.05A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.08a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z" />
-  </AppIcon>
-);
 export const SunIcon = () => <AppIcon><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" /></AppIcon>;
 export const MoonIcon = () => <AppIcon><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a7 7 0 1 0 11 11Z" /></AppIcon>;
 export const TrashIcon = () => <AppIcon><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m6 6 1 15h10l1-15" /><path d="M10 11v6M14 11v6" /></AppIcon>;
@@ -52,18 +44,8 @@ export const NoteIcon = () => <AppIcon><path d="M4 4h16v16H4z" /><path d="M8 8h8
 export const SaveIcon = () => <AppIcon><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" /><path d="M17 21v-8H7v8" /><path d="M7 3v5h8" /></AppIcon>;
 export const DownloadIcon = () => <AppIcon><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 10l5 5 5-5" /><path d="M12 15V3" /></AppIcon>;
 export const SendIcon = () => <AppIcon><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></AppIcon>;
-export const BoldIcon = () => <AppIcon><path d="M7 4h6a4 4 0 0 1 0 8H7z" /><path d="M7 12h7a4 4 0 0 1 0 8H7z" /><path d="M7 4v16" /></AppIcon>;
-export const ItalicIcon = () => <AppIcon><path d="M19 4h-9M14 20H5M15 4 9 20" /></AppIcon>;
-export const HeadingIcon = () => <AppIcon><path d="M4 12h8M4 4v16M12 4v16M17 8l3-2v14" /></AppIcon>;
-export const ListIcon = () => <AppIcon><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></AppIcon>;
-export const OrderedListIcon = () => <AppIcon><path d="M10 6h11M10 12h11M10 18h11" /><path d="M4 6h1v4M4 10h2M4 14h2l-2 4h2" /></AppIcon>;
-export const QuoteIcon = () => <AppIcon><path d="M8 10H4V6h4v6l-2 4" /><path d="M18 10h-4V6h4v6l-2 4" /></AppIcon>;
-export const CodeIcon = () => <AppIcon><path d="m16 18 6-6-6-6M8 6l-6 6 6 6" /></AppIcon>;
-export const LinkIcon = () => <AppIcon><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1" /><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1" /></AppIcon>;
 export const ZoomInIcon = () => <AppIcon><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3M11 8v6M8 11h6" /></AppIcon>;
 export const ZoomOutIcon = () => <AppIcon><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3M8 11h6" /></AppIcon>;
 export const FitWidthIcon = () => <AppIcon><path d="M4 7V5h16v2" /><path d="M4 17v2h16v-2" /><path d="M8 12h8" /><path d="m10 10-2 2 2 2M14 10l2 2-2 2" /></AppIcon>;
 export const SidebarIcon = () => <AppIcon><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></AppIcon>;
-export const TagIcon = () => <AppIcon><path d="M20 10 12 2H4v8l8 8Z" /><path d="M7.5 7.5h.01" /></AppIcon>;
-export const MoveIcon = () => <AppIcon><path d="M5 9V5h4" /><path d="M15 5h4v4" /><path d="M19 15v4h-4" /><path d="M9 19H5v-4" /><path d="M5 5l5 5M19 5l-5 5M19 19l-5-5M5 19l5-5" /></AppIcon>;
 export const RefreshIcon = () => <AppIcon><path d="M21 12a9 9 0 0 1-15 6.7L3 16" /><path d="M3 21v-5h5" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M21 3v5h-5" /></AppIcon>;

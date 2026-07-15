@@ -130,7 +130,6 @@ export type EvidenceCitationTarget = {
   source_kind: string;
 };
 
-export type AnnotationFilter = "all" | "current_page" | "search_matches";
 export type PdfHighlightColor = "yellow" | "red" | "green" | "blue" | "purple";
 
 export type AITask = {

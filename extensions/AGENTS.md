@@ -8,18 +8,12 @@ pages to the RustyReader desktop connector at `http://127.0.0.1:17654`.
 - `chrome/`: Chrome Manifest V3 extension.
 - `safari/`: Safari Web Extension source and packaging scripts.
 
-Both extension folders intentionally mirror each other:
+Chrome owns the shared implementation. The Safari build copies Chrome's
+`extension/` tree, then overlays only Safari-specific files:
 
 - `manifest.json`: browser extension manifest.
-- `extension/background.js`: background/service worker import flow.
-- `extension/popup/`: popup HTML/CSS/JS for selecting collections and importing
-  the current tab.
-- `extension/shared/constants.js`: connector URL/token defaults and shared
-  constants.
-- `extension/shared/connector-client.js`: localhost connector HTTP client.
-- `extension/shared/file-detection.js`: direct document and page import
-  detection.
-- `extension/shared/collections.js`: collection loading/selection helpers.
+- Chrome's `extension/`: background worker, popup JavaScript, and shared logic.
+- Safari's `extension/`: browser-specific HTML, CSS, and assets only.
 - `extension/assets/`: extension icons.
 - `scripts/`: local packaging/mock/smoke helpers.
 - `tests/` exists for Chrome; Safari shares most logic through mirrored source.
